@@ -58,12 +58,12 @@ Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created aut
 
 ## Features
 
-- **Dashboard** — the first tab: portfolio totals plus a **holdings breakdown by holder & bank** (grouped rows with deposit count, invested, current value, maturity value, and a grand total), and separate **by-holder** and **by-bank** rollups.
-- **Chart** — the same by-holder and by-bank figures as a chart. Pick the **chart type** (bar or pie) with the toggle at the top:
-  - **Bar** — grouped horizontal bars showing invested / current value / maturity value together. Bars share one linear scale, so a single very large deposit will dwarf the rest.
-  - **Pie** — one metric at a time (choose invested / current value / maturity value), showing each holder's or bank's share of the total, with a legend of amounts and percentages.
+- **Dashboard** — the first tab: whole-portfolio totals (deposits **and** metals) — total invested, current value, unrealised gain/loss with return %, and deposit maturity value. Then breakdowns: **by asset class** (deposits vs metals), **by holder across all assets**, **deposits by holder & bank**, **metals by holder & type**, and **deposits by bank**.
+- **Chart** — the same figures as a chart, covering deposits and metals. Pick the **chart type** (bar or pie) with the toggle at the top:
+  - **Bar** — two grouped horizontal bars per row: invested (money in / cost) vs current value. Sections: by holder (all assets), deposits by bank, metals by type.
+  - **Pie** — invested *or* current value, showing each holder's / bank's / metal's share of the total, with an amount + percentage legend.
 
-  All charts are pure inline SVG — no JavaScript or chart library. The selection is kept in the URL (`/chart?type=pie&metric=maturity`).
+  All charts are pure inline SVG — no JavaScript or chart library. The selection is kept in the URL (`/chart?type=pie&metric=invested`).
 - **Depositors** — a separate master list (`depositors` table) of people who hold deposits, each with a unique **holder ID** (customer number, PAN, etc.) and a **name**. Managed on the **Depositors** tab, which also shows each depositor's **total invested** (principal only, no interest), **current value** and **total maturity value**, with a combined total across everyone. A depositor can't be removed while any deposit references it.
 - **Banks** — a separate master list (`banks` table), each with a unique **bank ID** (IFSC / branch code / any identifier) and a **name**. Managed on the **Banks** tab; a bank can't be removed while any deposit references it.
 - **Metals** — record precious-metal holdings (`metals` table): metal (**Gold 24K**, **Gold 22K**, silver, platinum, palladium, other — 24K and 22K are tracked separately, each with its own market rate), an optional **depositor** (linked to the depositors list), an optional description, weight in **grams**, and the **purchase price in ₹ per gram**. Current value is driven by a separate **market-price table** (`metal_prices`) — one live ₹/gram rate per metal, updated from the "Current market prices" panel on the Metals tab, so you set the rate once and every holding of that metal revalues. A metal with no rate set falls back to each holding's purchase price (value = cost). The tab shows cost, current value, and unrealised gain/loss per holding and overall.

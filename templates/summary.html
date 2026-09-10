@@ -5,47 +5,122 @@
   <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
 {% endblock %}
 
+{% macro gl(x) -%}
+  <span class="{{ 'positive' if x >= 0 else 'negative' }}">{{ "+" if x >= 0 else "−" }}{{ (x | abs)|money }}</span>
+{%- endmacro %}
+
+{% set total_gain_pct = (total_gain / total_invested * 100) if total_invested else 0 %}
+
 {% block content %}
 
   <div class="card">
     <div class="summary-grid">
       <div class="summary-item">
-        <div class="label">Deposits</div>
-        <div class="value">{{ overall.count }}</div>
-      </div>
-      <div class="summary-item">
         <div class="label">Total Invested</div>
-        <div class="value">{{ (overall.invested)|money }}</div>
+        <div class="value">{{ (total_invested)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Current Value</div>
-        <div class="value">{{ (overall.current)|money }}</div>
+        <div class="value">{{ (total_current)|money }}</div>
       </div>
       <div class="summary-item">
-        <div class="label">Total Maturity Value</div>
-        <div class="value">{{ (overall.maturity)|money }}</div>
+        <div class="label">Unrealised Gain / Loss</div>
+        <div class="value {{ 'positive' if total_gain >= 0 else 'negative' }}">
+          {{ "+" if total_gain >= 0 else "−" }}{{ (total_gain | abs)|money }}
+          <span style="font-size:13px;">({{ "%+.1f"|format(total_gain_pct) }}%)</span>
+        </div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Deposit Maturity Value</div>
+        <div class="value">{{ (dep_overall.maturity)|money }}</div>
       </div>
     </div>
   </div>
 
   <div class="card">
-    <h2 style="font-size:16px; margin:0 0 14px;">Holdings by Holder &amp; Bank</h2>
-    {% if pairs %}
+    <h2 style="font-size:16px; margin:0 0 14px;">By Asset Class</h2>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Asset class</th><th>Holdings</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Deposits</strong></td>
+          <td>{{ dep_overall.count }}</td>
+          <td>{{ (dep_overall.invested)|money }}</td>
+          <td>{{ (dep_overall.current)|money }}</td>
+          <td>{{ gl(dep_overall.current - dep_overall.invested) }}</td>
+        </tr>
+        <tr>
+          <td><strong>Metals</strong></td>
+          <td>{{ met_overall.count }}</td>
+          <td>{{ (met_overall.invested)|money }}</td>
+          <td>{{ (met_overall.current)|money }}</td>
+          <td>{{ gl(met_overall.current - met_overall.invested) }}</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td><strong>Total</strong></td>
+          <td><strong>{{ dep_overall.count + met_overall.count }}</strong></td>
+          <td><strong>{{ (total_invested)|money }}</strong></td>
+          <td><strong>{{ (total_current)|money }}</strong></td>
+          <td><strong>{{ gl(total_gain) }}</strong></td>
+        </tr>
+      </tfoot>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">By Holder — all assets</h2>
+    {% if combined_holders %}
       <div class="table-scroll">
       <table>
         <thead>
+          <tr><th>Holder</th><th>Deposits</th><th>Metals</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+        </thead>
+        <tbody>
+          {% for r in combined_holders %}
           <tr>
-            <th>Holder</th>
-            <th>Bank</th>
-            <th>Deposits</th>
-            <th>Invested</th>
-            <th>Current Value</th>
-            <th>Maturity Value</th>
+            <td><strong>{{ r.name }}</strong></td>
+            <td>{{ r.deposit_count }}</td>
+            <td>{{ r.metal_count }}</td>
+            <td>{{ (r.invested)|money }}</td>
+            <td>{{ (r.current)|money }}</td>
+            <td>{{ gl(r.current - r.invested) }}</td>
           </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><strong>All holders</strong></td>
+            <td><strong>{{ dep_overall.count }}</strong></td>
+            <td><strong>{{ met_overall.count }}</strong></td>
+            <td><strong>{{ (total_invested)|money }}</strong></td>
+            <td><strong>{{ (total_current)|money }}</strong></td>
+            <td><strong>{{ gl(total_gain) }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>Nothing recorded yet.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Deposits by Holder &amp; Bank</h2>
+    {% if dep_pairs %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Holder</th><th>Bank</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr>
         </thead>
         <tbody>
           {% set ns = namespace(prev="") %}
-          {% for r in pairs %}
+          {% for r in dep_pairs %}
           <tr>
             <td>{% if r.holder != ns.prev %}<strong>{{ r.holder }}</strong>{% set ns.prev = r.holder %}{% endif %}</td>
             <td>{{ r.bank }}</td>
@@ -58,11 +133,11 @@
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="2"><strong>All holdings</strong></td>
-            <td><strong>{{ overall.count }}</strong></td>
-            <td><strong>{{ (overall.invested)|money }}</strong></td>
-            <td><strong>{{ (overall.current)|money }}</strong></td>
-            <td><strong>{{ (overall.maturity)|money }}</strong></td>
+            <td colspan="2"><strong>All deposits</strong></td>
+            <td><strong>{{ dep_overall.count }}</strong></td>
+            <td><strong>{{ (dep_overall.invested)|money }}</strong></td>
+            <td><strong>{{ (dep_overall.current)|money }}</strong></td>
+            <td><strong>{{ (dep_overall.maturity)|money }}</strong></td>
           </tr>
         </tfoot>
       </table>
@@ -73,36 +148,51 @@
   </div>
 
   <div class="card">
-    <h2 style="font-size:16px; margin:0 0 14px;">By Holder</h2>
-    <div class="table-scroll">
-    <table>
-      <thead>
-        <tr><th>Holder</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr>
-      </thead>
-      <tbody>
-        {% for r in holders %}
-        <tr>
-          <td><strong>{{ r.name }}</strong></td>
-          <td>{{ r.count }}</td>
-          <td>{{ (r.invested)|money }}</td>
-          <td>{{ (r.current)|money }}</td>
-          <td>{{ (r.maturity)|money }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    </div>
+    <h2 style="font-size:16px; margin:0 0 14px;">Metals by Holder &amp; Type</h2>
+    {% if met_pairs %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Holder</th><th>Metal</th><th>Holdings</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+        </thead>
+        <tbody>
+          {% set ns = namespace(prev="") %}
+          {% for r in met_pairs %}
+          <tr>
+            <td>{% if r.holder != ns.prev %}<strong>{{ r.holder }}</strong>{% set ns.prev = r.holder %}{% endif %}</td>
+            <td>{{ r.metal }}</td>
+            <td>{{ r.count }}</td>
+            <td>{{ (r.invested)|money }}</td>
+            <td>{{ (r.current)|money }}</td>
+            <td>{{ gl(r.current - r.invested) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>All metals</strong></td>
+            <td><strong>{{ met_overall.count }}</strong></td>
+            <td><strong>{{ (met_overall.invested)|money }}</strong></td>
+            <td><strong>{{ (met_overall.current)|money }}</strong></td>
+            <td><strong>{{ gl(met_overall.current - met_overall.invested) }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No metal holdings yet.</p></div>
+    {% endif %}
   </div>
 
   <div class="card">
-    <h2 style="font-size:16px; margin:0 0 14px;">By Bank</h2>
+    <h2 style="font-size:16px; margin:0 0 14px;">Deposits by Bank</h2>
     <div class="table-scroll">
     <table>
       <thead>
         <tr><th>Bank</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr>
       </thead>
       <tbody>
-        {% for r in banks %}
+        {% for r in dep_banks %}
         <tr>
           <td><strong>{{ r.name }}</strong></td>
           <td>{{ r.count }}</td>

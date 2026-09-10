@@ -496,27 +496,82 @@ def _agg_add(acc, s):
     acc["maturity"] += s["maturity_amount"]
 
 
-def holdings_summary(db):
-    """Aggregate every deposit by (holder, bank), by holder, and by bank."""
-    by_pair, by_holder, by_bank = {}, {}, {}
-    overall = _agg_blank()
+def _metal_blank():
+    return {"count": 0, "invested": 0.0, "current": 0.0}
 
+
+def portfolio_summary(db):
+    """Deposits + metal holdings, aggregated for the Dashboard and Chart.
+
+    For metals, "invested" is cost (grams x purchase price) and "current" is
+    grams x market price; metals have no maturity value.
+    """
+    _key = lambda kv: kv[0].lower()
+
+    # ----- deposits -----
+    dep_pair, dep_holder, dep_bank = {}, {}, {}
+    dep_overall = _agg_blank()
     for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
         s = summarise_deposit(d)
         holder = s["holder_name"] or "—"
         bank = s["bank_name"] or "—"
-        _agg_add(by_pair.setdefault((holder, bank), _agg_blank()), s)
-        _agg_add(by_holder.setdefault(holder, _agg_blank()), s)
-        _agg_add(by_bank.setdefault(bank, _agg_blank()), s)
-        _agg_add(overall, s)
+        _agg_add(dep_pair.setdefault((holder, bank), _agg_blank()), s)
+        _agg_add(dep_holder.setdefault(holder, _agg_blank()), s)
+        _agg_add(dep_bank.setdefault(bank, _agg_blank()), s)
+        _agg_add(dep_overall, s)
 
-    pairs = [
-        {"holder": h, "bank": b, **v}
-        for (h, b), v in sorted(by_pair.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))
-    ]
-    holders = [{"name": h, **v} for h, v in sorted(by_holder.items(), key=lambda kv: kv[0].lower())]
-    banks = [{"name": b, **v} for b, v in sorted(by_bank.items(), key=lambda kv: kv[0].lower())]
-    return {"pairs": pairs, "holders": holders, "banks": banks, "overall": overall}
+    # ----- metals -----
+    met_pair, met_holder, met_metal = {}, {}, {}
+    met_overall = _metal_blank()
+    for m in list_metals(db):
+        holder = m["depositor_name"] or "—"
+        for bucket, k in (
+            (met_pair, (holder, m["metal_label"])),
+            (met_holder, holder),
+            (met_metal, m["metal_label"]),
+        ):
+            acc = bucket.setdefault(k, _metal_blank())
+            acc["count"] += 1
+            acc["invested"] += m["cost"]
+            acc["current"] += m["value"]
+        for acc in (met_overall,):
+            acc["count"] += 1
+            acc["invested"] += m["cost"]
+            acc["current"] += m["value"]
+
+    # ----- combined by holder (deposits + metals) -----
+    combined = {}
+    def _c(h):
+        return combined.setdefault(h, {"deposit_count": 0, "metal_count": 0,
+                                       "invested": 0.0, "current": 0.0, "maturity": 0.0})
+    for h, v in dep_holder.items():
+        c = _c(h)
+        c["deposit_count"] += v["count"]
+        c["invested"] += v["invested"]; c["current"] += v["current"]; c["maturity"] += v["maturity"]
+    for h, v in met_holder.items():
+        c = _c(h)
+        c["metal_count"] += v["count"]
+        c["invested"] += v["invested"]; c["current"] += v["current"]
+
+    total_invested = dep_overall["invested"] + met_overall["invested"]
+    total_current = dep_overall["current"] + met_overall["current"]
+
+    return {
+        "dep_pairs": [{"holder": h, "bank": b, **v}
+                      for (h, b), v in sorted(dep_pair.items(),
+                                              key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))],
+        "dep_banks": [{"name": b, **v} for b, v in sorted(dep_bank.items(), key=_key)],
+        "dep_overall": dep_overall,
+        "met_pairs": [{"holder": h, "metal": mt, **v}
+                      for (h, mt), v in sorted(met_pair.items(),
+                                               key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))],
+        "met_by_metal": [{"name": mt, **v} for mt, v in sorted(met_metal.items(), key=_key)],
+        "met_overall": met_overall,
+        "combined_holders": [{"name": h, **v} for h, v in sorted(combined.items(), key=_key)],
+        "total_invested": total_invested,
+        "total_current": total_current,
+        "total_gain": total_current - total_invested,
+    }
 
 
 # ---------- Routes ----------
@@ -524,12 +579,12 @@ def holdings_summary(db):
 def summary_page():
     db = get_db()
     return render_template(
-        "summary.html", active_tab="summary", **holdings_summary(db)
+        "summary.html", active_tab="summary", **portfolio_summary(db)
     )
 
 
 CHART_TYPES = {"bar": "Bar", "pie": "Pie"}
-CHART_METRICS = {"invested": "Invested", "current": "Current value", "maturity": "Maturity value"}
+CHART_METRICS = {"invested": "Invested", "current": "Current value"}
 PIE_COLORS = [
     "#1e4d6b", "#1c7c45", "#b8720b", "#7d5ba6", "#c0392b",
     "#2c8c99", "#8a6d3b", "#5b6b8c", "#4a7c59", "#9b3b6a",
@@ -568,7 +623,7 @@ def build_pie(rows, metric, cx=90.0, cy=90.0, r=80.0):
 @app.route("/chart")
 def chart_page():
     db = get_db()
-    summary = holdings_summary(db)
+    ps = portfolio_summary(db)
 
     chart_type = request.args.get("type", "bar")
     if chart_type not in CHART_TYPES:
@@ -577,18 +632,16 @@ def chart_page():
     if metric not in CHART_METRICS:
         metric = "current"
 
-    def to_series(items):
-        return [
-            {"name": it["name"], "invested": it["invested"],
-             "current": it["current"], "maturity": it["maturity"]}
-            for it in items
-        ]
+    def series(items):
+        return [{"name": it["name"], "invested": it["invested"], "current": it["current"]}
+                for it in items]
 
-    holder_data = to_series(summary["holders"])
-    bank_data = to_series(summary["banks"])
+    holder_data = series(ps["combined_holders"])   # deposits + metals
+    bank_data = series(ps["dep_banks"])            # deposits only
+    metal_data = series(ps["met_by_metal"])        # metals only
     axis_max = max(
         [0.0]
-        + [row[k] for row in holder_data + bank_data for k in ("invested", "current", "maturity")]
+        + [row[k] for row in holder_data + bank_data + metal_data for k in ("invested", "current")]
     )
     return render_template(
         "chart.html",
@@ -599,9 +652,11 @@ def chart_page():
         chart_metrics=CHART_METRICS,
         holder_data=holder_data,
         bank_data=bank_data,
+        metal_data=metal_data,
         axis_max=axis_max,
         holder_pie=build_pie(holder_data, metric),
         bank_pie=build_pie(bank_data, metric),
+        metal_pie=build_pie(metal_data, metric),
     )
 
 

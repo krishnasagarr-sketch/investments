@@ -7,13 +7,14 @@
 
 {#
   All charts are pure inline SVG — no JavaScript, no chart library.
-  Chart type and (for pie) the value shown are chosen via query params.
+  Two series per category: money in (invested / cost) vs current value.
+  Covers deposits and metals; chart type + pie metric via query params.
 #}
 
 {% macro barchart(rows, axis_max) %}
   {% set gutter = 152 %}
   {% set plotw = 396 %}
-  {% set rowh = 58 %}
+  {% set rowh = 46 %}
   {% set top = 12 %}
   {% set height = top * 2 + (rows | length) * rowh %}
   <div class="table-scroll">
@@ -25,19 +26,16 @@
       {% set gy = top + loop.index0 * rowh %}
       <text x="{{ gutter - 10 }}" y="{{ gy + rowh / 2 }}" text-anchor="end"
             dominant-baseline="middle" font-size="11" font-weight="600" fill="var(--text)">{{ r.name }}</text>
-      {% for key, value, colour in [
-          ("invested", r.invested, "var(--text-dim)"),
-          ("current",  r.current,  "var(--accent)"),
-          ("maturity", r.maturity, "var(--green)")] %}
-        {% set by = gy + 8 + loop.index0 * 14 %}
+      {% for value, colour in [(r.invested, "var(--text-dim)"), (r.current, "var(--accent)")] %}
+        {% set by = gy + 8 + loop.index0 * 15 %}
         {% set bw = (value / axis_max * plotw) if axis_max > 0 else 0 %}
         <rect x="{{ gutter }}" y="{{ by }}" width="{{ "%.1f"|format(bw if bw > 0.6 else 0.6) }}"
-              height="11" rx="2" fill="{{ colour }}" />
+              height="12" rx="2" fill="{{ colour }}" />
         {% if bw > 84 %}
-          <text x="{{ gutter + bw - 5 }}" y="{{ by + 6 }}" text-anchor="end"
+          <text x="{{ gutter + bw - 5 }}" y="{{ by + 6.5 }}" text-anchor="end"
                 dominant-baseline="middle" font-size="9" fill="#fff">{{ (value)|money0 }}</text>
         {% else %}
-          <text x="{{ gutter + bw + 4 }}" y="{{ by + 6 }}" dominant-baseline="middle"
+          <text x="{{ gutter + bw + 4 }}" y="{{ by + 6.5 }}" dominant-baseline="middle"
                 font-size="9" fill="var(--text-dim)">{{ (value)|money0 }}</text>
         {% endif %}
       {% endfor %}
@@ -68,7 +66,17 @@
     </div>
     <p class="field-hint">Showing <strong>{{ metric_label|lower }}</strong>, total {{ (pie.total)|money0 }}.</p>
   {% else %}
-    <div class="empty-state"><p>No deposits yet.</p></div>
+    <div class="empty-state"><p>Nothing to chart here yet.</p></div>
+  {% endif %}
+{% endmacro %}
+
+{% macro section(title, bar_rows, pie) %}
+  <h2 style="font-size:16px; margin:24px 0 8px;">{{ title }}</h2>
+  {% if chart_type == 'bar' %}
+    {% if bar_rows %}{{ barchart(bar_rows, axis_max) }}
+    {% else %}<div class="empty-state"><p>Nothing to chart here yet.</p></div>{% endif %}
+  {% else %}
+    {{ piechart(pie, chart_metrics[metric]) }}
   {% endif %}
 {% endmacro %}
 
@@ -99,24 +107,12 @@
       <div class="legend">
         <span><span class="swatch" style="background:var(--text-dim);"></span>Invested</span>
         <span><span class="swatch" style="background:var(--accent);"></span>Current value</span>
-        <span><span class="swatch" style="background:var(--green);"></span>Maturity value</span>
       </div>
-
-      <h2 style="font-size:16px; margin:4px 0 8px;">By Holder</h2>
-      {% if holder_data %}{{ barchart(holder_data, axis_max) }}
-      {% else %}<div class="empty-state"><p>No deposits yet.</p></div>{% endif %}
-
-      <h2 style="font-size:16px; margin:24px 0 8px;">By Bank</h2>
-      {% if bank_data %}{{ barchart(bank_data, axis_max) }}
-      {% else %}<div class="empty-state"><p>No deposits yet.</p></div>{% endif %}
-
-    {% else %}
-      <h2 style="font-size:16px; margin:4px 0 8px;">By Holder</h2>
-      {{ piechart(holder_pie, chart_metrics[metric]) }}
-
-      <h2 style="font-size:16px; margin:24px 0 8px;">By Bank</h2>
-      {{ piechart(bank_pie, chart_metrics[metric]) }}
     {% endif %}
+
+    {{ section("By Holder — all assets", holder_data, holder_pie) }}
+    {{ section("Deposits by Bank", bank_data, bank_pie) }}
+    {{ section("Metals by Type", metal_data, metal_pie) }}
   </div>
 
 {% endblock %}
