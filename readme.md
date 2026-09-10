@@ -58,7 +58,7 @@ Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created aut
 
 ## Features
 
-- **Dashboard** — the first tab: whole-portfolio totals (deposits **and** metals) — total invested, current value, unrealised gain/loss with return %, and deposit maturity value. Then breakdowns: **by asset class** (deposits vs metals), **by holder across all assets**, **deposits by holder & bank**, **metals by holder & type**, and **deposits by bank**.
+- **Dashboard** — the first tab: whole-portfolio totals (deposits **and** metals) — total invested, current value, unrealised gain/loss with return %, and deposit maturity value. Then breakdowns: **by asset class** (deposits vs metals), **by holder across all assets** (including total metal grams per holder), **deposits by holder & bank**, **metals by type** (grams + value per metal), **metals by holder & type** (grams per holder+metal), and **deposits by bank**.
 - **Chart** — the same figures as a chart, covering deposits and metals. Pick the **chart type** (bar or pie) with the toggle at the top:
   - **Bar** — two grouped horizontal bars per row: invested (money in / cost) vs current value. Sections: by holder (all assets), deposits by bank, metals by type.
   - **Pie** — invested *or* current value, showing each holder's / bank's / metal's share of the total, with an amount + percentage legend.

@@ -498,7 +498,7 @@ def _agg_add(acc, s):
 
 
 def _metal_blank():
-    return {"count": 0, "invested": 0.0, "current": 0.0}
+    return {"count": 0, "grams": 0.0, "invested": 0.0, "current": 0.0}
 
 
 def portfolio_summary(db):
@@ -533,17 +533,18 @@ def portfolio_summary(db):
         ):
             acc = bucket.setdefault(k, _metal_blank())
             acc["count"] += 1
+            acc["grams"] += m["grams"]
             acc["invested"] += m["cost"]
             acc["current"] += m["value"]
-        for acc in (met_overall,):
-            acc["count"] += 1
-            acc["invested"] += m["cost"]
-            acc["current"] += m["value"]
+        met_overall["count"] += 1
+        met_overall["grams"] += m["grams"]
+        met_overall["invested"] += m["cost"]
+        met_overall["current"] += m["value"]
 
     # ----- combined by holder (deposits + metals) -----
     combined = {}
     def _c(h):
-        return combined.setdefault(h, {"deposit_count": 0, "metal_count": 0,
+        return combined.setdefault(h, {"deposit_count": 0, "metal_count": 0, "metal_grams": 0.0,
                                        "invested": 0.0, "current": 0.0, "maturity": 0.0})
     for h, v in dep_holder.items():
         c = _c(h)
@@ -552,6 +553,7 @@ def portfolio_summary(db):
     for h, v in met_holder.items():
         c = _c(h)
         c["metal_count"] += v["count"]
+        c["metal_grams"] += v["grams"]
         c["invested"] += v["invested"]; c["current"] += v["current"]
 
     total_invested = dep_overall["invested"] + met_overall["invested"]

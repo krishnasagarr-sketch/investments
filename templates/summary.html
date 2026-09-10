@@ -79,7 +79,7 @@
       <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Holder</th><th>Deposits</th><th>Metals</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+          <tr><th>Holder</th><th>Deposits</th><th>Metals</th><th>Metal (g)</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
         </thead>
         <tbody>
           {% for r in combined_holders %}
@@ -87,6 +87,7 @@
             <td><strong>{{ r.name }}</strong></td>
             <td>{{ r.deposit_count }}</td>
             <td>{{ r.metal_count }}</td>
+            <td>{% if r.metal_grams %}{{ "%.3f"|format(r.metal_grams) }} g{% else %}—{% endif %}</td>
             <td>{{ (r.invested)|money }}</td>
             <td>{{ (r.current)|money }}</td>
             <td>{{ gl(r.current - r.invested) }}</td>
@@ -98,6 +99,7 @@
             <td><strong>All holders</strong></td>
             <td><strong>{{ dep_overall.count }}</strong></td>
             <td><strong>{{ met_overall.count }}</strong></td>
+            <td><strong>{% if met_overall.grams %}{{ "%.3f"|format(met_overall.grams) }} g{% else %}—{% endif %}</strong></td>
             <td><strong>{{ (total_invested)|money }}</strong></td>
             <td><strong>{{ (total_current)|money }}</strong></td>
             <td><strong>{{ gl(total_gain) }}</strong></td>
@@ -148,12 +150,49 @@
   </div>
 
   <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Metals by Type</h2>
+    {% if met_by_metal %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Metal</th><th>Holdings</th><th>Grams</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+        </thead>
+        <tbody>
+          {% for r in met_by_metal %}
+          <tr>
+            <td><strong>{{ r.name }}</strong></td>
+            <td>{{ r.count }}</td>
+            <td>{{ "%.3f"|format(r.grams) }} g</td>
+            <td>{{ (r.invested)|money }}</td>
+            <td>{{ (r.current)|money }}</td>
+            <td>{{ gl(r.current - r.invested) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><strong>All metals</strong></td>
+            <td><strong>{{ met_overall.count }}</strong></td>
+            <td><strong>{{ "%.3f"|format(met_overall.grams) }} g</strong></td>
+            <td><strong>{{ (met_overall.invested)|money }}</strong></td>
+            <td><strong>{{ (met_overall.current)|money }}</strong></td>
+            <td><strong>{{ gl(met_overall.current - met_overall.invested) }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No metal holdings yet.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <h2 style="font-size:16px; margin:0 0 14px;">Metals by Holder &amp; Type</h2>
     {% if met_pairs %}
       <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Holder</th><th>Metal</th><th>Holdings</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+          <tr><th>Holder</th><th>Metal</th><th>Holdings</th><th>Grams</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
         </thead>
         <tbody>
           {% set ns = namespace(prev="") %}
@@ -162,6 +201,7 @@
             <td>{% if r.holder != ns.prev %}<strong>{{ r.holder }}</strong>{% set ns.prev = r.holder %}{% endif %}</td>
             <td>{{ r.metal }}</td>
             <td>{{ r.count }}</td>
+            <td>{{ "%.3f"|format(r.grams) }} g</td>
             <td>{{ (r.invested)|money }}</td>
             <td>{{ (r.current)|money }}</td>
             <td>{{ gl(r.current - r.invested) }}</td>
@@ -172,6 +212,7 @@
           <tr>
             <td colspan="2"><strong>All metals</strong></td>
             <td><strong>{{ met_overall.count }}</strong></td>
+            <td><strong>{{ "%.3f"|format(met_overall.grams) }} g</strong></td>
             <td><strong>{{ (met_overall.invested)|money }}</strong></td>
             <td><strong>{{ (met_overall.current)|money }}</strong></td>
             <td><strong>{{ gl(met_overall.current - met_overall.invested) }}</strong></td>
