@@ -148,6 +148,23 @@
     margin:6px 0 0;
   }
 
+  .legend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:16px;
+    font-size:12.5px;
+    color:var(--text-dim);
+    margin-bottom:12px;
+  }
+  .legend .swatch{
+    display:inline-block;
+    width:11px;
+    height:11px;
+    border-radius:3px;
+    vertical-align:-1px;
+    margin-right:6px;
+  }
+
   form.inline{display:inline;}
 
   .form-group{margin-bottom:16px;}
@@ -223,6 +240,7 @@
   </header>
   <nav class="tabs">
     <a href="{{ url_for('summary_page') }}" class="{% if active_tab == 'summary' %}active{% endif %}">Dashboard</a>
+    <a href="{{ url_for('chart_page') }}" class="{% if active_tab == 'chart' %}active{% endif %}">Chart</a>
     <a href="{{ url_for('dashboard') }}" class="{% if active_tab == 'dashboard' %}active{% endif %}">Deposits</a>
     <a href="{{ url_for('depositors_page') }}" class="{% if active_tab == 'depositors' %}active{% endif %}">Depositors</a>
     <a href="{{ url_for('banks_page') }}" class="{% if active_tab == 'banks' %}active{% endif %}">Banks</a>

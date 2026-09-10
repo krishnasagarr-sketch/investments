@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Chart — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
+{% endblock %}
+
+{#
+  Horizontal grouped bar chart, pure inline SVG (no JS / no libraries).
+  Three bars per category: invested, current value, maturity value.
+#}
+{% macro barchart(rows, axis_max) %}
+  {% set gutter = 152 %}
+  {% set plotw = 396 %}
+  {% set rowh = 58 %}
+  {% set top = 12 %}
+  {% set height = top * 2 + (rows | length) * rowh %}
+  <div class="table-scroll">
+  <svg viewBox="0 0 640 {{ height }}" role="img" preserveAspectRatio="xMinYMin meet"
+       style="width:100%; min-width:520px; height:auto; font-family:inherit;">
+    <line x1="{{ gutter }}" y1="{{ top }}" x2="{{ gutter }}" y2="{{ height - top }}"
+          stroke="var(--border)" />
+    {% for r in rows %}
+      {% set gy = top + loop.index0 * rowh %}
+      <text x="{{ gutter - 10 }}" y="{{ gy + rowh / 2 }}" text-anchor="end"
+            dominant-baseline="middle" font-size="11" font-weight="600" fill="var(--text)">{{ r.name }}</text>
+      {% for key, value, colour in [
+          ("invested", r.invested, "var(--text-dim)"),
+          ("current",  r.current,  "var(--accent)"),
+          ("maturity", r.maturity, "var(--green)")] %}
+        {% set by = gy + 8 + loop.index0 * 14 %}
+        {% set bw = (value / axis_max * plotw) if axis_max > 0 else 0 %}
+        <rect x="{{ gutter }}" y="{{ by }}" width="{{ "%.1f"|format(bw if bw > 0.6 else 0.6) }}"
+              height="11" rx="2" fill="{{ colour }}" />
+        {% if bw > 84 %}
+          <text x="{{ gutter + bw - 5 }}" y="{{ by + 6 }}" text-anchor="end"
+                dominant-baseline="middle" font-size="9" fill="#fff">${{ "{:,.0f}".format(value) }}</text>
+        {% else %}
+          <text x="{{ gutter + bw + 4 }}" y="{{ by + 6 }}" dominant-baseline="middle"
+                font-size="9" fill="var(--text-dim)">${{ "{:,.0f}".format(value) }}</text>
+        {% endif %}
+      {% endfor %}
+    {% endfor %}
+  </svg>
+  </div>
+{% endmacro %}
+
+{% block content %}
+
+  <div class="card">
+    <div class="legend">
+      <span><span class="swatch" style="background:var(--text-dim);"></span>Invested</span>
+      <span><span class="swatch" style="background:var(--accent);"></span>Current value</span>
+      <span><span class="swatch" style="background:var(--green);"></span>Maturity value</span>
+    </div>
+
+    <h2 style="font-size:16px; margin:4px 0 8px;">By Holder</h2>
+    {% if holder_data %}
+      {{ barchart(holder_data, axis_max) }}
+    {% else %}
+      <div class="empty-state"><p>No deposits yet.</p></div>
+    {% endif %}
+
+    <h2 style="font-size:16px; margin:24px 0 8px;">By Bank</h2>
+    {% if bank_data %}
+      {{ barchart(bank_data, axis_max) }}
+    {% else %}
+      <div class="empty-state"><p>No deposits yet.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}

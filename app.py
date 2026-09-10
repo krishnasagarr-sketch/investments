@@ -435,6 +435,36 @@ def summary_page():
     )
 
 
+@app.route("/chart")
+def chart_page():
+    db = get_db()
+    summary = holdings_summary(db)
+
+    def to_series(items):
+        return [
+            {
+                "name": it["name"],
+                "invested": it["invested"],
+                "current": it["current"],
+                "maturity": it["maturity"],
+            }
+            for it in items
+        ]
+
+    holder_data = to_series(summary["holders"])
+    bank_data = to_series(summary["banks"])
+    axis_max = max(
+        [0.0]
+        + [row[k] for row in holder_data + bank_data for k in ("invested", "current", "maturity")]
+    )
+    return render_template(
+        "chart.html",
+        active_tab="chart",
+        holder_data=holder_data,
+        bank_data=bank_data,
+        axis_max=axis_max,
+    )
+
 
 @app.route("/")
 def dashboard():
