@@ -37,8 +37,40 @@
   </div>
 
   <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Current market prices</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Price per gram used to value every holding of that metal. Leave a field blank to keep its current value.
+    </p>
+    {% if prices_missing %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber);">
+        No market price set for:
+        {% for key in prices_missing %}<strong>{{ metal_types[key] }}</strong>{% if not loop.last %}, {% endif %}{% endfor %}.
+        Those holdings are valued at their purchase price until you set one.
+      </div>
+    {% endif %}
+    <form method="POST" action="{{ url_for('update_metal_prices') }}">
+      {% for key, label in metal_types.items() %}
+        <div class="form-group">
+          <label for="price_{{ key }}">
+            {{ label }} (₹ / gram)
+            {% if metal_prices.get(key) %}
+              <span class="muted" style="font-weight:400;">— updated {{ metal_prices[key].updated_on }}</span>
+            {% endif %}
+          </label>
+          <input type="number" step="any" id="price_{{ key }}" name="price_{{ key }}"
+                 placeholder="not set"
+                 value="{% if metal_prices.get(key) %}{{ '%g'|format(metal_prices[key].price) }}{% endif %}">
+        </div>
+      {% endfor %}
+      <button type="submit" class="btn" style="width:100%;">Update Prices</button>
+    </form>
+  </div>
+
+  <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">{{ "Edit holding" if editing else "Add a metal holding" }}</h2>
-    <p class="field-hint" style="margin-bottom:16px;">Purchase and current prices are <strong>per gram</strong>.</p>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Enter what you paid <strong>per gram</strong>. Current value uses the market price above.
+    </p>
     {% if error %}
       <div class="error-box">{{ error }}</div>
     {% endif %}
@@ -68,14 +100,8 @@
 
       <div class="form-group">
         <label for="purchase_price">Purchase price (₹ / gram)</label>
-        <input type="number" step="any" id="purchase_price" name="purchase_price" placeholder="e.g. 62.50"
+        <input type="number" step="any" id="purchase_price" name="purchase_price" placeholder="e.g. 6250"
                value="{{ form_data.purchase_price }}" required>
-      </div>
-
-      <div class="form-group">
-        <label for="current_price">Current price (₹ / gram)</label>
-        <input type="number" step="any" id="current_price" name="current_price" placeholder="e.g. 71.20"
-               value="{{ form_data.current_price }}" required>
       </div>
 
       <div class="form-group">
@@ -116,7 +142,12 @@
             </td>
             <td>{{ "%.3f"|format(m.grams) }}</td>
             <td>{{ (m.purchase_price)|money }}</td>
-            <td>{{ (m.current_price)|money }}</td>
+            <td>
+              {{ (m.current_price)|money }}
+              {% if not m.price_is_market %}
+                <div class="muted" style="font-size:12px;">from purchase</div>
+              {% endif %}
+            </td>
             <td>{{ (m.cost)|money }}</td>
             <td>{{ (m.value)|money }}</td>
             <td>

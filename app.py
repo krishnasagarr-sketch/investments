@@ -118,6 +118,26 @@ def init_db():
         )
     """)
 
+    # Live market price per gram for each metal (one row per metal type).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS metal_prices (
+            metal TEXT PRIMARY KEY,
+            price_per_gram REAL NOT NULL,
+            updated_on TEXT NOT NULL
+        )
+    """)
+    # Seed from existing holdings: use each metal's most recent holding price.
+    priced = {r["metal"] for r in conn.execute("SELECT metal FROM metal_prices")}
+    for row in conn.execute(
+        "SELECT metal, current_price FROM metals ORDER BY purchase_date DESC, id DESC"
+    ):
+        if row["metal"] not in priced:
+            conn.execute(
+                "INSERT INTO metal_prices (metal, price_per_gram, updated_on) VALUES (?, ?, ?)",
+                (row["metal"], row["current_price"], date.today().isoformat()),
+            )
+            priced.add(row["metal"])
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS deposits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -886,15 +906,27 @@ def delete_deposit(deposit_id):
 
 
 # ---------- Metals ----------
+def get_metal_prices(db) -> dict:
+    """metal key -> {"price": per-gram rate, "updated_on": iso date}."""
+    return {
+        r["metal"]: {"price": r["price_per_gram"], "updated_on": r["updated_on"]}
+        for r in db.execute("SELECT * FROM metal_prices").fetchall()
+    }
+
+
 def list_metals(db):
-    """Metal holdings with computed cost, current value and gain/loss.
-    Purchase and current prices are stored per gram."""
+    """Metal holdings with cost, current value and gain/loss. The current price
+    per gram comes from the metal_prices table (falling back to the price
+    recorded on the holding itself if that metal has no market price set)."""
+    prices = get_metal_prices(db)
     rows = []
     for m in db.execute(
         "SELECT * FROM metals ORDER BY purchase_date DESC, id DESC"
     ).fetchall():
+        info = prices.get(m["metal"])
+        current_price = info["price"] if info else m["purchase_price"]
         cost = m["grams"] * m["purchase_price"]
-        value = m["grams"] * m["current_price"]
+        value = m["grams"] * current_price
         gain = value - cost
         rows.append({
             "id": m["id"],
@@ -903,7 +935,9 @@ def list_metals(db):
             "description": m["description"],
             "grams": m["grams"],
             "purchase_price": m["purchase_price"],
-            "current_price": m["current_price"],
+            "current_price": current_price,
+            "price_is_market": info is not None,
+            "price_updated_on": info["updated_on"] if info else None,
             "purchase_date": m["purchase_date"],
             "cost": cost,
             "value": value,
@@ -914,35 +948,31 @@ def list_metals(db):
 
 
 def parse_metal_form(form_data) -> dict:
-    """Validate the metal form. Returns DB column values or raises ValueError."""
+    """Validate the holding form. Returns DB column values or raises ValueError."""
     metal = form_data["metal"]
     if metal not in METAL_TYPES:
         raise ValueError("Please choose a metal.")
     try:
         grams = float(form_data["grams"])
         purchase_price = float(form_data["purchase_price"])
-        current_price = float(form_data["current_price"])
     except (TypeError, ValueError):
-        raise ValueError("Please enter valid numbers for grams and prices.")
+        raise ValueError("Please enter valid numbers for grams and price.")
     if grams <= 0:
         raise ValueError("Weight in grams must be greater than 0.")
     if purchase_price <= 0:
         raise ValueError("Purchase price must be greater than 0.")
-    if current_price <= 0:
-        raise ValueError("Current price must be greater than 0.")
     return {
         "metal": metal,
         "description": form_data["description"].strip(),
         "grams": grams,
         "purchase_price": purchase_price,
-        "current_price": current_price,
         "purchase_date": form_data["purchase_date"] or str(date.today()),
     }
 
 
 BLANK_METAL_FORM = {
     "metal": "gold", "description": "", "grams": "",
-    "purchase_price": "", "current_price": "", "purchase_date": None,
+    "purchase_price": "", "purchase_date": None,
 }
 
 
@@ -952,17 +982,19 @@ def _metal_to_form_data(row) -> dict:
         "description": row["description"],
         "grams": _trim_number(row["grams"]),
         "purchase_price": _trim_number(row["purchase_price"]),
-        "current_price": _trim_number(row["current_price"]),
         "purchase_date": row["purchase_date"],
     }
 
 
 def _render_metals(db, **kwargs):
     metals = list_metals(db)
+    prices = get_metal_prices(db)
     return render_template(
         "metals.html",
         metals=metals,
         metal_types=METAL_TYPES,
+        metal_prices=prices,
+        prices_missing=sorted({m["metal"] for m in metals if not m["price_is_market"]}),
         total_cost=sum(m["cost"] for m in metals),
         total_value=sum(m["value"] for m in metals),
         total_gain=sum(m["gain"] for m in metals),
@@ -983,6 +1015,10 @@ def metals_page():
             form_data[key] = request.form.get(key, form_data[key])
         try:
             cols = parse_metal_form(form_data)
+            # Freeze a current_price on the row (legacy column); the live value
+            # comes from metal_prices, but seed it with the market rate if known.
+            market = get_metal_prices(db).get(cols["metal"])
+            cols["current_price"] = market["price"] if market else cols["purchase_price"]
             db.execute(
                 """INSERT INTO metals
                    (metal, description, grams, purchase_price, current_price, purchase_date)
@@ -995,6 +1031,31 @@ def metals_page():
             error = str(e)
 
     return _render_metals(db, error=error, form_data=form_data, editing=None)
+
+
+@app.route("/metals/prices", methods=["POST"])
+def update_metal_prices():
+    db = get_db()
+    today = str(date.today())
+    for metal in METAL_TYPES:
+        raw = request.form.get(f"price_{metal}", "").strip()
+        if raw == "":
+            continue
+        try:
+            price = float(raw)
+        except ValueError:
+            continue
+        if price <= 0:
+            continue
+        db.execute(
+            """INSERT INTO metal_prices (metal, price_per_gram, updated_on)
+               VALUES (?, ?, ?)
+               ON CONFLICT(metal) DO UPDATE SET price_per_gram = excluded.price_per_gram,
+                                                updated_on = excluded.updated_on""",
+            (metal, price, today),
+        )
+    db.commit()
+    return redirect(url_for("metals_page"))
 
 
 @app.route("/metals/<int:metal_id>/edit", methods=["GET", "POST"])
@@ -1016,8 +1077,7 @@ def edit_metal(metal_id):
             db.execute(
                 """UPDATE metals SET
                      metal = :metal, description = :description, grams = :grams,
-                     purchase_price = :purchase_price, current_price = :current_price,
-                     purchase_date = :purchase_date
+                     purchase_price = :purchase_price, purchase_date = :purchase_date
                    WHERE id = :id""",
                 cols,
             )
