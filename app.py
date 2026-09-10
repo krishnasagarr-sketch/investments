@@ -21,6 +21,15 @@ TENURE_UNITS = {"months": "Months", "days": "Days"}
 
 DAYS_PER_YEAR = 365  # simple day-count convention used for interest on day tenures
 
+# Precious-metal holdings: internal key -> human label
+METAL_TYPES = {
+    "gold": "Gold",
+    "silver": "Silver",
+    "platinum": "Platinum",
+    "palladium": "Palladium",
+    "other": "Other",
+}
+
 
 # ---------- Database helpers ----------
 def get_db():
@@ -56,6 +65,19 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             bank_id TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL
+        )
+    """)
+
+    # Precious-metal holdings. Prices are per gram.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS metals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            metal TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            grams REAL NOT NULL,
+            purchase_price REAL NOT NULL,
+            current_price REAL NOT NULL,
+            purchase_date TEXT NOT NULL
         )
     """)
 
@@ -824,6 +846,158 @@ def delete_deposit(deposit_id):
     db.execute("DELETE FROM deposits WHERE id = ?", (deposit_id,))
     db.commit()
     return redirect(url_for("dashboard"))
+
+
+# ---------- Metals ----------
+def list_metals(db):
+    """Metal holdings with computed cost, current value and gain/loss.
+    Purchase and current prices are stored per gram."""
+    rows = []
+    for m in db.execute(
+        "SELECT * FROM metals ORDER BY purchase_date DESC, id DESC"
+    ).fetchall():
+        cost = m["grams"] * m["purchase_price"]
+        value = m["grams"] * m["current_price"]
+        gain = value - cost
+        rows.append({
+            "id": m["id"],
+            "metal": m["metal"],
+            "metal_label": METAL_TYPES.get(m["metal"], m["metal"].title()),
+            "description": m["description"],
+            "grams": m["grams"],
+            "purchase_price": m["purchase_price"],
+            "current_price": m["current_price"],
+            "purchase_date": m["purchase_date"],
+            "cost": cost,
+            "value": value,
+            "gain": gain,
+            "gain_pct": (gain / cost * 100.0) if cost else 0.0,
+        })
+    return rows
+
+
+def parse_metal_form(form_data) -> dict:
+    """Validate the metal form. Returns DB column values or raises ValueError."""
+    metal = form_data["metal"]
+    if metal not in METAL_TYPES:
+        raise ValueError("Please choose a metal.")
+    try:
+        grams = float(form_data["grams"])
+        purchase_price = float(form_data["purchase_price"])
+        current_price = float(form_data["current_price"])
+    except (TypeError, ValueError):
+        raise ValueError("Please enter valid numbers for grams and prices.")
+    if grams <= 0:
+        raise ValueError("Weight in grams must be greater than 0.")
+    if purchase_price <= 0:
+        raise ValueError("Purchase price must be greater than 0.")
+    if current_price <= 0:
+        raise ValueError("Current price must be greater than 0.")
+    return {
+        "metal": metal,
+        "description": form_data["description"].strip(),
+        "grams": grams,
+        "purchase_price": purchase_price,
+        "current_price": current_price,
+        "purchase_date": form_data["purchase_date"] or str(date.today()),
+    }
+
+
+BLANK_METAL_FORM = {
+    "metal": "gold", "description": "", "grams": "",
+    "purchase_price": "", "current_price": "", "purchase_date": None,
+}
+
+
+def _metal_to_form_data(row) -> dict:
+    return {
+        "metal": row["metal"],
+        "description": row["description"],
+        "grams": _trim_number(row["grams"]),
+        "purchase_price": _trim_number(row["purchase_price"]),
+        "current_price": _trim_number(row["current_price"]),
+        "purchase_date": row["purchase_date"],
+    }
+
+
+def _render_metals(db, **kwargs):
+    metals = list_metals(db)
+    return render_template(
+        "metals.html",
+        metals=metals,
+        metal_types=METAL_TYPES,
+        total_cost=sum(m["cost"] for m in metals),
+        total_value=sum(m["value"] for m in metals),
+        total_gain=sum(m["gain"] for m in metals),
+        active_tab="metals",
+        **kwargs,
+    )
+
+
+@app.route("/metals", methods=["GET", "POST"])
+def metals_page():
+    db = get_db()
+    error = None
+    form_data = dict(BLANK_METAL_FORM)
+    form_data["purchase_date"] = str(date.today())
+
+    if request.method == "POST":
+        for key in form_data:
+            form_data[key] = request.form.get(key, form_data[key])
+        try:
+            cols = parse_metal_form(form_data)
+            db.execute(
+                """INSERT INTO metals
+                   (metal, description, grams, purchase_price, current_price, purchase_date)
+                   VALUES (:metal, :description, :grams, :purchase_price, :current_price, :purchase_date)""",
+                cols,
+            )
+            db.commit()
+            return redirect(url_for("metals_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return _render_metals(db, error=error, form_data=form_data, editing=None)
+
+
+@app.route("/metals/<int:metal_id>/edit", methods=["GET", "POST"])
+def edit_metal(metal_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM metals WHERE id = ?", (metal_id,)).fetchone()
+    if row is None:
+        return redirect(url_for("metals_page"))
+
+    error = None
+    form_data = _metal_to_form_data(row)
+
+    if request.method == "POST":
+        for key in form_data:
+            form_data[key] = request.form.get(key, form_data[key])
+        try:
+            cols = parse_metal_form(form_data)
+            cols["id"] = metal_id
+            db.execute(
+                """UPDATE metals SET
+                     metal = :metal, description = :description, grams = :grams,
+                     purchase_price = :purchase_price, current_price = :current_price,
+                     purchase_date = :purchase_date
+                   WHERE id = :id""",
+                cols,
+            )
+            db.commit()
+            return redirect(url_for("metals_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return _render_metals(db, error=error, form_data=form_data, editing=metal_id)
+
+
+@app.route("/metals/<int:metal_id>/delete", methods=["POST"])
+def delete_metal(metal_id):
+    db = get_db()
+    db.execute("DELETE FROM metals WHERE id = ?", (metal_id,))
+    db.commit()
+    return redirect(url_for("metals_page"))
 
 
 if __name__ == "__main__":

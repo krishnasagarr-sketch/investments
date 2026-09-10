@@ -134,6 +134,7 @@
   .compact td .muted{font-size:11px !important;}
 
   .positive{color:var(--green); font-weight:600;}
+  .negative{color:var(--red); font-weight:600;}
   .muted{color:var(--text-dim);}
 
   .badge{
@@ -286,6 +287,7 @@
     <a href="{{ url_for('dashboard') }}" class="{% if active_tab == 'dashboard' %}active{% endif %}">Deposits</a>
     <a href="{{ url_for('depositors_page') }}" class="{% if active_tab == 'depositors' %}active{% endif %}">Depositors</a>
     <a href="{{ url_for('banks_page') }}" class="{% if active_tab == 'banks' %}active{% endif %}">Banks</a>
+    <a href="{{ url_for('metals_page') }}" class="{% if active_tab == 'metals' %}active{% endif %}">Metals</a>
   </nav>
   {% block content %}{% endblock %}
 </div>

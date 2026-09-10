@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Metals — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('dashboard') }}" class="btn secondary">← Back to Dashboard</a>
+{% endblock %}
+
+{% macro gl(x) -%}
+  <span class="{{ 'positive' if x >= 0 else 'negative' }}">{{ "+" if x >= 0 else "−" }}${{ "%.2f"|format(x | abs) }}</span>
+{%- endmacro %}
+
+{% block content %}
+
+  <div class="card">
+    <div class="summary-grid">
+      <div class="summary-item">
+        <div class="label">Total Cost</div>
+        <div class="value">${{ "%.2f"|format(total_cost) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Current Value</div>
+        <div class="value">${{ "%.2f"|format(total_value) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Unrealised Gain / Loss</div>
+        <div class="value {{ 'positive' if total_gain >= 0 else 'negative' }}">
+          {{ "+" if total_gain >= 0 else "−" }}${{ "%.2f"|format(total_gain | abs) }}
+        </div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Return</div>
+        <div class="value {{ 'positive' if total_gain >= 0 else 'negative' }}">
+          {% if total_cost %}{{ "%.1f"|format(total_gain / total_cost * 100) }}%{% else %}—{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">{{ "Edit holding" if editing else "Add a metal holding" }}</h2>
+    <p class="field-hint" style="margin-bottom:16px;">Purchase and current prices are <strong>per gram</strong>.</p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST"
+          action="{% if editing %}{{ url_for('edit_metal', metal_id=editing) }}{% else %}{{ url_for('metals_page') }}{% endif %}">
+      <div class="form-group">
+        <label for="metal">Metal</label>
+        <select id="metal" name="metal">
+          {% for key, label in metal_types.items() %}
+            <option value="{{ key }}" {% if form_data.metal == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="description">Description <span class="muted">(optional)</span></label>
+        <input type="text" id="description" name="description" placeholder="e.g. 22K coin, sovereign, bar"
+               value="{{ form_data.description }}">
+      </div>
+
+      <div class="form-group">
+        <label for="grams">Weight (grams)</label>
+        <input type="number" step="any" id="grams" name="grams" placeholder="e.g. 10"
+               value="{{ form_data.grams }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="purchase_price">Purchase price ($ / gram)</label>
+        <input type="number" step="any" id="purchase_price" name="purchase_price" placeholder="e.g. 62.50"
+               value="{{ form_data.purchase_price }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="current_price">Current price ($ / gram)</label>
+        <input type="number" step="any" id="current_price" name="current_price" placeholder="e.g. 71.20"
+               value="{{ form_data.current_price }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="purchase_date">Purchase date</label>
+        <input type="date" id="purchase_date" name="purchase_date" value="{{ form_data.purchase_date }}" required>
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">{{ "Save Changes" if editing else "Add Holding" }}</button>
+      {% if editing %}
+        <a href="{{ url_for('metals_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center;">Cancel</a>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="card">
+    {% if metals %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Metal</th>
+            <th>Grams</th>
+            <th>Buy $/g</th>
+            <th>Now $/g</th>
+            <th>Cost</th>
+            <th>Value</th>
+            <th>Gain / Loss</th>
+            <th>Bought</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in metals %}
+          <tr>
+            <td>
+              <strong>{{ m.metal_label }}</strong>
+              {% if m.description %}<div class="muted" style="font-size:12px;">{{ m.description }}</div>{% endif %}
+            </td>
+            <td>{{ "%.3f"|format(m.grams) }}</td>
+            <td>${{ "%.2f"|format(m.purchase_price) }}</td>
+            <td>${{ "%.2f"|format(m.current_price) }}</td>
+            <td>${{ "%.2f"|format(m.cost) }}</td>
+            <td>${{ "%.2f"|format(m.value) }}</td>
+            <td>
+              {{ gl(m.gain) }}
+              <div class="muted" style="font-size:12px;">{{ "%+.1f"|format(m.gain_pct) }}%</div>
+            </td>
+            <td>{{ m.purchase_date }}</td>
+            <td>
+              <div class="row-actions">
+                <a href="{{ url_for('edit_metal', metal_id=m.id) }}" class="btn link">Edit</a>
+                <form class="inline" method="POST" action="{{ url_for('delete_metal', metal_id=m.id) }}">
+                  <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="4"><strong>Total</strong></td>
+            <td><strong>${{ "%.2f"|format(total_cost) }}</strong></td>
+            <td><strong>${{ "%.2f"|format(total_value) }}</strong></td>
+            <td><strong>{{ gl(total_gain) }}</strong></td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No metal holdings yet. Add one above.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}
