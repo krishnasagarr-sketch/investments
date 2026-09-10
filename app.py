@@ -9,6 +9,43 @@ app = Flask(__name__)
 
 DB_PATH = Path(__file__).parent / "fixed_deposits.db"
 
+# All amounts in the app are Indian rupees.
+CURRENCY_SYMBOL = "₹"  # ₹
+
+
+def _indian_group(digits: str) -> str:
+    """Group an integer digit-string the Indian way: 12,34,56,789."""
+    if len(digits) <= 3:
+        return digits
+    head, tail = digits[:-3], digits[-3:]
+    parts = []
+    while len(head) > 2:
+        parts.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        parts.insert(0, head)
+    return ",".join(parts) + "," + tail
+
+
+def format_rupees(value, decimals=2) -> str:
+    """Format a number as ₹12,34,567.89 (Indian grouping)."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    negative = value < 0
+    text = f"{abs(value):.{decimals}f}"
+    int_part, _, frac_part = text.partition(".")
+    out = CURRENCY_SYMBOL + _indian_group(int_part)
+    if frac_part:
+        out += "." + frac_part
+    return ("−" + out) if negative else out
+
+
+app.jinja_env.filters["money"] = lambda v: format_rupees(v, 2)
+app.jinja_env.filters["money0"] = lambda v: format_rupees(v, 0)
+app.jinja_env.globals["CURRENCY_SYMBOL"] = CURRENCY_SYMBOL
+
 # Supported deposit types: internal key -> human label
 DEPOSIT_TYPES = {
     "cumulative": "Cumulative (reinvested)",

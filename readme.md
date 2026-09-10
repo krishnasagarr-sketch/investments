@@ -2,6 +2,8 @@
 
 A web app for tracking bank deposits — built with Flask and SQLite. Add each deposit's amount, rate, and tenure, and it calculates the maturity amount, tracks maturity dates, and shows total interest earned across all your deposits.
 
+All amounts are shown in Indian rupees (`₹`), with lakh/crore digit grouping (e.g. `₹12,34,567.89`).
+
 Supports three deposit types:
 
 | Type | How interest works | Maturity formula |
@@ -64,7 +66,7 @@ Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created aut
   All charts are pure inline SVG — no JavaScript or chart library. The selection is kept in the URL (`/chart?type=pie&metric=maturity`).
 - **Depositors** — a separate master list (`depositors` table) of people who hold deposits, each with a unique **holder ID** (customer number, PAN, etc.) and a **name**. Managed on the **Depositors** tab, which also shows each depositor's **total invested** (principal only, no interest), **current value** and **total maturity value**, with a combined total across everyone. A depositor can't be removed while any deposit references it.
 - **Banks** — a separate master list (`banks` table), each with a unique **bank ID** (IFSC / branch code / any identifier) and a **name**. Managed on the **Banks** tab; a bank can't be removed while any deposit references it.
-- **Metals** — record precious-metal holdings (`metals` table): metal (gold / silver / platinum / palladium / other), an optional description, weight in **grams**, and **purchase / current price per gram**. The **Metals** tab shows cost, current value, and unrealised gain/loss per holding and overall; edit a holding to update its current price as the market moves.
+- **Metals** — record precious-metal holdings (`metals` table): metal (gold / silver / platinum / palladium / other), an optional description, weight in **grams**, and **purchase / current price in ₹ per gram**. The **Metals** tab shows cost, current value, and unrealised gain/loss per holding and overall; edit a holding to update its current price as the market moves.
 - **Add deposits** — pick the depositor and the bank from dropdowns, then deposit type, amount (lump-sum principal, or monthly installment for an RD), annual interest rate, tenure (months or days), compounding frequency (cumulative only), start date. The form relabels fields, switches the tenure unit, and shows/hides compounding frequency based on the type you pick.
 - **Edit deposits** — the **Edit** link on each dashboard row opens the same form pre-filled; saving updates the row in place.
 - **Holder / bank tracking** — each deposit is linked to its depositor and its bank; the dashboard shows the depositor's name + holder ID and the bank's name + bank ID (older, unlinked rows show "—")

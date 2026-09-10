@@ -6,7 +6,7 @@
 {% endblock %}
 
 {% macro gl(x) -%}
-  <span class="{{ 'positive' if x >= 0 else 'negative' }}">{{ "+" if x >= 0 else "−" }}${{ "%.2f"|format(x | abs) }}</span>
+  <span class="{{ 'positive' if x >= 0 else 'negative' }}">{{ "+" if x >= 0 else "−" }}{{ (x | abs)|money }}</span>
 {%- endmacro %}
 
 {% block content %}
@@ -15,16 +15,16 @@
     <div class="summary-grid">
       <div class="summary-item">
         <div class="label">Total Cost</div>
-        <div class="value">${{ "%.2f"|format(total_cost) }}</div>
+        <div class="value">{{ (total_cost)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Current Value</div>
-        <div class="value">${{ "%.2f"|format(total_value) }}</div>
+        <div class="value">{{ (total_value)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Unrealised Gain / Loss</div>
         <div class="value {{ 'positive' if total_gain >= 0 else 'negative' }}">
-          {{ "+" if total_gain >= 0 else "−" }}${{ "%.2f"|format(total_gain | abs) }}
+          {{ "+" if total_gain >= 0 else "−" }}{{ (total_gain | abs)|money }}
         </div>
       </div>
       <div class="summary-item">
@@ -67,13 +67,13 @@
       </div>
 
       <div class="form-group">
-        <label for="purchase_price">Purchase price ($ / gram)</label>
+        <label for="purchase_price">Purchase price (₹ / gram)</label>
         <input type="number" step="any" id="purchase_price" name="purchase_price" placeholder="e.g. 62.50"
                value="{{ form_data.purchase_price }}" required>
       </div>
 
       <div class="form-group">
-        <label for="current_price">Current price ($ / gram)</label>
+        <label for="current_price">Current price (₹ / gram)</label>
         <input type="number" step="any" id="current_price" name="current_price" placeholder="e.g. 71.20"
                value="{{ form_data.current_price }}" required>
       </div>
@@ -98,8 +98,8 @@
           <tr>
             <th>Metal</th>
             <th>Grams</th>
-            <th>Buy $/g</th>
-            <th>Now $/g</th>
+            <th>Buy ₹/g</th>
+            <th>Now ₹/g</th>
             <th>Cost</th>
             <th>Value</th>
             <th>Gain / Loss</th>
@@ -115,10 +115,10 @@
               {% if m.description %}<div class="muted" style="font-size:12px;">{{ m.description }}</div>{% endif %}
             </td>
             <td>{{ "%.3f"|format(m.grams) }}</td>
-            <td>${{ "%.2f"|format(m.purchase_price) }}</td>
-            <td>${{ "%.2f"|format(m.current_price) }}</td>
-            <td>${{ "%.2f"|format(m.cost) }}</td>
-            <td>${{ "%.2f"|format(m.value) }}</td>
+            <td>{{ (m.purchase_price)|money }}</td>
+            <td>{{ (m.current_price)|money }}</td>
+            <td>{{ (m.cost)|money }}</td>
+            <td>{{ (m.value)|money }}</td>
             <td>
               {{ gl(m.gain) }}
               <div class="muted" style="font-size:12px;">{{ "%+.1f"|format(m.gain_pct) }}%</div>
@@ -138,8 +138,8 @@
         <tfoot>
           <tr>
             <td colspan="4"><strong>Total</strong></td>
-            <td><strong>${{ "%.2f"|format(total_cost) }}</strong></td>
-            <td><strong>${{ "%.2f"|format(total_value) }}</strong></td>
+            <td><strong>{{ (total_cost)|money }}</strong></td>
+            <td><strong>{{ (total_value)|money }}</strong></td>
             <td><strong>{{ gl(total_gain) }}</strong></td>
             <td colspan="2"></td>
           </tr>

@@ -5,10 +5,6 @@
   <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
 {% endblock %}
 
-{% macro money(x) -%}
-  ${{ "%.2f"|format(x) }}
-{%- endmacro %}
-
 {% block content %}
 
   <div class="card">
@@ -19,15 +15,15 @@
       </div>
       <div class="summary-item">
         <div class="label">Total Invested</div>
-        <div class="value">{{ money(overall.invested) }}</div>
+        <div class="value">{{ (overall.invested)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Current Value</div>
-        <div class="value">{{ money(overall.current) }}</div>
+        <div class="value">{{ (overall.current)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Total Maturity Value</div>
-        <div class="value">{{ money(overall.maturity) }}</div>
+        <div class="value">{{ (overall.maturity)|money }}</div>
       </div>
     </div>
   </div>
@@ -54,9 +50,9 @@
             <td>{% if r.holder != ns.prev %}<strong>{{ r.holder }}</strong>{% set ns.prev = r.holder %}{% endif %}</td>
             <td>{{ r.bank }}</td>
             <td>{{ r.count }}</td>
-            <td>{{ money(r.invested) }}</td>
-            <td>{{ money(r.current) }}</td>
-            <td>{{ money(r.maturity) }}</td>
+            <td>{{ (r.invested)|money }}</td>
+            <td>{{ (r.current)|money }}</td>
+            <td>{{ (r.maturity)|money }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -64,9 +60,9 @@
           <tr>
             <td colspan="2"><strong>All holdings</strong></td>
             <td><strong>{{ overall.count }}</strong></td>
-            <td><strong>{{ money(overall.invested) }}</strong></td>
-            <td><strong>{{ money(overall.current) }}</strong></td>
-            <td><strong>{{ money(overall.maturity) }}</strong></td>
+            <td><strong>{{ (overall.invested)|money }}</strong></td>
+            <td><strong>{{ (overall.current)|money }}</strong></td>
+            <td><strong>{{ (overall.maturity)|money }}</strong></td>
           </tr>
         </tfoot>
       </table>
@@ -88,9 +84,9 @@
         <tr>
           <td><strong>{{ r.name }}</strong></td>
           <td>{{ r.count }}</td>
-          <td>{{ money(r.invested) }}</td>
-          <td>{{ money(r.current) }}</td>
-          <td>{{ money(r.maturity) }}</td>
+          <td>{{ (r.invested)|money }}</td>
+          <td>{{ (r.current)|money }}</td>
+          <td>{{ (r.maturity)|money }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -110,9 +106,9 @@
         <tr>
           <td><strong>{{ r.name }}</strong></td>
           <td>{{ r.count }}</td>
-          <td>{{ money(r.invested) }}</td>
-          <td>{{ money(r.current) }}</td>
-          <td>{{ money(r.maturity) }}</td>
+          <td>{{ (r.invested)|money }}</td>
+          <td>{{ (r.current)|money }}</td>
+          <td>{{ (r.maturity)|money }}</td>
         </tr>
         {% endfor %}
       </tbody>

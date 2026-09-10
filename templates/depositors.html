@@ -48,9 +48,9 @@
             <td><strong>{{ dep.name }}</strong></td>
             <td>{{ dep.holder_id }}</td>
             <td>{{ dep.deposit_count }}</td>
-            <td>${{ "%.2f"|format(dep.total_invested) }}</td>
-            <td>${{ "%.2f"|format(dep.total_current) }}</td>
-            <td>${{ "%.2f"|format(dep.total_maturity) }}</td>
+            <td>{{ (dep.total_invested)|money }}</td>
+            <td>{{ (dep.total_current)|money }}</td>
+            <td>{{ (dep.total_maturity)|money }}</td>
             <td>
               {% if dep.deposit_count == 0 %}
                 <form class="inline" method="POST"
@@ -69,9 +69,9 @@
         <tfoot>
           <tr>
             <td colspan="3"><strong>All depositors</strong></td>
-            <td><strong>${{ "%.2f"|format(grand_invested) }}</strong></td>
-            <td><strong>${{ "%.2f"|format(grand_current) }}</strong></td>
-            <td><strong>${{ "%.2f"|format(grand_maturity) }}</strong></td>
+            <td><strong>{{ (grand_invested)|money }}</strong></td>
+            <td><strong>{{ (grand_current)|money }}</strong></td>
+            <td><strong>{{ (grand_maturity)|money }}</strong></td>
             <td></td>
           </tr>
         </tfoot>

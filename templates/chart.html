@@ -35,10 +35,10 @@
               height="11" rx="2" fill="{{ colour }}" />
         {% if bw > 84 %}
           <text x="{{ gutter + bw - 5 }}" y="{{ by + 6 }}" text-anchor="end"
-                dominant-baseline="middle" font-size="9" fill="#fff">${{ "{:,.0f}".format(value) }}</text>
+                dominant-baseline="middle" font-size="9" fill="#fff">{{ (value)|money0 }}</text>
         {% else %}
           <text x="{{ gutter + bw + 4 }}" y="{{ by + 6 }}" dominant-baseline="middle"
-                font-size="9" fill="var(--text-dim)">${{ "{:,.0f}".format(value) }}</text>
+                font-size="9" fill="var(--text-dim)">{{ (value)|money0 }}</text>
         {% endif %}
       {% endfor %}
     {% endfor %}
@@ -60,13 +60,13 @@
           <div style="display:flex; align-items:center; gap:8px; padding:3px 0;">
             <span class="swatch" style="background:{{ s.colour }};"></span>
             <span style="flex:1;">{{ s.label }}</span>
-            <span class="muted">${{ "{:,.0f}".format(s.value) }}</span>
+            <span class="muted">{{ (s.value)|money0 }}</span>
             <span style="width:52px; text-align:right; font-weight:600;">{{ "%.1f"|format(s.pct) }}%</span>
           </div>
         {% endfor %}
       </div>
     </div>
-    <p class="field-hint">Showing <strong>{{ metric_label|lower }}</strong>, total ${{ "{:,.0f}".format(pie.total) }}.</p>
+    <p class="field-hint">Showing <strong>{{ metric_label|lower }}</strong>, total {{ (pie.total)|money0 }}.</p>
   {% else %}
     <div class="empty-state"><p>No deposits yet.</p></div>
   {% endif %}

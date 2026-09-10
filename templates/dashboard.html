@@ -11,19 +11,19 @@
     <div class="summary-grid">
       <div class="summary-item">
         <div class="label">Total Invested</div>
-        <div class="value">${{ "%.2f"|format(total_invested) }}</div>
+        <div class="value">{{ (total_invested)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Current Value</div>
-        <div class="value">${{ "%.2f"|format(total_current) }}</div>
+        <div class="value">{{ (total_current)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Total Maturity Value</div>
-        <div class="value">${{ "%.2f"|format(total_maturity) }}</div>
+        <div class="value">{{ (total_maturity)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Total Interest at Maturity</div>
-        <div class="value positive">+${{ "%.2f"|format(total_interest) }}</div>
+        <div class="value positive">+{{ (total_interest)|money }}</div>
       </div>
       <div class="summary-item">
         <div class="label">Number of Deposits</div>
@@ -70,13 +70,13 @@
               <span class="badge type type-{{ r.deposit_type }}">{{ r.deposit_type_label }}</span>
             </td>
             <td>
-              ${{ "%.2f"|format(r.invested) }}
+              {{ (r.invested)|money }}
               {% if r.deposit_type == "recurring" %}
                 <div class="muted" style="font-size:12px;">
-                  ${{ "%.2f"|format(r.monthly_installment) }}/mo &times; {{ r.tenure_months }}
+                  {{ (r.monthly_installment)|money }}/mo &times; {{ r.tenure_months }}
                 </div>
                 <div class="muted" style="font-size:12px;">
-                  {{ r.installments_paid }}/{{ r.total_installments }} paid &middot; ${{ "%.2f"|format(r.paid_in) }} in
+                  {{ r.installments_paid }}/{{ r.total_installments }} paid &middot; {{ (r.paid_in)|money }} in
                 </div>
               {% endif %}
             </td>
@@ -84,12 +84,12 @@
             <td>{{ r.tenure_label }}</td>
             <td>{{ r.start_date }}</td>
             <td>
-              ${{ "%.2f"|format(r.current_value) }}
-              <div class="muted" style="font-size:12px;">+${{ "%.2f"|format(r.accrued_interest) }} accrued</div>
+              {{ (r.current_value)|money }}
+              <div class="muted" style="font-size:12px;">+{{ (r.accrued_interest)|money }} accrued</div>
             </td>
             <td>
-              ${{ "%.2f"|format(r.maturity_amount) }}
-              <div class="muted" style="font-size:12px; color:var(--green); font-weight:600;">+${{ "%.2f"|format(r.interest_earned) }} interest</div>
+              {{ (r.maturity_amount)|money }}
+              <div class="muted" style="font-size:12px; color:var(--green); font-weight:600;">+{{ (r.interest_earned)|money }} interest</div>
             </td>
             <td>
               {% if r.is_matured %}
