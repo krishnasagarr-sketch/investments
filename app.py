@@ -392,7 +392,50 @@ def depositors_with_totals(db):
     return rows
 
 
+def _agg_blank():
+    return {"count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0}
+
+
+def _agg_add(acc, s):
+    acc["count"] += 1
+    acc["invested"] += s["invested"]
+    acc["current"] += s["current_value"]
+    acc["maturity"] += s["maturity_amount"]
+
+
+def holdings_summary(db):
+    """Aggregate every deposit by (holder, bank), by holder, and by bank."""
+    by_pair, by_holder, by_bank = {}, {}, {}
+    overall = _agg_blank()
+
+    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+        s = summarise_deposit(d)
+        holder = s["holder_name"] or "—"
+        bank = s["bank_name"] or "—"
+        _agg_add(by_pair.setdefault((holder, bank), _agg_blank()), s)
+        _agg_add(by_holder.setdefault(holder, _agg_blank()), s)
+        _agg_add(by_bank.setdefault(bank, _agg_blank()), s)
+        _agg_add(overall, s)
+
+    pairs = [
+        {"holder": h, "bank": b, **v}
+        for (h, b), v in sorted(by_pair.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))
+    ]
+    holders = [{"name": h, **v} for h, v in sorted(by_holder.items(), key=lambda kv: kv[0].lower())]
+    banks = [{"name": b, **v} for b, v in sorted(by_bank.items(), key=lambda kv: kv[0].lower())]
+    return {"pairs": pairs, "holders": holders, "banks": banks, "overall": overall}
+
+
 # ---------- Routes ----------
+@app.route("/summary")
+def summary_page():
+    db = get_db()
+    return render_template(
+        "summary.html", active_tab="summary", **holdings_summary(db)
+    )
+
+
+
 @app.route("/")
 def dashboard():
     db = get_db()

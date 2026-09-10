@@ -98,13 +98,13 @@
 
   .table-scroll{overflow-x:auto;}
   /* Keep the row actions (last column) visible while the table scrolls. */
-  .table-scroll table tr > :last-child{
+  .table-scroll.sticky-last table tr > :last-child{
     position:sticky;
     right:0;
     background:var(--card);
     box-shadow:-8px 0 8px -8px rgba(0,0,0,0.12);
   }
-  .table-scroll thead tr > :last-child{z-index:1;}
+  .table-scroll.sticky-last thead tr > :last-child{z-index:1;}
   table{
     width:100%;
     border-collapse:separate;   /* not "collapse" — sticky cells break with collapsed borders */
@@ -222,6 +222,7 @@
     <div>{% block header_action %}{% endblock %}</div>
   </header>
   <nav class="tabs">
+    <a href="{{ url_for('summary_page') }}" class="{% if active_tab == 'summary' %}active{% endif %}">Dashboard</a>
     <a href="{{ url_for('dashboard') }}" class="{% if active_tab == 'dashboard' %}active{% endif %}">Deposits</a>
     <a href="{{ url_for('depositors_page') }}" class="{% if active_tab == 'depositors' %}active{% endif %}">Depositors</a>
     <a href="{{ url_for('banks_page') }}" class="{% if active_tab == 'banks' %}active{% endif %}">Banks</a>

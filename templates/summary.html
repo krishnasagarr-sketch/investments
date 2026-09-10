@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
+{% endblock %}
+
+{% macro money(x) -%}
+  ${{ "%.2f"|format(x) }}
+{%- endmacro %}
+
+{% block content %}
+
+  <div class="card">
+    <div class="summary-grid">
+      <div class="summary-item">
+        <div class="label">Deposits</div>
+        <div class="value">{{ overall.count }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Total Invested</div>
+        <div class="value">{{ money(overall.invested) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Current Value</div>
+        <div class="value">{{ money(overall.current) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Total Maturity Value</div>
+        <div class="value">{{ money(overall.maturity) }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Holdings by Holder &amp; Bank</h2>
+    {% if pairs %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Holder</th>
+            <th>Bank</th>
+            <th>Deposits</th>
+            <th>Invested</th>
+            <th>Current Value</th>
+            <th>Maturity Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set ns = namespace(prev="") %}
+          {% for r in pairs %}
+          <tr>
+            <td>{% if r.holder != ns.prev %}<strong>{{ r.holder }}</strong>{% set ns.prev = r.holder %}{% endif %}</td>
+            <td>{{ r.bank }}</td>
+            <td>{{ r.count }}</td>
+            <td>{{ money(r.invested) }}</td>
+            <td>{{ money(r.current) }}</td>
+            <td>{{ money(r.maturity) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>All holdings</strong></td>
+            <td><strong>{{ overall.count }}</strong></td>
+            <td><strong>{{ money(overall.invested) }}</strong></td>
+            <td><strong>{{ money(overall.current) }}</strong></td>
+            <td><strong>{{ money(overall.maturity) }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No deposits yet.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">By Holder</h2>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Holder</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr>
+      </thead>
+      <tbody>
+        {% for r in holders %}
+        <tr>
+          <td><strong>{{ r.name }}</strong></td>
+          <td>{{ r.count }}</td>
+          <td>{{ money(r.invested) }}</td>
+          <td>{{ money(r.current) }}</td>
+          <td>{{ money(r.maturity) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">By Bank</h2>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Bank</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr>
+      </thead>
+      <tbody>
+        {% for r in banks %}
+        <tr>
+          <td><strong>{{ r.name }}</strong></td>
+          <td>{{ r.count }}</td>
+          <td>{{ money(r.invested) }}</td>
+          <td>{{ money(r.current) }}</td>
+          <td>{{ money(r.maturity) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+{% endblock %}
