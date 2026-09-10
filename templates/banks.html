@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Banks — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:460px;">
+    <h2 style="font-size:16px; margin:0 0 16px;">Add a bank</h2>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      <div class="form-group">
+        <label for="bank_id">Bank ID</label>
+        <input type="text" id="bank_id" name="bank_id" placeholder="e.g. HDFC0001234 / IFSC"
+               value="{{ form_data.bank_id }}" required>
+      </div>
+      <div class="form-group">
+        <label for="name">Bank Name</label>
+        <input type="text" id="name" name="name" placeholder="e.g. HDFC Bank"
+               value="{{ form_data.name }}" required>
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Add Bank</button>
+    </form>
+  </div>
+
+  <div class="card">
+    {% if banks %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Bank ID</th>
+            <th>Deposits</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bank in banks %}
+          <tr>
+            <td><strong>{{ bank.name }}</strong></td>
+            <td>{{ bank.bank_id }}</td>
+            <td>{{ bank.deposit_count }}</td>
+            <td>
+              {% if bank.deposit_count == 0 %}
+                <form class="inline" method="POST"
+                      action="{{ url_for('delete_bank', bank_id=bank.id) }}">
+                  <button type="submit" class="btn danger" data-confirm
+                          data-confirm-label="Remove?">Remove</button>
+                </form>
+              {% else %}
+                <span class="muted" style="font-size:12px;">in use</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No banks yet. Add one above to start recording deposits.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

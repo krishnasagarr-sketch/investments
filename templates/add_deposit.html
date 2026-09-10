@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if editing else "Add" }} Deposit — FD Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('dashboard') }}" class="btn secondary">← Back to Dashboard</a>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="max-width:460px;">
+    <h2 style="font-size:16px; margin:0 0 16px;">{{ "Edit deposit" if editing else "Add a deposit" }}</h2>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    {% if not depositors or not banks %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber);">
+        {% if not depositors %}No depositors yet — <a href="{{ url_for('depositors_page') }}">add a depositor</a>.{% endif %}
+        {% if not banks %}No banks yet — <a href="{{ url_for('banks_page') }}">add a bank</a>.{% endif %}
+        A deposit needs both.
+      </div>
+    {% endif %}
+
+    <form method="POST" action="{% if editing %}{{ url_for('edit_deposit', deposit_id=deposit_id) }}{% else %}{{ url_for('add_deposit') }}{% endif %}">
+      <div class="form-group">
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" required {% if not depositors %}disabled{% endif %}>
+          <option value="" disabled {% if not form_data.depositor_id %}selected{% endif %}>Select a depositor…</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.depositor_id == dep.id|string %}selected{% endif %}>
+              {{ dep.name }} ({{ dep.holder_id }})
+            </option>
+          {% endfor %}
+        </select>
+        <p class="field-hint">
+          Manage the list on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab.
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label for="bank_ref_id">Bank</label>
+        <select id="bank_ref_id" name="bank_ref_id" required {% if not banks %}disabled{% endif %}>
+          <option value="" disabled {% if not form_data.bank_ref_id %}selected{% endif %}>Select a bank…</option>
+          {% for bank in banks %}
+            <option value="{{ bank.id }}" {% if form_data.bank_ref_id == bank.id|string %}selected{% endif %}>
+              {{ bank.name }} ({{ bank.bank_id }})
+            </option>
+          {% endfor %}
+        </select>
+        <p class="field-hint">
+          Manage the list on the <a href="{{ url_for('banks_page') }}">Banks</a> tab.
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label for="deposit_type">Deposit Type</label>
+        <select id="deposit_type" name="deposit_type">
+          {% for key, label in deposit_types.items() %}
+            <option value="{{ key }}" {% if form_data.deposit_type == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint" id="type_hint"></p>
+      </div>
+
+      <div class="form-group">
+        <label for="principal" id="principal_label">Principal Amount ($)</label>
+        <input type="number" step="any" id="principal" name="principal" placeholder="e.g. 10000" value="{{ form_data.principal }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="interest_rate">Annual Interest Rate (%)</label>
+        <input type="number" step="any" id="interest_rate" name="interest_rate" placeholder="e.g. 6.5" value="{{ form_data.interest_rate }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="tenure_value" id="tenure_label">Tenure</label>
+        <div style="display:flex; gap:8px;">
+          <input type="number" id="tenure_value" name="tenure_value" placeholder="e.g. 12"
+                 value="{{ form_data.tenure_value }}" required style="flex:1;">
+          <select id="tenure_unit" name="tenure_unit" style="width:auto;">
+            {% for key, label in tenure_units.items() %}
+              <option value="{{ key }}" {% if form_data.tenure_unit == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group" id="compounding_group">
+        <label for="compounding_frequency">Compounding Frequency</label>
+        <select id="compounding_frequency" name="compounding_frequency">
+          <option value="1" {% if form_data.compounding_frequency == "1" %}selected{% endif %}>Annually</option>
+          <option value="2" {% if form_data.compounding_frequency == "2" %}selected{% endif %}>Semi-annually</option>
+          <option value="4" {% if form_data.compounding_frequency == "4" %}selected{% endif %}>Quarterly</option>
+          <option value="12" {% if form_data.compounding_frequency == "12" %}selected{% endif %}>Monthly</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="start_date">Start Date</label>
+        <input type="date" id="start_date" name="start_date" value="{{ form_data.start_date }}" required>
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">{{ "Save Changes" if editing else "Add Deposit" }}</button>
+    </form>
+  </div>
+
+  <script>
+    (function () {
+      var typeEl = document.getElementById("deposit_type");
+      var principalLabel = document.getElementById("principal_label");
+      var tenureLabel = document.getElementById("tenure_label");
+      var tenureUnit = document.getElementById("tenure_unit");
+      var compoundingGroup = document.getElementById("compounding_group");
+      var hint = document.getElementById("type_hint");
+
+      var HINTS = {
+        cumulative: "Interest is reinvested and paid out with the principal at maturity.",
+        simple: "Interest is paid out periodically (monthly/quarterly) and not reinvested.",
+        recurring: "You deposit a fixed amount every month; the balance compounds quarterly."
+      };
+
+      function sync() {
+        var t = typeEl.value;
+        var recurring = (t === "recurring");
+        principalLabel.textContent = recurring
+          ? "Monthly Installment ($)" : "Principal Amount ($)";
+        tenureLabel.textContent = recurring ? "Number of Monthly Installments" : "Tenure";
+        // Recurring deposits are always monthly — lock the unit to months.
+        if (recurring) { tenureUnit.value = "months"; }
+        tenureUnit.disabled = recurring;
+        compoundingGroup.style.display = (t === "cumulative") ? "" : "none";
+        hint.textContent = HINTS[t] || "";
+      }
+
+      typeEl.addEventListener("change", sync);
+      sync();
+    })();
+  </script>
+{% endblock %}

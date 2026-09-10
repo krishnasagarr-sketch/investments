@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Depositors — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:460px;">
+    <h2 style="font-size:16px; margin:0 0 16px;">Add a depositor</h2>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      <div class="form-group">
+        <label for="holder_id">Deposit Holder ID</label>
+        <input type="text" id="holder_id" name="holder_id" placeholder="e.g. CUST-10293 / PAN"
+               value="{{ form_data.holder_id }}" required>
+      </div>
+      <div class="form-group">
+        <label for="name">Depositor Name</label>
+        <input type="text" id="name" name="name" placeholder="e.g. Krishna Sagar"
+               value="{{ form_data.name }}" required>
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Add Depositor</button>
+    </form>
+  </div>
+
+  <div class="card">
+    {% if depositors %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Holder ID</th>
+            <th>Deposits</th>
+            <th>Total Invested</th>
+            <th>Current Value</th>
+            <th>Total Maturity Value</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for dep in depositors %}
+          <tr>
+            <td><strong>{{ dep.name }}</strong></td>
+            <td>{{ dep.holder_id }}</td>
+            <td>{{ dep.deposit_count }}</td>
+            <td>${{ "%.2f"|format(dep.total_invested) }}</td>
+            <td>${{ "%.2f"|format(dep.total_current) }}</td>
+            <td>${{ "%.2f"|format(dep.total_maturity) }}</td>
+            <td>
+              {% if dep.deposit_count == 0 %}
+                <form class="inline" method="POST"
+                      action="{{ url_for('delete_depositor', depositor_id=dep.id) }}">
+                  <button type="submit" class="btn danger" data-confirm
+                          data-confirm-label="Remove?">Remove</button>
+                </form>
+              {% else %}
+                <span class="muted" style="font-size:12px;">in use</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% if depositors|length > 1 %}
+        <tfoot>
+          <tr>
+            <td colspan="3"><strong>All depositors</strong></td>
+            <td><strong>${{ "%.2f"|format(grand_invested) }}</strong></td>
+            <td><strong>${{ "%.2f"|format(grand_current) }}</strong></td>
+            <td><strong>${{ "%.2f"|format(grand_maturity) }}</strong></td>
+            <td></td>
+          </tr>
+        </tfoot>
+        {% endif %}
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No depositors yet. Add one above to start recording deposits.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

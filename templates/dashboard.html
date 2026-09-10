@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card">
+    <div class="summary-grid">
+      <div class="summary-item">
+        <div class="label">Total Invested</div>
+        <div class="value">${{ "%.2f"|format(total_invested) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Current Value</div>
+        <div class="value">${{ "%.2f"|format(total_current) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Total Maturity Value</div>
+        <div class="value">${{ "%.2f"|format(total_maturity) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Total Interest at Maturity</div>
+        <div class="value positive">+${{ "%.2f"|format(total_interest) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Number of Deposits</div>
+        <div class="value">{{ rows|length }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    {% if rows %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Holder</th>
+            <th>Bank</th>
+            <th>Type</th>
+            <th>Invested</th>
+            <th>Rate</th>
+            <th>Tenure</th>
+            <th>Start Date</th>
+            <th>Current Value</th>
+            <th>Maturity Date</th>
+            <th>Maturity Amount</th>
+            <th>Interest</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>
+              <strong>{{ r.holder_name or "—" }}</strong>
+              {% if r.holder_id %}
+                <div class="muted" style="font-size:12px;">ID: {{ r.holder_id }}</div>
+              {% endif %}
+            </td>
+            <td>
+              {{ r.bank_name or "—" }}
+              {% if r.bank_code and r.bank_code != r.bank_name %}
+                <div class="muted" style="font-size:12px;">ID: {{ r.bank_code }}</div>
+              {% endif %}
+            </td>
+            <td>
+              <span class="badge type type-{{ r.deposit_type }}">{{ r.deposit_type_label }}</span>
+            </td>
+            <td>
+              ${{ "%.2f"|format(r.invested) }}
+              {% if r.deposit_type == "recurring" %}
+                <div class="muted" style="font-size:12px;">
+                  ${{ "%.2f"|format(r.monthly_installment) }}/mo &times; {{ r.tenure_months }}
+                </div>
+                <div class="muted" style="font-size:12px;">
+                  {{ r.installments_paid }}/{{ r.total_installments }} paid &middot; ${{ "%.2f"|format(r.paid_in) }} in
+                </div>
+              {% endif %}
+            </td>
+            <td>{{ r.interest_rate }}%</td>
+            <td>{{ r.tenure_label }}</td>
+            <td>{{ r.start_date }}</td>
+            <td>
+              ${{ "%.2f"|format(r.current_value) }}
+              <div class="muted" style="font-size:12px;">+${{ "%.2f"|format(r.accrued_interest) }} accrued</div>
+            </td>
+            <td>{{ r.maturity_date }}</td>
+            <td>${{ "%.2f"|format(r.maturity_amount) }}</td>
+            <td class="positive">+${{ "%.2f"|format(r.interest_earned) }}</td>
+            <td>
+              {% if r.is_matured %}
+                <span class="badge matured">Matured</span>
+              {% else %}
+                <span class="badge active">{{ r.days_remaining }}d left</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="row-actions">
+                <a href="{{ url_for('edit_deposit', deposit_id=r.id) }}" class="btn link">Edit</a>
+                <form class="inline" method="POST" action="{{ url_for('delete_deposit', deposit_id=r.id) }}">
+                  <button type="submit" class="btn danger" data-confirm
+                          data-confirm-label="Remove?">Remove</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No deposits yet.</p>
+        <a href="{{ url_for('add_deposit') }}" class="btn">Add your first deposit</a>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}
