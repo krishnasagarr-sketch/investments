@@ -73,10 +73,7 @@
               {{ (r.invested)|money }}
               {% if r.deposit_type == "recurring" %}
                 <div class="muted" style="font-size:12px;">
-                  {{ (r.monthly_installment)|money }}/mo &times; {{ r.tenure_months }}
-                </div>
-                <div class="muted" style="font-size:12px;">
-                  {{ r.installments_paid }}/{{ r.total_installments }} paid &middot; {{ (r.paid_in)|money }} in
+                  {{ (r.monthly_installment)|money }}/mo &middot; {{ r.installments_paid }}/{{ r.total_installments }} paid
                 </div>
               {% endif %}
             </td>

@@ -72,9 +72,9 @@ Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created aut
 - **Holder / bank tracking** — each deposit is linked to its depositor and its bank; the dashboard shows the depositor's name + holder ID and the bank's name + bank ID (older, unlinked rows show "—")
 - **Automatic calculations** — maturity date, maturity amount, and interest earned, using the formula for the chosen deposit type (see table above)
 - **Current value** — for every deposit, the value *today* (principal + interest accrued so far): simple interest accrues linearly, cumulative compounds, and an RD sums each installment paid to date compounded quarterly. Once a deposit matures, current value equals the maturity amount.
-- **RD progress** — recurring deposits also show how many installments have been paid so far (`11/24 paid`) and the cash actually paid in.
+- **RD progress** — recurring-deposit rows show the installment amount and how many have been paid so far (`₹1,000.00/mo · 11/24 paid`); the "Invested" figure is that cash paid in to date.
 - **Status tracking** — shows "Matured" or days remaining until maturity for each deposit
-- **Portfolio summary** — total invested, current value, total maturity value, and total interest at maturity across all deposits (for RDs, "invested" is installment × number of installments)
+- **Portfolio summary** — total invested, current value, total maturity value, and total interest at maturity across all deposits (for RDs, "invested" is the installment amount × the number of installments **paid so far**, not the full-term commitment)
 - **Remove deposits / depositors** — the **Remove** button is a two-step confirm (click once to arm, again within 4 s to delete). It doesn't use a native `confirm()` dialog, so it still works in embedded browsers that block those.
 
 ## Notes

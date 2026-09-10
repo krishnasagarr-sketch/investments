@@ -341,7 +341,7 @@ def summarise_deposit(d) -> dict:
         maturity_amount, interest_earned = calculate_recurring(
             d["principal"], d["interest_rate"], d["tenure_months"]
         )
-        invested = d["principal"] * d["tenure_months"]
+        invested = 0.0  # set below to installments actually paid so far
     else:
         maturity_amount, interest_earned = calculate_cumulative(
             d["principal"], d["interest_rate"], t_years, d["compounding_frequency"]
@@ -368,6 +368,7 @@ def summarise_deposit(d) -> dict:
         else:
             installments_paid = min(months_elapsed + 1, total_installments)
         paid_in = installments_paid * d["principal"]
+        invested = paid_in  # RD "invested" = instalment amount x instalments paid to date
         if is_matured:
             current_value = maturity_amount
         else:
