@@ -60,7 +60,8 @@ DAYS_PER_YEAR = 365  # simple day-count convention used for interest on day tenu
 
 # Precious-metal holdings: internal key -> human label
 METAL_TYPES = {
-    "gold": "Gold",
+    "gold_24k": "Gold 24K",
+    "gold_22k": "Gold 22K",
     "silver": "Silver",
     "platinum": "Platinum",
     "palladium": "Palladium",
@@ -109,6 +110,7 @@ def init_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS metals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            depositor_id INTEGER REFERENCES depositors(id),
             metal TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
             grams REAL NOT NULL,
@@ -117,6 +119,8 @@ def init_db():
             purchase_date TEXT NOT NULL
         )
     """)
+    if "depositor_id" not in {r[1] for r in conn.execute("PRAGMA table_info(metals)")}:
+        conn.execute("ALTER TABLE metals ADD COLUMN depositor_id INTEGER REFERENCES depositors(id)")
 
     # Live market price per gram for each metal (one row per metal type).
     conn.execute("""
@@ -126,6 +130,13 @@ def init_db():
             updated_on TEXT NOT NULL
         )
     """)
+
+    # Gold split into 24K / 22K — migrate the old single "gold" key.
+    conn.execute("UPDATE metals SET metal = 'gold_24k' WHERE metal = 'gold'")
+    if not conn.execute("SELECT 1 FROM metal_prices WHERE metal = 'gold_24k'").fetchone():
+        conn.execute("UPDATE metal_prices SET metal = 'gold_24k' WHERE metal = 'gold'")
+    conn.execute("DELETE FROM metal_prices WHERE metal = 'gold'")
+
     # Seed from existing holdings: use each metal's most recent holding price.
     priced = {r["metal"] for r in conn.execute("SELECT metal FROM metal_prices")}
     for row in conn.execute(
@@ -413,10 +424,11 @@ def summarise_deposit(d) -> dict:
 # ---------- Master-list helpers ----------
 def list_depositors(db):
     return db.execute(
-        """SELECT d.id, d.holder_id, d.name, COUNT(dep.id) AS deposit_count
+        """SELECT d.id, d.holder_id, d.name,
+                  (SELECT COUNT(*) FROM deposits WHERE depositor_id = d.id) AS deposit_count,
+                  (SELECT COUNT(*) FROM metals   WHERE depositor_id = d.id) AS metal_count
            FROM depositors d
-           LEFT JOIN deposits dep ON dep.depositor_id = d.id
-           GROUP BY d.id ORDER BY d.name COLLATE NOCASE"""
+           ORDER BY d.name COLLATE NOCASE"""
     ).fetchall()
 
 
@@ -465,6 +477,7 @@ def depositors_with_totals(db):
             "holder_id": dep["holder_id"],
             "name": dep["name"],
             "deposit_count": dep["deposit_count"],
+            "metal_count": dep["metal_count"],
             "total_invested": t["invested"],
             "total_current": t["current"],
             "total_maturity": t["maturity"],
@@ -842,9 +855,10 @@ def depositors_page():
 @app.route("/depositors/<int:depositor_id>/delete", methods=["POST"])
 def delete_depositor(depositor_id):
     db = get_db()
-    in_use = db.execute(
-        "SELECT COUNT(*) AS n FROM deposits WHERE depositor_id = ?", (depositor_id,)
-    ).fetchone()["n"]
+    in_use = (
+        db.execute("SELECT COUNT(*) AS n FROM deposits WHERE depositor_id = ?", (depositor_id,)).fetchone()["n"]
+        + db.execute("SELECT COUNT(*) AS n FROM metals WHERE depositor_id = ?", (depositor_id,)).fetchone()["n"]
+    )
     if in_use == 0:
         db.execute("DELETE FROM depositors WHERE id = ?", (depositor_id,))
         db.commit()
@@ -920,9 +934,11 @@ def list_metals(db):
     recorded on the holding itself if that metal has no market price set)."""
     prices = get_metal_prices(db)
     rows = []
-    for m in db.execute(
-        "SELECT * FROM metals ORDER BY purchase_date DESC, id DESC"
-    ).fetchall():
+    for m in db.execute("""
+        SELECT metals.*, depositors.name AS depositor_name
+        FROM metals LEFT JOIN depositors ON metals.depositor_id = depositors.id
+        ORDER BY metals.purchase_date DESC, metals.id DESC
+    """).fetchall():
         info = prices.get(m["metal"])
         current_price = info["price"] if info else m["purchase_price"]
         cost = m["grams"] * m["purchase_price"]
@@ -932,6 +948,8 @@ def list_metals(db):
             "id": m["id"],
             "metal": m["metal"],
             "metal_label": METAL_TYPES.get(m["metal"], m["metal"].title()),
+            "depositor_id": m["depositor_id"],
+            "depositor_name": m["depositor_name"],
             "description": m["description"],
             "grams": m["grams"],
             "purchase_price": m["purchase_price"],
@@ -947,11 +965,21 @@ def list_metals(db):
     return rows
 
 
-def parse_metal_form(form_data) -> dict:
+def parse_metal_form(form_data, db) -> dict:
     """Validate the holding form. Returns DB column values or raises ValueError."""
     metal = form_data["metal"]
     if metal not in METAL_TYPES:
         raise ValueError("Please choose a metal.")
+
+    depositor_id = None
+    if form_data.get("depositor_id"):
+        dep = db.execute(
+            "SELECT id FROM depositors WHERE id = ?", (form_data["depositor_id"],)
+        ).fetchone()
+        if dep is None:
+            raise ValueError("Please choose a valid depositor.")
+        depositor_id = dep["id"]
+
     try:
         grams = float(form_data["grams"])
         purchase_price = float(form_data["purchase_price"])
@@ -963,6 +991,7 @@ def parse_metal_form(form_data) -> dict:
         raise ValueError("Purchase price must be greater than 0.")
     return {
         "metal": metal,
+        "depositor_id": depositor_id,
         "description": form_data["description"].strip(),
         "grams": grams,
         "purchase_price": purchase_price,
@@ -971,7 +1000,7 @@ def parse_metal_form(form_data) -> dict:
 
 
 BLANK_METAL_FORM = {
-    "metal": "gold", "description": "", "grams": "",
+    "metal": "gold_24k", "depositor_id": "", "description": "", "grams": "",
     "purchase_price": "", "purchase_date": None,
 }
 
@@ -979,6 +1008,7 @@ BLANK_METAL_FORM = {
 def _metal_to_form_data(row) -> dict:
     return {
         "metal": row["metal"],
+        "depositor_id": str(row["depositor_id"] or ""),
         "description": row["description"],
         "grams": _trim_number(row["grams"]),
         "purchase_price": _trim_number(row["purchase_price"]),
@@ -994,6 +1024,9 @@ def _render_metals(db, **kwargs):
         metals=metals,
         metal_types=METAL_TYPES,
         metal_prices=prices,
+        depositors=db.execute(
+            "SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE"
+        ).fetchall(),
         prices_missing=sorted({m["metal"] for m in metals if not m["price_is_market"]}),
         total_cost=sum(m["cost"] for m in metals),
         total_value=sum(m["value"] for m in metals),
@@ -1014,15 +1047,15 @@ def metals_page():
         for key in form_data:
             form_data[key] = request.form.get(key, form_data[key])
         try:
-            cols = parse_metal_form(form_data)
+            cols = parse_metal_form(form_data, db)
             # Freeze a current_price on the row (legacy column); the live value
             # comes from metal_prices, but seed it with the market rate if known.
             market = get_metal_prices(db).get(cols["metal"])
             cols["current_price"] = market["price"] if market else cols["purchase_price"]
             db.execute(
                 """INSERT INTO metals
-                   (metal, description, grams, purchase_price, current_price, purchase_date)
-                   VALUES (:metal, :description, :grams, :purchase_price, :current_price, :purchase_date)""",
+                   (metal, depositor_id, description, grams, purchase_price, current_price, purchase_date)
+                   VALUES (:metal, :depositor_id, :description, :grams, :purchase_price, :current_price, :purchase_date)""",
                 cols,
             )
             db.commit()
@@ -1072,12 +1105,12 @@ def edit_metal(metal_id):
         for key in form_data:
             form_data[key] = request.form.get(key, form_data[key])
         try:
-            cols = parse_metal_form(form_data)
+            cols = parse_metal_form(form_data, db)
             cols["id"] = metal_id
             db.execute(
                 """UPDATE metals SET
-                     metal = :metal, description = :description, grams = :grams,
-                     purchase_price = :purchase_price, purchase_date = :purchase_date
+                     metal = :metal, depositor_id = :depositor_id, description = :description,
+                     grams = :grams, purchase_price = :purchase_price, purchase_date = :purchase_date
                    WHERE id = :id""",
                 cols,
             )

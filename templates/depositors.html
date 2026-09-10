@@ -52,7 +52,7 @@
             <td>{{ (dep.total_current)|money }}</td>
             <td>{{ (dep.total_maturity)|money }}</td>
             <td>
-              {% if dep.deposit_count == 0 %}
+              {% if dep.deposit_count == 0 and dep.metal_count == 0 %}
                 <form class="inline" method="POST"
                       action="{{ url_for('delete_depositor', depositor_id=dep.id) }}">
                   <button type="submit" class="btn danger" data-confirm

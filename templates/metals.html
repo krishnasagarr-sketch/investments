@@ -87,6 +87,16 @@
       </div>
 
       <div class="form-group">
+        <label for="depositor_id">Depositor <span class="muted">(optional)</span></label>
+        <select id="depositor_id" name="depositor_id">
+          <option value="" {% if not form_data.depositor_id %}selected{% endif %}>— unassigned —</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
         <label for="description">Description <span class="muted">(optional)</span></label>
         <input type="text" id="description" name="description" placeholder="e.g. 22K coin, sovereign, bar"
                value="{{ form_data.description }}">
@@ -123,6 +133,7 @@
         <thead>
           <tr>
             <th>Metal</th>
+            <th>Holder</th>
             <th>Grams</th>
             <th>Buy ₹/g</th>
             <th>Now ₹/g</th>
@@ -140,6 +151,7 @@
               <strong>{{ m.metal_label }}</strong>
               {% if m.description %}<div class="muted" style="font-size:12px;">{{ m.description }}</div>{% endif %}
             </td>
+            <td>{{ m.depositor_name or "—" }}</td>
             <td>{{ "%.3f"|format(m.grams) }}</td>
             <td>{{ (m.purchase_price)|money }}</td>
             <td>
@@ -168,7 +180,7 @@
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="4"><strong>Total</strong></td>
+            <td colspan="5"><strong>Total</strong></td>
             <td><strong>{{ (total_cost)|money }}</strong></td>
             <td><strong>{{ (total_value)|money }}</strong></td>
             <td><strong>{{ gl(total_gain) }}</strong></td>
