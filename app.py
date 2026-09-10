@@ -534,6 +534,7 @@ def dashboard():
         total_maturity=total_maturity,
         total_interest=total_interest,
         active_tab="dashboard",
+        wide_page=True,
     )
 
 

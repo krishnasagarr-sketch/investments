@@ -29,6 +29,7 @@
     margin:0 auto;
     padding:32px 20px 60px;
   }
+  .wrap.wide{max-width:1480px;}
   header{
     display:flex;
     justify-content:space-between;
@@ -125,6 +126,12 @@
   }
   tbody tr:last-child td{border-bottom:none;}
   tfoot td{border-top:2px solid var(--border); border-bottom:none;}
+
+  /* Compact variant for wide, many-column tables (the Deposits list). */
+  .compact table{font-size:12.5px;}
+  .compact th{font-size:10.5px;}
+  .compact th, .compact td{padding:8px 7px;}
+  .compact td .muted{font-size:11px !important;}
 
   .positive{color:var(--green); font-weight:600;}
   .muted{color:var(--text-dim);}
@@ -268,7 +275,7 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="wrap{% if wide_page %} wide{% endif %}">
   <header>
     <h1>🏦 Fixed Deposit Manager</h1>
     <div>{% block header_action %}{% endblock %}</div>
