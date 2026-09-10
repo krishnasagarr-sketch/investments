@@ -165,6 +165,40 @@
     margin-right:6px;
   }
 
+  .control-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:20px;
+    align-items:center;
+    margin-bottom:20px;
+  }
+  .control-row .control-label{
+    font-size:12px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:0.02em;
+    color:var(--text-dim);
+    margin-right:-10px;
+  }
+  .seg{
+    display:inline-flex;
+    border:1px solid var(--border);
+    border-radius:8px;
+    overflow:hidden;
+  }
+  .seg a{
+    padding:7px 14px;
+    font-size:13px;
+    font-weight:600;
+    text-decoration:none;
+    color:var(--text-dim);
+    background:var(--card);
+    border-left:1px solid var(--border);
+  }
+  .seg a:first-child{border-left:none;}
+  .seg a.active{background:var(--accent); color:#fff;}
+  .seg a:not(.active):hover{background:#eef1f5;}
+
   form.inline{display:inline;}
 
   .form-group{margin-bottom:16px;}

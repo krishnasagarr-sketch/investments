@@ -54,7 +54,11 @@ Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created aut
 ## Features
 
 - **Dashboard** — the first tab: portfolio totals plus a **holdings breakdown by holder & bank** (grouped rows with deposit count, invested, current value, maturity value, and a grand total), and separate **by-holder** and **by-bank** rollups.
-- **Chart** — the same by-holder and by-bank figures as a grouped horizontal **bar chart** (invested / current value / maturity value). Pure inline SVG, no JavaScript or chart library. Bars share one linear scale, so a single very large deposit will dwarf the rest.
+- **Chart** — the same by-holder and by-bank figures as a chart. Pick the **chart type** (bar or pie) with the toggle at the top:
+  - **Bar** — grouped horizontal bars showing invested / current value / maturity value together. Bars share one linear scale, so a single very large deposit will dwarf the rest.
+  - **Pie** — one metric at a time (choose invested / current value / maturity value), showing each holder's or bank's share of the total, with a legend of amounts and percentages.
+
+  All charts are pure inline SVG — no JavaScript or chart library. The selection is kept in the URL (`/chart?type=pie&metric=maturity`).
 - **Depositors** — a separate master list (`depositors` table) of people who hold deposits, each with a unique **holder ID** (customer number, PAN, etc.) and a **name**. Managed on the **Depositors** tab, which also shows each depositor's **total invested** (principal only, no interest), **current value** and **total maturity value**, with a combined total across everyone. A depositor can't be removed while any deposit references it.
 - **Banks** — a separate master list (`banks` table), each with a unique **bank ID** (IFSC / branch code / any identifier) and a **name**. Managed on the **Banks** tab; a bank can't be removed while any deposit references it.
 - **Add deposits** — pick the depositor and the bank from dropdowns, then deposit type, amount (lump-sum principal, or monthly installment for an RD), annual interest rate, tenure (months or days), compounding frequency (cumulative only), start date. The form relabels fields, switches the tenure unit, and shows/hides compounding frequency based on the type you pick.

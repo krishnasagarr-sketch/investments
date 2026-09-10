@@ -1,3 +1,4 @@
+import math
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -435,19 +436,59 @@ def summary_page():
     )
 
 
+CHART_TYPES = {"bar": "Bar", "pie": "Pie"}
+CHART_METRICS = {"invested": "Invested", "current": "Current value", "maturity": "Maturity value"}
+PIE_COLORS = [
+    "#1e4d6b", "#1c7c45", "#b8720b", "#7d5ba6", "#c0392b",
+    "#2c8c99", "#8a6d3b", "#5b6b8c", "#4a7c59", "#9b3b6a",
+]
+
+
+def build_pie(rows, metric, cx=90.0, cy=90.0, r=80.0):
+    """Turn aggregate rows into SVG pie-slice paths for the chosen metric."""
+    total = sum(row[metric] for row in rows)
+    slices = []
+    angle = -90.0
+    for i, row in enumerate(rows):
+        value = row[metric]
+        frac = (value / total) if total > 0 else 0.0
+        sweep = frac * 360.0
+        colour = PIE_COLORS[i % len(PIE_COLORS)]
+        if len(rows) == 1 or frac >= 0.999999:
+            # a lone / full slice: draw a complete circle
+            path = (f"M {cx - r:.2f} {cy:.2f} A {r} {r} 0 1 1 {cx + r:.2f} {cy:.2f} "
+                    f"A {r} {r} 0 1 1 {cx - r:.2f} {cy:.2f} Z")
+        else:
+            a0, a1 = math.radians(angle), math.radians(angle + sweep)
+            x0, y0 = cx + r * math.cos(a0), cy + r * math.sin(a0)
+            x1, y1 = cx + r * math.cos(a1), cy + r * math.sin(a1)
+            large = 1 if sweep > 180 else 0
+            path = (f"M {cx:.2f} {cy:.2f} L {x0:.2f} {y0:.2f} "
+                    f"A {r} {r} 0 {large} 1 {x1:.2f} {y1:.2f} Z")
+        slices.append({
+            "label": row["name"], "value": value,
+            "pct": frac * 100.0, "colour": colour, "path": path,
+        })
+        angle += sweep
+    return {"slices": slices, "total": total, "size": cx * 2}
+
+
 @app.route("/chart")
 def chart_page():
     db = get_db()
     summary = holdings_summary(db)
 
+    chart_type = request.args.get("type", "bar")
+    if chart_type not in CHART_TYPES:
+        chart_type = "bar"
+    metric = request.args.get("metric", "current")
+    if metric not in CHART_METRICS:
+        metric = "current"
+
     def to_series(items):
         return [
-            {
-                "name": it["name"],
-                "invested": it["invested"],
-                "current": it["current"],
-                "maturity": it["maturity"],
-            }
+            {"name": it["name"], "invested": it["invested"],
+             "current": it["current"], "maturity": it["maturity"]}
             for it in items
         ]
 
@@ -460,9 +501,15 @@ def chart_page():
     return render_template(
         "chart.html",
         active_tab="chart",
+        chart_type=chart_type,
+        metric=metric,
+        chart_types=CHART_TYPES,
+        chart_metrics=CHART_METRICS,
         holder_data=holder_data,
         bank_data=bank_data,
         axis_max=axis_max,
+        holder_pie=build_pie(holder_data, metric),
+        bank_pie=build_pie(bank_data, metric),
     )
 
 

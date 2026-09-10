@@ -6,9 +6,10 @@
 {% endblock %}
 
 {#
-  Horizontal grouped bar chart, pure inline SVG (no JS / no libraries).
-  Three bars per category: invested, current value, maturity value.
+  All charts are pure inline SVG — no JavaScript, no chart library.
+  Chart type and (for pie) the value shown are chosen via query params.
 #}
+
 {% macro barchart(rows, axis_max) %}
   {% set gutter = 152 %}
   {% set plotw = 396 %}
@@ -45,27 +46,76 @@
   </div>
 {% endmacro %}
 
+{% macro piechart(pie, metric_label) %}
+  {% if pie.total > 0 %}
+    <div style="display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
+      <svg viewBox="0 0 {{ pie.size }} {{ pie.size }}" role="img"
+           style="width:180px; height:180px; flex:none;">
+        {% for s in pie.slices %}
+          <path d="{{ s.path }}" fill="{{ s.colour }}" stroke="var(--card)" stroke-width="1.5" />
+        {% endfor %}
+      </svg>
+      <div style="font-size:13px; min-width:200px;">
+        {% for s in pie.slices %}
+          <div style="display:flex; align-items:center; gap:8px; padding:3px 0;">
+            <span class="swatch" style="background:{{ s.colour }};"></span>
+            <span style="flex:1;">{{ s.label }}</span>
+            <span class="muted">${{ "{:,.0f}".format(s.value) }}</span>
+            <span style="width:52px; text-align:right; font-weight:600;">{{ "%.1f"|format(s.pct) }}%</span>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <p class="field-hint">Showing <strong>{{ metric_label|lower }}</strong>, total ${{ "{:,.0f}".format(pie.total) }}.</p>
+  {% else %}
+    <div class="empty-state"><p>No deposits yet.</p></div>
+  {% endif %}
+{% endmacro %}
+
 {% block content %}
 
   <div class="card">
-    <div class="legend">
-      <span><span class="swatch" style="background:var(--text-dim);"></span>Invested</span>
-      <span><span class="swatch" style="background:var(--accent);"></span>Current value</span>
-      <span><span class="swatch" style="background:var(--green);"></span>Maturity value</span>
+    <div class="control-row">
+      <span class="control-label">Chart type</span>
+      <span class="seg">
+        {% for key, label in chart_types.items() %}
+          <a href="{{ url_for('chart_page', type=key, metric=metric) }}"
+             class="{% if chart_type == key %}active{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </span>
+
+      {% if chart_type == 'pie' %}
+        <span class="control-label">Value</span>
+        <span class="seg">
+          {% for key, label in chart_metrics.items() %}
+            <a href="{{ url_for('chart_page', type='pie', metric=key) }}"
+               class="{% if metric == key %}active{% endif %}">{{ label }}</a>
+          {% endfor %}
+        </span>
+      {% endif %}
     </div>
 
-    <h2 style="font-size:16px; margin:4px 0 8px;">By Holder</h2>
-    {% if holder_data %}
-      {{ barchart(holder_data, axis_max) }}
-    {% else %}
-      <div class="empty-state"><p>No deposits yet.</p></div>
-    {% endif %}
+    {% if chart_type == 'bar' %}
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--text-dim);"></span>Invested</span>
+        <span><span class="swatch" style="background:var(--accent);"></span>Current value</span>
+        <span><span class="swatch" style="background:var(--green);"></span>Maturity value</span>
+      </div>
 
-    <h2 style="font-size:16px; margin:24px 0 8px;">By Bank</h2>
-    {% if bank_data %}
-      {{ barchart(bank_data, axis_max) }}
+      <h2 style="font-size:16px; margin:4px 0 8px;">By Holder</h2>
+      {% if holder_data %}{{ barchart(holder_data, axis_max) }}
+      {% else %}<div class="empty-state"><p>No deposits yet.</p></div>{% endif %}
+
+      <h2 style="font-size:16px; margin:24px 0 8px;">By Bank</h2>
+      {% if bank_data %}{{ barchart(bank_data, axis_max) }}
+      {% else %}<div class="empty-state"><p>No deposits yet.</p></div>{% endif %}
+
     {% else %}
-      <div class="empty-state"><p>No deposits yet.</p></div>
+      <h2 style="font-size:16px; margin:4px 0 8px;">By Holder</h2>
+      {{ piechart(holder_pie, chart_metrics[metric]) }}
+
+      <h2 style="font-size:16px; margin:24px 0 8px;">By Bank</h2>
+      {{ piechart(bank_pie, chart_metrics[metric]) }}
     {% endif %}
   </div>
 
