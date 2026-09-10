@@ -80,9 +80,10 @@
 
   .summary-grid{
     display:grid;
-    grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));
     gap:16px;
   }
+  .summary-item{min-width:0;}   /* let grid cells shrink instead of overflowing */
   .summary-item .label{
     font-size:12.5px;
     color:var(--text-dim);
@@ -91,6 +92,8 @@
   .summary-item .value{
     font-size:22px;
     font-weight:700;
+    font-variant-numeric:tabular-nums;
+    overflow-wrap:anywhere;   /* wrap very long numbers rather than overlap neighbours */
   }
 
   .table-scroll{overflow-x:auto;}
