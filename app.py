@@ -724,6 +724,91 @@ def chart_page():
     )
 
 
+@app.route("/calculator")
+def calculator_page():
+    """Standalone interest calculator — nothing here is saved to the database."""
+    args = request.args
+    deposit_type = args.get("deposit_type", "cumulative")
+    if deposit_type not in DEPOSIT_TYPES:
+        deposit_type = "cumulative"
+
+    form_data = {
+        "deposit_type": deposit_type,
+        "principal": args.get("principal", ""),
+        "interest_rate": args.get("interest_rate", ""),
+        "duration_months": args.get("duration_months", ""),
+        "duration_days": args.get("duration_days", ""),
+        "compounding_frequency": args.get("compounding_frequency", "4"),
+    }
+
+    result = None
+    error = None
+    if form_data["principal"]:
+        try:
+            principal = float(form_data["principal"])
+            rate = float(form_data["interest_rate"])
+            months = int(form_data["duration_months"] or 0)
+            days = int(form_data["duration_days"] or 0)
+            compounding_frequency = int(form_data["compounding_frequency"])
+
+            amount_label = "Monthly installment" if deposit_type == "recurring" else "Principal"
+            if principal <= 0:
+                raise ValueError(f"{amount_label} must be greater than 0.")
+            if rate <= 0:
+                raise ValueError("Interest rate must be greater than 0.")
+            if months < 0 or days < 0:
+                raise ValueError("Duration can't be negative.")
+            if months == 0 and days == 0:
+                raise ValueError("Enter a duration in months and/or days.")
+            if deposit_type == "recurring" and months == 0:
+                raise ValueError("A recurring deposit needs a whole number of months.")
+
+            if deposit_type == "recurring":
+                maturity_amount, interest_earned = calculate_recurring(principal, rate, months)
+                result = {
+                    "deposit_type": deposit_type,
+                    "invested": principal * months,
+                    "maturity_amount": maturity_amount,
+                    "interest_earned": interest_earned,
+                    "installments": months,
+                }
+            else:
+                total_years = months / 12 + days / DAYS_PER_YEAR
+                if deposit_type == "simple":
+                    maturity_amount, interest_earned = calculate_simple(principal, rate, total_years)
+                    result = {
+                        "deposit_type": deposit_type,
+                        "invested": principal,
+                        "maturity_amount": maturity_amount,
+                        "interest_earned": interest_earned,
+                        "monthly_interest": principal * (rate / 100) / 12,
+                        "quarterly_interest": principal * (rate / 100) / 4,
+                    }
+                else:  # cumulative
+                    maturity_amount, interest_earned = calculate_cumulative(
+                        principal, rate, total_years, compounding_frequency
+                    )
+                    result = {
+                        "deposit_type": deposit_type,
+                        "invested": principal,
+                        "maturity_amount": maturity_amount,
+                        "interest_earned": interest_earned,
+                    }
+        except ValueError as e:
+            msg = str(e)
+            error = msg if ("could not convert" not in msg and "invalid literal" not in msg) \
+                else "Please enter valid numbers for amount, rate and duration."
+
+    return render_template(
+        "calculator.html",
+        active_tab="calculator",
+        deposit_types=DEPOSIT_TYPES,
+        form_data=form_data,
+        result=result,
+        error=error,
+    )
+
+
 @app.route("/")
 def dashboard():
     db = get_db()

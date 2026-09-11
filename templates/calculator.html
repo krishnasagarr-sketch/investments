@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Interest Calculator — FD Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('dashboard') }}" class="btn secondary">← Back to Dashboard</a>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="max-width:460px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Interest Calculator</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Work out a maturity amount before you commit to anything — nothing on this page is saved.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="GET" action="{{ url_for('calculator_page') }}">
+      <div class="form-group">
+        <label for="deposit_type">Deposit Type</label>
+        <select id="deposit_type" name="deposit_type">
+          {% for key, label in deposit_types.items() %}
+            <option value="{{ key }}" {% if form_data.deposit_type == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint" id="type_hint"></p>
+      </div>
+
+      <div class="form-group">
+        <label for="principal" id="principal_label">Principal Amount (₹)</label>
+        <input type="number" step="any" id="principal" name="principal" placeholder="e.g. 100000"
+               value="{{ form_data.principal }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="interest_rate">Annual Interest Rate (%)</label>
+        <input type="number" step="any" id="interest_rate" name="interest_rate" placeholder="e.g. 7.5"
+               value="{{ form_data.interest_rate }}" required>
+      </div>
+
+      <div class="form-group">
+        <label id="duration_label">Duration</label>
+        <div style="display:flex; gap:8px;">
+          <div style="flex:1;">
+            <input type="number" id="duration_months" name="duration_months" placeholder="Months" min="0"
+                   value="{{ form_data.duration_months }}">
+            <p class="field-hint">Months</p>
+          </div>
+          <div style="flex:1;">
+            <input type="number" id="duration_days" name="duration_days" placeholder="Days" min="0"
+                   value="{{ form_data.duration_days }}">
+            <p class="field-hint" id="days_hint">Days</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group" id="compounding_group">
+        <label for="compounding_frequency">Compounding Frequency</label>
+        <select id="compounding_frequency" name="compounding_frequency">
+          <option value="1" {% if form_data.compounding_frequency == "1" %}selected{% endif %}>Annually</option>
+          <option value="2" {% if form_data.compounding_frequency == "2" %}selected{% endif %}>Semi-annually</option>
+          <option value="4" {% if form_data.compounding_frequency == "4" %}selected{% endif %}>Quarterly</option>
+          <option value="12" {% if form_data.compounding_frequency == "12" %}selected{% endif %}>Monthly</option>
+        </select>
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">Calculate</button>
+    </form>
+  </div>
+
+  {% if result %}
+    <div class="card" style="max-width:460px;">
+      <h2 style="font-size:16px; margin:0 0 14px;">Result</h2>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <div class="label">{{ "Total Instalments Paid In" if result.deposit_type == "recurring" else "Amount Invested" }}</div>
+          <div class="value">{{ (result.invested)|money }}</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Maturity Amount</div>
+          <div class="value">{{ (result.maturity_amount)|money }}</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Interest Earned</div>
+          <div class="value positive">+{{ (result.interest_earned)|money }}</div>
+        </div>
+        {% if result.deposit_type == "recurring" %}
+          <div class="summary-item">
+            <div class="label">Instalments</div>
+            <div class="value">{{ result.installments }}</div>
+          </div>
+        {% endif %}
+      </div>
+
+      {% if result.deposit_type == "simple" %}
+        <table style="margin-top:16px;">
+          <thead>
+            <tr><th>Payout frequency</th><th>Interest per payout</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Monthly</td><td class="positive">{{ (result.monthly_interest)|money }}</td></tr>
+            <tr><td>Quarterly</td><td class="positive">{{ (result.quarterly_interest)|money }}</td></tr>
+          </tbody>
+        </table>
+        <p class="field-hint">
+          Simple interest doesn't compound, so the payout is the same every period for the life of the deposit.
+        </p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <script>
+    (function () {
+      var typeEl = document.getElementById("deposit_type");
+      var principalLabel = document.getElementById("principal_label");
+      var durationLabel = document.getElementById("duration_label");
+      var daysInput = document.getElementById("duration_days");
+      var daysHint = document.getElementById("days_hint");
+      var compoundingGroup = document.getElementById("compounding_group");
+      var hint = document.getElementById("type_hint");
+
+      var HINTS = {
+        cumulative: "Interest is reinvested and paid out with the principal at maturity.",
+        simple: "Interest is paid out periodically (monthly/quarterly) and not reinvested.",
+        recurring: "You deposit a fixed amount every month; the balance compounds quarterly."
+      };
+
+      function sync() {
+        var t = typeEl.value;
+        var recurring = (t === "recurring");
+        principalLabel.textContent = recurring ? "Monthly Instalment (₹)" : "Principal Amount (₹)";
+        durationLabel.textContent = recurring ? "Duration (months)" : "Duration";
+        // Recurring deposits are always whole months — lock the days field to 0.
+        if (recurring) { daysInput.value = "0"; }
+        daysInput.disabled = recurring;
+        daysHint.textContent = recurring ? "Not used for RDs" : "Days";
+        compoundingGroup.style.display = (t === "cumulative") ? "" : "none";
+        hint.textContent = HINTS[t] || "";
+      }
+
+      typeEl.addEventListener("change", sync);
+      sync();
+    })();
+  </script>
+{% endblock %}

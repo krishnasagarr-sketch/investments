@@ -31,7 +31,8 @@ where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rat
        ├── banks.html
        ├── metals.html
        ├── summary.html
-       └── chart.html
+       ├── chart.html
+       └── calculator.html
    ```
 
 2. Create a virtual environment (recommended):
@@ -58,6 +59,7 @@ Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created aut
 
 ## Features
 
+- **Calculator** — a standalone interest calculator: pick a deposit type (cumulative / simple interest / recurring), enter the principal or monthly instalment, annual rate, and a **duration in months and days**, and it shows the maturity amount and interest earned — using the exact same math as the rest of the app. For **simple interest**, it also shows the interest payout per **month** and per **quarter** (constant every period, since simple interest doesn't compound). Recurring deposits ignore the days field (RD instalments are always whole months). **Nothing on this page is saved** — it's pure calculation via the URL's query string (`?deposit_type=simple&principal=...`), so a result is shareable/bookmarkable without touching the database.
 - **Dashboard** — the first tab: whole-portfolio totals (deposits **and** metals) — total invested, current value, unrealised gain/loss with return %, deposit maturity value, and **annualised return**. Then breakdowns (each with its own Ann. Return column): **by asset class** (deposits vs metals), **by holder across all assets** (including total metal grams per holder), **deposits by holder & bank**, **metals by type** (grams + value per metal), **metals by holder & type** (grams per holder+metal), and **deposits by bank**.
 - **Annualised return** — a CAGR-style figure (`(current/invested)^(365/days held) − 1`) shown per deposit, per metal holding, and as an invested-weighted blend for every group and the whole portfolio. It's a rough blend across positions with different start dates, not a true money-weighted (XIRR) return — treat it as directional. Holdings younger than 7 days show "—" rather than an exaggerated figure (a 1-day gain projected over a year would be misleading).
 - **Chart** — the same figures as a chart, covering deposits and metals. Pick the **chart type** (bar or pie) with the toggle at the top:
