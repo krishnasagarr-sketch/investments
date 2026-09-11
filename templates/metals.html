@@ -39,8 +39,12 @@
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Current market prices</h2>
     <p class="field-hint" style="margin-bottom:16px;">
-      Price per gram used to value every holding of that metal. Leave a field blank to keep its current value.
+      Price per gram used to value every holding of that metal. Fetch live spot rates, or set a price
+      by hand — leave a field blank to keep its current value.
     </p>
+    {% if fetch_error %}
+      <div class="error-box">Couldn't fetch live prices: {{ fetch_error }}</div>
+    {% endif %}
     {% if prices_missing %}
       <div class="error-box" style="background:#fff2e0; color:var(--amber);">
         No market price set for:
@@ -48,21 +52,35 @@
         Those holdings are valued at their purchase price until you set one.
       </div>
     {% endif %}
+
+    <form method="POST" action="{{ url_for('fetch_metal_prices') }}" style="margin-bottom:20px;">
+      <button type="submit" class="btn secondary" style="width:100%;">🌐 Fetch Live Prices (Gold, Silver, Platinum, Palladium)</button>
+      <p class="field-hint">
+        Spot rate from <a href="https://gold-api.com" target="_blank" rel="noopener">gold-api.com</a>,
+        converted via the USD→INR rate from <a href="https://frankfurter.app" target="_blank" rel="noopener">frankfurter.app</a>.
+        22K is derived from 24K at 22/24 purity. "Other" has no live source — set it by hand.
+      </p>
+    </form>
+
     <form method="POST" action="{{ url_for('update_metal_prices') }}">
       {% for key, label in metal_types.items() %}
+        {% set info = metal_prices.get(key) %}
         <div class="form-group">
           <label for="price_{{ key }}">
             {{ label }} (₹ / gram)
-            {% if metal_prices.get(key) %}
-              <span class="muted" style="font-weight:400;">— updated {{ metal_prices[key].updated_on }}</span>
+            {% if key in live_metal_keys %}<span class="muted" style="font-weight:400;">· auto</span>{% endif %}
+            {% if info %}
+              <span class="muted" style="font-weight:400;">
+                — {{ "🌐 live" if info.source == "live" else "✎ manual" }}, updated {{ info.updated_on }}
+              </span>
             {% endif %}
           </label>
           <input type="number" step="any" id="price_{{ key }}" name="price_{{ key }}"
                  placeholder="not set"
-                 value="{% if metal_prices.get(key) %}{{ '%g'|format(metal_prices[key].price) }}{% endif %}">
+                 value="{% if info %}{{ '%g'|format(info.price) }}{% endif %}">
         </div>
       {% endfor %}
-      <button type="submit" class="btn" style="width:100%;">Update Prices</button>
+      <button type="submit" class="btn" style="width:100%;">Update Prices Manually</button>
     </form>
   </div>
 

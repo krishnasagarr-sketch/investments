@@ -127,9 +127,12 @@ def init_db():
         CREATE TABLE IF NOT EXISTS metal_prices (
             metal TEXT PRIMARY KEY,
             price_per_gram REAL NOT NULL,
-            updated_on TEXT NOT NULL
+            updated_on TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual'
         )
     """)
+    if "source" not in {r[1] for r in conn.execute("PRAGMA table_info(metal_prices)")}:
+        conn.execute("ALTER TABLE metal_prices ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
 
     # Gold split into 24K / 22K — migrate the old single "gold" key.
     conn.execute("UPDATE metals SET metal = 'gold_24k' WHERE metal = 'gold'")
@@ -979,11 +982,64 @@ def delete_deposit(deposit_id):
 
 # ---------- Metals ----------
 def get_metal_prices(db) -> dict:
-    """metal key -> {"price": per-gram rate, "updated_on": iso date}."""
+    """metal key -> {"price": per-gram rate, "updated_on": iso date, "source": manual/live}."""
     return {
-        r["metal"]: {"price": r["price_per_gram"], "updated_on": r["updated_on"]}
+        r["metal"]: {"price": r["price_per_gram"], "updated_on": r["updated_on"], "source": r["source"]}
         for r in db.execute("SELECT * FROM metal_prices").fetchall()
     }
+
+
+# Spot-price API (gold-api.com, no key required) symbol for each metal we can
+# fetch automatically; troy-ounce quotes are converted to rupees per gram.
+METAL_API_SYMBOLS = {
+    "gold_24k": "XAU",
+    "silver": "XAG",
+    "platinum": "XPT",
+    "palladium": "XPD",
+}
+TROY_OUNCE_GRAMS = 31.1034768
+
+
+def fetch_live_metal_prices() -> dict:
+    """Fetch spot prices (USD/troy oz) and the USD->INR rate, return
+    {metal: price_per_gram_in_rupees}. Raises RuntimeError with a
+    user-facing message on any network/parsing failure."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    def get_json(url):
+        req = urllib.request.Request(url, headers={"User-Agent": "fd-manager/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e.reason}")
+        except (TimeoutError, OSError) as e:
+            raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e}")
+        except (ValueError, json.JSONDecodeError):
+            raise RuntimeError(f"{url.split('/')[2]} returned an unexpected response.")
+
+    fx = get_json("https://api.frankfurter.app/latest?from=USD&to=INR")
+    try:
+        usd_to_inr = float(fx["rates"]["INR"])
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("Could not read the USD/INR exchange rate.")
+
+    prices = {}
+    for metal, symbol in METAL_API_SYMBOLS.items():
+        data = get_json(f"https://api.gold-api.com/price/{symbol}")
+        try:
+            usd_per_oz = float(data["price"])
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError(f"Could not read the spot price for {metal}.")
+        prices[metal] = usd_per_oz / TROY_OUNCE_GRAMS * usd_to_inr
+
+    # 22K gold is 22/24ths pure; derive it from the 24K spot rate.
+    if "gold_24k" in prices:
+        prices["gold_22k"] = prices["gold_24k"] * 22 / 24
+
+    return prices
 
 
 def list_metals(db):
@@ -1082,6 +1138,7 @@ def _render_metals(db, **kwargs):
         metals=metals,
         metal_types=METAL_TYPES,
         metal_prices=prices,
+        live_metal_keys=set(METAL_API_SYMBOLS) | {"gold_22k"},
         depositors=db.execute(
             "SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE"
         ).fetchall(),
@@ -1139,10 +1196,36 @@ def update_metal_prices():
         if price <= 0:
             continue
         db.execute(
-            """INSERT INTO metal_prices (metal, price_per_gram, updated_on)
-               VALUES (?, ?, ?)
+            """INSERT INTO metal_prices (metal, price_per_gram, updated_on, source)
+               VALUES (?, ?, ?, 'manual')
                ON CONFLICT(metal) DO UPDATE SET price_per_gram = excluded.price_per_gram,
-                                                updated_on = excluded.updated_on""",
+                                                updated_on = excluded.updated_on,
+                                                source = excluded.source""",
+            (metal, price, today),
+        )
+    db.commit()
+    return redirect(url_for("metals_page"))
+
+
+@app.route("/metals/prices/fetch", methods=["POST"])
+def fetch_metal_prices():
+    db = get_db()
+    try:
+        live_prices = fetch_live_metal_prices()
+    except RuntimeError as e:
+        return _render_metals(
+            db, error=None, fetch_error=str(e),
+            form_data=dict(BLANK_METAL_FORM, purchase_date=str(date.today())), editing=None,
+        )
+
+    today = str(date.today())
+    for metal, price in live_prices.items():
+        db.execute(
+            """INSERT INTO metal_prices (metal, price_per_gram, updated_on, source)
+               VALUES (?, ?, ?, 'live')
+               ON CONFLICT(metal) DO UPDATE SET price_per_gram = excluded.price_per_gram,
+                                                updated_on = excluded.updated_on,
+                                                source = excluded.source""",
             (metal, price, today),
         )
     db.commit()
