@@ -1286,7 +1286,6 @@ def _render_metals(db, **kwargs):
         metals=metals,
         metal_types=METAL_TYPES,
         metal_prices=prices,
-        live_metal_keys=set(METAL_API_SYMBOLS) | {"gold_22k"},
         depositors=db.execute(
             "SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE"
         ).fetchall(),
@@ -1299,6 +1298,24 @@ def _render_metals(db, **kwargs):
         wide_page=True,
         **kwargs,
     )
+
+
+def _render_metal_prices(db, **kwargs):
+    metals = list_metals(db)
+    return render_template(
+        "metal_prices.html",
+        metal_types=METAL_TYPES,
+        metal_prices=get_metal_prices(db),
+        live_metal_keys=set(METAL_API_SYMBOLS) | {"gold_22k"},
+        prices_missing=sorted({m["metal"] for m in metals if not m["price_is_market"]}),
+        active_tab="metal_prices",
+        **kwargs,
+    )
+
+
+@app.route("/metal-prices")
+def metal_prices_page():
+    return _render_metal_prices(get_db(), fetch_error=None)
 
 
 @app.route("/metals", methods=["GET", "POST"])
@@ -1354,7 +1371,7 @@ def update_metal_prices():
             (metal, price, today),
         )
     db.commit()
-    return redirect(url_for("metals_page"))
+    return redirect(url_for("metal_prices_page"))
 
 
 @app.route("/metals/prices/fetch", methods=["POST"])
@@ -1363,10 +1380,7 @@ def fetch_metal_prices():
     try:
         live_prices = fetch_live_metal_prices()
     except RuntimeError as e:
-        return _render_metals(
-            db, error=None, fetch_error=str(e),
-            form_data=dict(BLANK_METAL_FORM, purchase_date=str(date.today())), editing=None,
-        )
+        return _render_metal_prices(db, fetch_error=str(e))
 
     today = str(date.today())
     for metal, price in live_prices.items():
@@ -1379,7 +1393,7 @@ def fetch_metal_prices():
             (metal, price, today),
         )
     db.commit()
-    return redirect(url_for("metals_page"))
+    return redirect(url_for("metal_prices_page"))
 
 
 @app.route("/metals/<int:metal_id>/edit", methods=["GET", "POST"])
