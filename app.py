@@ -1211,6 +1211,7 @@ def _render_metals(db, **kwargs):
         total_gain=sum(m["gain"] for m in metals),
         total_annualised_return=weighted_annualised_return(metals, "cost", "value", "days_held"),
         active_tab="metals",
+        wide_page=True,
         **kwargs,
     )
 

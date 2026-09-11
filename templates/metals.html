@@ -152,20 +152,18 @@
 
   <div class="card">
     {% if metals %}
-      <div class="table-scroll sticky-last">
+      <div class="table-scroll sticky-last compact">
       <table>
         <thead>
           <tr>
             <th>Metal</th>
             <th>Holder</th>
             <th>Grams</th>
-            <th>Buy ₹/g</th>
-            <th>Now ₹/g</th>
+            <th>Price ₹/g</th>
             <th>Cost</th>
             <th>Value</th>
             <th>Gain / Loss</th>
             <th>Ann. Return</th>
-            <th>Bought</th>
             <th></th>
           </tr>
         </thead>
@@ -178,12 +176,11 @@
             </td>
             <td>{{ m.depositor_name or "—" }}</td>
             <td>{{ "%.3f"|format(m.grams) }}</td>
-            <td>{{ (m.purchase_price)|money }}</td>
             <td>
-              {{ (m.current_price)|money }}
-              {% if not m.price_is_market %}
-                <div class="muted" style="font-size:12px;">from purchase</div>
-              {% endif %}
+              Buy {{ (m.purchase_price)|money }}
+              <div class="muted" style="font-size:12px;">
+                Now {{ (m.current_price)|money }}{% if not m.price_is_market %} (from purchase){% endif %}
+              </div>
             </td>
             <td>{{ (m.cost)|money }}</td>
             <td>{{ (m.value)|money }}</td>
@@ -193,9 +190,10 @@
             </td>
             <td class="{{ 'positive' if (m.annualised_return or 0) >= 0 else 'negative' }}">
               {{ m.annualised_return|pct }}
-              {% if m.annualised_return is none %}<div class="muted" style="font-size:12px;">too new</div>{% endif %}
+              <div class="muted" style="font-size:12px;">
+                {% if m.annualised_return is none %}too new &middot; {% endif %}bought {{ m.purchase_date }}
+              </div>
             </td>
-            <td>{{ m.purchase_date }}</td>
             <td>
               <div class="row-actions">
                 <a href="{{ url_for('edit_metal', metal_id=m.id) }}" class="btn link">Edit</a>
@@ -209,12 +207,12 @@
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="5"><strong>Total</strong></td>
+            <td colspan="4"><strong>Total</strong></td>
             <td><strong>{{ (total_cost)|money }}</strong></td>
             <td><strong>{{ (total_value)|money }}</strong></td>
             <td><strong>{{ gl(total_gain) }}</strong></td>
             <td><strong>{{ total_annualised_return|pct }}</strong></td>
-            <td colspan="2"></td>
+            <td></td>
           </tr>
         </tfoot>
       </table>
