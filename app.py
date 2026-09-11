@@ -42,8 +42,16 @@ def format_rupees(value, decimals=2) -> str:
     return ("−" + out) if negative else out
 
 
+def format_pct(v, decimals=1) -> str:
+    """Render a nullable signed percentage: None -> '—', else e.g. '+8.2%'."""
+    if v is None:
+        return "—"
+    return f"{v:+.{decimals}f}%"
+
+
 app.jinja_env.filters["money"] = lambda v: format_rupees(v, 2)
 app.jinja_env.filters["money0"] = lambda v: format_rupees(v, 0)
+app.jinja_env.filters["pct"] = format_pct
 app.jinja_env.globals["CURRENCY_SYMBOL"] = CURRENCY_SYMBOL
 
 # Supported deposit types: internal key -> human label
@@ -311,6 +319,35 @@ def recurring_value_to_date(monthly_installment: float, annual_rate: float,
     return value
 
 
+MIN_DAYS_TO_ANNUALISE = 7  # shorter holds swing wildly when annualised; show "—" instead
+
+
+def annualised_return_pct(invested: float, current: float, days_held: float):
+    """CAGR-style annualised return: ((current/invested)^(365/days) - 1) * 100.
+    Returns None when it can't be sensibly computed (nothing invested, not
+    started yet, or too new to annualise without a misleading swing)."""
+    if invested is None or invested <= 0 or days_held is None or days_held < MIN_DAYS_TO_ANNUALISE:
+        return None
+    years = days_held / DAYS_PER_YEAR
+    try:
+        return ((current / invested) ** (1.0 / years) - 1.0) * 100.0
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return None
+
+
+def weighted_annualised_return(rows, invested_key: str, current_key: str, days_key: str):
+    """Blend several holdings' annualised returns into one figure: the holding
+    period used is the invested-weighted average of the individual periods
+    (so a big, long-held position moves the number more than a small, new
+    one). `rows` may be dicts or sqlite3.Row-like objects."""
+    total_invested = sum(r[invested_key] for r in rows)
+    total_current = sum(r[current_key] for r in rows)
+    if total_invested <= 0:
+        return None
+    weighted_days = sum(r[invested_key] * r[days_key] for r in rows) / total_invested
+    return annualised_return_pct(total_invested, total_current, weighted_days)
+
+
 def _row_get(d, key, default):
     return d[key] if key in d.keys() else default
 
@@ -393,6 +430,8 @@ def summarise_deposit(d) -> dict:
             current_value = d["principal"] * (1 + r / n) ** (n * elapsed_years)
 
     accrued_interest = current_value - paid_in
+    days_held = max((today - start).days, 0)
+    annualised_return = annualised_return_pct(invested, current_value, days_held)
 
     return {
         "id": d["id"],
@@ -422,6 +461,8 @@ def summarise_deposit(d) -> dict:
         "paid_in": paid_in,
         "current_value": current_value,
         "accrued_interest": accrued_interest,
+        "days_held": days_held,
+        "annualised_return": annualised_return,
     }
 
 
@@ -490,7 +531,7 @@ def depositors_with_totals(db):
 
 
 def _agg_blank():
-    return {"count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0}
+    return {"count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0, "days_x_invested": 0.0}
 
 
 def _agg_add(acc, s):
@@ -498,10 +539,18 @@ def _agg_add(acc, s):
     acc["invested"] += s["invested"]
     acc["current"] += s["current_value"]
     acc["maturity"] += s["maturity_amount"]
+    acc["days_x_invested"] += s["invested"] * s["days_held"]
 
 
 def _metal_blank():
-    return {"count": 0, "grams": 0.0, "invested": 0.0, "current": 0.0}
+    return {"count": 0, "grams": 0.0, "invested": 0.0, "current": 0.0, "days_x_invested": 0.0}
+
+
+def _with_annualised(acc: dict) -> dict:
+    """Add an "annualised_return" key: the invested-weighted average holding
+    period, fed into annualised_return_pct. Leaves the input untouched."""
+    weighted_days = (acc["days_x_invested"] / acc["invested"]) if acc["invested"] else 0
+    return {**acc, "annualised_return": annualised_return_pct(acc["invested"], acc["current"], weighted_days)}
 
 
 def portfolio_summary(db):
@@ -539,44 +588,53 @@ def portfolio_summary(db):
             acc["grams"] += m["grams"]
             acc["invested"] += m["cost"]
             acc["current"] += m["value"]
+            acc["days_x_invested"] += m["cost"] * m["days_held"]
         met_overall["count"] += 1
         met_overall["grams"] += m["grams"]
         met_overall["invested"] += m["cost"]
         met_overall["current"] += m["value"]
+        met_overall["days_x_invested"] += m["cost"] * m["days_held"]
 
     # ----- combined by holder (deposits + metals) -----
     combined = {}
     def _c(h):
         return combined.setdefault(h, {"deposit_count": 0, "metal_count": 0, "metal_grams": 0.0,
-                                       "invested": 0.0, "current": 0.0, "maturity": 0.0})
+                                       "invested": 0.0, "current": 0.0, "maturity": 0.0,
+                                       "days_x_invested": 0.0})
     for h, v in dep_holder.items():
         c = _c(h)
         c["deposit_count"] += v["count"]
         c["invested"] += v["invested"]; c["current"] += v["current"]; c["maturity"] += v["maturity"]
+        c["days_x_invested"] += v["days_x_invested"]
     for h, v in met_holder.items():
         c = _c(h)
         c["metal_count"] += v["count"]
         c["metal_grams"] += v["grams"]
         c["invested"] += v["invested"]; c["current"] += v["current"]
+        c["days_x_invested"] += v["days_x_invested"]
 
     total_invested = dep_overall["invested"] + met_overall["invested"]
     total_current = dep_overall["current"] + met_overall["current"]
+    total_days_x_invested = dep_overall["days_x_invested"] + met_overall["days_x_invested"]
+    total_weighted_days = (total_days_x_invested / total_invested) if total_invested else 0
+    total_annualised_return = annualised_return_pct(total_invested, total_current, total_weighted_days)
 
     return {
-        "dep_pairs": [{"holder": h, "bank": b, **v}
+        "dep_pairs": [_with_annualised({"holder": h, "bank": b, **v})
                       for (h, b), v in sorted(dep_pair.items(),
                                               key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))],
-        "dep_banks": [{"name": b, **v} for b, v in sorted(dep_bank.items(), key=_key)],
-        "dep_overall": dep_overall,
-        "met_pairs": [{"holder": h, "metal": mt, **v}
+        "dep_banks": [_with_annualised({"name": b, **v}) for b, v in sorted(dep_bank.items(), key=_key)],
+        "dep_overall": _with_annualised(dep_overall),
+        "met_pairs": [_with_annualised({"holder": h, "metal": mt, **v})
                       for (h, mt), v in sorted(met_pair.items(),
                                                key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))],
-        "met_by_metal": [{"name": mt, **v} for mt, v in sorted(met_metal.items(), key=_key)],
-        "met_overall": met_overall,
-        "combined_holders": [{"name": h, **v} for h, v in sorted(combined.items(), key=_key)],
+        "met_by_metal": [_with_annualised({"name": mt, **v}) for mt, v in sorted(met_metal.items(), key=_key)],
+        "met_overall": _with_annualised(met_overall),
+        "combined_holders": [_with_annualised({"name": h, **v}) for h, v in sorted(combined.items(), key=_key)],
         "total_invested": total_invested,
         "total_current": total_current,
         "total_gain": total_current - total_invested,
+        "total_annualised_return": total_annualised_return,
     }
 
 
@@ -678,6 +736,7 @@ def dashboard():
     total_current = sum(r["current_value"] for r in rows)
     total_maturity = sum(r["maturity_amount"] for r in rows)
     total_interest = sum(r["interest_earned"] for r in rows)
+    total_annualised_return = weighted_annualised_return(rows, "invested", "current_value", "days_held")
 
     return render_template(
         "dashboard.html",
@@ -686,6 +745,7 @@ def dashboard():
         total_current=total_current,
         total_maturity=total_maturity,
         total_interest=total_interest,
+        total_annualised_return=total_annualised_return,
         active_tab="dashboard",
         wide_page=True,
     )
@@ -1058,6 +1118,7 @@ def list_metals(db):
         cost = m["grams"] * m["purchase_price"]
         value = m["grams"] * current_price
         gain = value - cost
+        days_held = max((date.today() - date.fromisoformat(m["purchase_date"])).days, 0)
         rows.append({
             "id": m["id"],
             "metal": m["metal"],
@@ -1075,6 +1136,8 @@ def list_metals(db):
             "value": value,
             "gain": gain,
             "gain_pct": (gain / cost * 100.0) if cost else 0.0,
+            "days_held": days_held,
+            "annualised_return": annualised_return_pct(cost, value, days_held),
         })
     return rows
 
@@ -1146,6 +1209,7 @@ def _render_metals(db, **kwargs):
         total_cost=sum(m["cost"] for m in metals),
         total_value=sum(m["value"] for m in metals),
         total_gain=sum(m["gain"] for m in metals),
+        total_annualised_return=weighted_annualised_return(metals, "cost", "value", "days_held"),
         active_tab="metals",
         **kwargs,
     )

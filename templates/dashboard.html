@@ -26,6 +26,12 @@
         <div class="value positive">+{{ (total_interest)|money }}</div>
       </div>
       <div class="summary-item">
+        <div class="label">Annualised Return</div>
+        <div class="value {{ 'positive' if (total_annualised_return or 0) >= 0 else 'negative' }}">
+          {{ total_annualised_return|pct }}
+        </div>
+      </div>
+      <div class="summary-item">
         <div class="label">Number of Deposits</div>
         <div class="value">{{ rows|length }}</div>
       </div>
@@ -83,6 +89,7 @@
             <td>
               {{ (r.current_value)|money }}
               <div class="muted" style="font-size:12px;">+{{ (r.accrued_interest)|money }} accrued</div>
+              <div class="muted" style="font-size:12px;">{{ r.annualised_return|pct }} ann.</div>
             </td>
             <td>
               {{ (r.maturity_amount)|money }}

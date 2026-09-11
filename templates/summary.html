@@ -34,7 +34,17 @@
         <div class="label">Deposit Maturity Value</div>
         <div class="value">{{ (dep_overall.maturity)|money }}</div>
       </div>
+      <div class="summary-item">
+        <div class="label">Annualised Return</div>
+        <div class="value {{ 'positive' if (total_annualised_return or 0) >= 0 else 'negative' }}">
+          {{ total_annualised_return|pct }}
+        </div>
+      </div>
     </div>
+    <p class="field-hint">
+      Annualised return is the invested-weighted CAGR across all holdings — a rough blend, not a true
+      money-weighted (XIRR) return. Holdings under 7 days old are excluded and show "—".
+    </p>
   </div>
 
   <div class="card">
@@ -42,7 +52,7 @@
     <div class="table-scroll">
     <table>
       <thead>
-        <tr><th>Asset class</th><th>Holdings</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+        <tr><th>Asset class</th><th>Holdings</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
       </thead>
       <tbody>
         <tr>
@@ -51,6 +61,7 @@
           <td>{{ (dep_overall.invested)|money }}</td>
           <td>{{ (dep_overall.current)|money }}</td>
           <td>{{ gl(dep_overall.current - dep_overall.invested) }}</td>
+          <td>{{ dep_overall.annualised_return|pct }}</td>
         </tr>
         <tr>
           <td><strong>Metals</strong></td>
@@ -58,6 +69,7 @@
           <td>{{ (met_overall.invested)|money }}</td>
           <td>{{ (met_overall.current)|money }}</td>
           <td>{{ gl(met_overall.current - met_overall.invested) }}</td>
+          <td>{{ met_overall.annualised_return|pct }}</td>
         </tr>
       </tbody>
       <tfoot>
@@ -67,6 +79,7 @@
           <td><strong>{{ (total_invested)|money }}</strong></td>
           <td><strong>{{ (total_current)|money }}</strong></td>
           <td><strong>{{ gl(total_gain) }}</strong></td>
+          <td><strong>{{ total_annualised_return|pct }}</strong></td>
         </tr>
       </tfoot>
     </table>
@@ -79,7 +92,7 @@
       <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Holder</th><th>Deposits</th><th>Metals</th><th>Metal (g)</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+          <tr><th>Holder</th><th>Deposits</th><th>Metals</th><th>Metal (g)</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
         </thead>
         <tbody>
           {% for r in combined_holders %}
@@ -91,6 +104,7 @@
             <td>{{ (r.invested)|money }}</td>
             <td>{{ (r.current)|money }}</td>
             <td>{{ gl(r.current - r.invested) }}</td>
+            <td>{{ r.annualised_return|pct }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -103,6 +117,7 @@
             <td><strong>{{ (total_invested)|money }}</strong></td>
             <td><strong>{{ (total_current)|money }}</strong></td>
             <td><strong>{{ gl(total_gain) }}</strong></td>
+            <td><strong>{{ total_annualised_return|pct }}</strong></td>
           </tr>
         </tfoot>
       </table>
@@ -118,7 +133,7 @@
       <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Holder</th><th>Bank</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr>
+          <tr><th>Holder</th><th>Bank</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th><th>Ann. Return</th></tr>
         </thead>
         <tbody>
           {% set ns = namespace(prev="") %}
@@ -130,6 +145,7 @@
             <td>{{ (r.invested)|money }}</td>
             <td>{{ (r.current)|money }}</td>
             <td>{{ (r.maturity)|money }}</td>
+            <td>{{ r.annualised_return|pct }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -140,6 +156,7 @@
             <td><strong>{{ (dep_overall.invested)|money }}</strong></td>
             <td><strong>{{ (dep_overall.current)|money }}</strong></td>
             <td><strong>{{ (dep_overall.maturity)|money }}</strong></td>
+            <td><strong>{{ dep_overall.annualised_return|pct }}</strong></td>
           </tr>
         </tfoot>
       </table>
@@ -155,7 +172,7 @@
       <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Metal</th><th>Holdings</th><th>Grams</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+          <tr><th>Metal</th><th>Holdings</th><th>Grams</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
         </thead>
         <tbody>
           {% for r in met_by_metal %}
@@ -166,6 +183,7 @@
             <td>{{ (r.invested)|money }}</td>
             <td>{{ (r.current)|money }}</td>
             <td>{{ gl(r.current - r.invested) }}</td>
+            <td>{{ r.annualised_return|pct }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -177,6 +195,7 @@
             <td><strong>{{ (met_overall.invested)|money }}</strong></td>
             <td><strong>{{ (met_overall.current)|money }}</strong></td>
             <td><strong>{{ gl(met_overall.current - met_overall.invested) }}</strong></td>
+            <td><strong>{{ met_overall.annualised_return|pct }}</strong></td>
           </tr>
         </tfoot>
       </table>
@@ -192,7 +211,7 @@
       <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Holder</th><th>Metal</th><th>Holdings</th><th>Grams</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th></tr>
+          <tr><th>Holder</th><th>Metal</th><th>Holdings</th><th>Grams</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
         </thead>
         <tbody>
           {% set ns = namespace(prev="") %}
@@ -205,6 +224,7 @@
             <td>{{ (r.invested)|money }}</td>
             <td>{{ (r.current)|money }}</td>
             <td>{{ gl(r.current - r.invested) }}</td>
+            <td>{{ r.annualised_return|pct }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -216,6 +236,7 @@
             <td><strong>{{ (met_overall.invested)|money }}</strong></td>
             <td><strong>{{ (met_overall.current)|money }}</strong></td>
             <td><strong>{{ gl(met_overall.current - met_overall.invested) }}</strong></td>
+            <td><strong>{{ met_overall.annualised_return|pct }}</strong></td>
           </tr>
         </tfoot>
       </table>
@@ -230,7 +251,7 @@
     <div class="table-scroll">
     <table>
       <thead>
-        <tr><th>Bank</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr>
+        <tr><th>Bank</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th><th>Ann. Return</th></tr>
       </thead>
       <tbody>
         {% for r in dep_banks %}
@@ -240,6 +261,7 @@
           <td>{{ (r.invested)|money }}</td>
           <td>{{ (r.current)|money }}</td>
           <td>{{ (r.maturity)|money }}</td>
+          <td>{{ r.annualised_return|pct }}</td>
         </tr>
         {% endfor %}
       </tbody>
