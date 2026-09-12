@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Notifications — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('dashboard') }}" class="btn secondary">← Back to Dashboard</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Maturity email alerts</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Get an email when a deposit is close to maturing. Checked automatically every 12 hours while
+      the app is running (plus once at startup), or trigger it yourself below.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('save_notification_settings') }}">
+      <div class="form-group">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="checkbox" name="enabled" style="width:auto;" {% if settings.enabled %}checked{% endif %}>
+          <span>Enable maturity email alerts</span>
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label for="recipient_email">Recipient email</label>
+        <input type="email" id="recipient_email" name="recipient_email" placeholder="you@example.com"
+               value="{{ settings.recipient_email }}">
+      </div>
+
+      <div class="form-group">
+        <label for="sender_email">Sender Gmail address</label>
+        <input type="email" id="sender_email" name="sender_email" placeholder="you@gmail.com"
+               value="{{ settings.sender_email }}">
+      </div>
+
+      <div class="form-group">
+        <label for="sender_app_password">
+          Gmail App Password
+          {% if settings.sender_app_password %}
+            <span class="muted" style="font-weight:400;">— saved, leave blank to keep it</span>
+          {% endif %}
+        </label>
+        <input type="password" id="sender_app_password" name="sender_app_password"
+               placeholder="{{ 'leave blank to keep saved password' if settings.sender_app_password else '16-character app password' }}"
+               autocomplete="new-password">
+        <p class="field-hint">
+          Not your normal Gmail password. Turn on 2-Step Verification, then generate one at
+          <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>.
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label for="days_before">Alert this many days before maturity</label>
+        <input type="number" id="days_before" name="days_before" min="1" placeholder="e.g. 30"
+               value="{{ settings.days_before }}">
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">Save Settings</button>
+    </form>
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Status</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Last checked: <strong>{{ settings.last_check_at or "never" }}</strong><br>
+      {% if settings.last_check_result %}{{ settings.last_check_result }}{% endif %}
+    </p>
+    <div style="display:flex; gap:10px;">
+      <form method="POST" action="{{ url_for('send_test_email') }}" style="flex:1;">
+        <button type="submit" class="btn secondary" style="width:100%;">Send Test Email</button>
+      </form>
+      <form method="POST" action="{{ url_for('check_notifications_now') }}" style="flex:1;">
+        <button type="submit" class="btn" style="width:100%;">Check &amp; Send Now</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">
+      Upcoming maturities (next {{ settings.days_before }} days)
+    </h2>
+    {% if upcoming %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Holder</th>
+            <th>Bank</th>
+            <th>Type</th>
+            <th>Maturity Date</th>
+            <th>Days Left</th>
+            <th>Maturity Amount</th>
+            <th>Alert</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in upcoming %}
+          <tr>
+            <td>{{ r.holder_name or "—" }}</td>
+            <td>{{ r.bank_name or "—" }}</td>
+            <td><span class="badge type type-{{ r.deposit_type }}">{{ r.deposit_type_label }}</span></td>
+            <td>{{ r.maturity_date }}</td>
+            <td>{{ r.days_remaining }}</td>
+            <td>{{ (r.maturity_amount)|money }}</td>
+            <td>
+              {% if r.alert_due %}
+                <span class="badge active">due next check</span>
+              {% else %}
+                <span class="badge matured">sent {{ r.last_notified_on }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>Nothing maturing in the next {{ settings.days_before }} days.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

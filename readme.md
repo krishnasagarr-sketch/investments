@@ -33,7 +33,8 @@ where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rat
        ├── metal_prices.html
        ├── summary.html
        ├── chart.html
-       └── calculator.html
+       ├── calculator.html
+       └── notifications.html
    ```
 
 2. Create a virtual environment (recommended):
@@ -54,11 +55,17 @@ where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rat
 python app.py
 ```
 
-Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created automatically on first run — your data persists across restarts. It holds `depositors` (holder ID + name), `banks` (bank ID + name), `deposits` (references a depositor and a bank by id), `metals` (precious-metal holdings), and `metal_prices` (one live ₹/gram rate per metal). On startup the app runs in-place migrations, so an older `.db` from a previous version is upgraded automatically; legacy free-text holder / bank names are promoted into `depositors` / `banks` rows, and `metal_prices` is seeded from each metal's most recent holding.
+Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created automatically on first run — your data persists across restarts. It holds `depositors` (holder ID + name), `banks` (bank ID + name), `deposits` (references a depositor and a bank by id), `metals` (precious-metal holdings), `metal_prices` (one live ₹/gram rate per metal), and `notification_settings` (the maturity-email settings, a single row). On startup the app runs in-place migrations, so an older `.db` from a previous version is upgraded automatically; legacy free-text holder / bank names are promoted into `depositors` / `banks` rows, and `metal_prices` is seeded from each metal's most recent holding.
 
 > **Add at least one depositor and one bank first** (Depositors / Banks tabs) — the Add Deposit form needs both to attach the deposit to.
 
 ## Features
+
+- **Notifications** — email yourself when a deposit is close to maturing. On the **Notifications** tab: turn it on, set a recipient email, a **sender Gmail address + Gmail App Password** (not your normal password — generate one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) after enabling 2-Step Verification), and how many days before maturity to alert. Sends via Gmail SMTP using only the Python standard library (`smtplib`) — no new dependency.
+  - A background thread checks every **12 hours** (and once at startup) for as long as `python app.py` is running — there's no separate scheduler to configure, but it also means nothing fires while the app is stopped.
+  - Each maturing deposit is bundled into **one digest email**; a deposit already alerted is skipped for **7 days** even if it's checked again, so you don't get the same reminder daily. The Notifications page shows every deposit within the window and whether it's due for a fresh alert or was recently sent.
+  - **Send Test Email** verifies your SMTP settings immediately without touching deposit state; **Check & Send Now** runs the real check on demand. Both report success/failure right on the page — a bad password shows *"Gmail rejected the sender email / app password"* rather than failing silently.
+  - The app password is stored in `fixed_deposits.db` (gitignored, never committed) — leaving the password field blank on save keeps whatever is already stored, so it's never echoed back into the page.
 
 - **Calculator** — a standalone interest calculator: pick a deposit type (cumulative / simple interest / recurring), enter the principal or monthly instalment, annual rate, and a **duration in months and days**, and it shows the maturity amount and interest earned — using the exact same math as the rest of the app. For **simple interest**, it also shows the interest payout per **month** and per **quarter** (constant every period, since simple interest doesn't compound). Recurring deposits ignore the days field (RD instalments are always whole months). **Nothing on this page is saved** — it's pure calculation via the URL's query string (`?deposit_type=simple&principal=...`), so a result is shareable/bookmarkable without touching the database.
 - **Dashboard** — the first tab: whole-portfolio totals (deposits **and** metals) — total invested, current value, unrealised gain/loss with return %, deposit maturity value, and **annualised return**. Then breakdowns (each with its own Ann. Return column): **by asset class** (deposits vs metals), **by holder across all assets** (including total metal grams per holder), **deposits by holder & bank**, **metals by type** (grams + value per metal), **metals by holder & type** (grams per holder+metal), and **deposits by bank**.

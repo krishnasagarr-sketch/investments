@@ -1,6 +1,11 @@
 import math
+import os
+import smtplib
 import sqlite3
-from datetime import date, timedelta
+import threading
+import time
+from datetime import date, datetime, timedelta
+from email.mime.text import MIMEText
 from pathlib import Path
 
 from flask import Flask, render_template, request, redirect, url_for, g
@@ -187,6 +192,7 @@ def init_db():
         "tenure_days": "ALTER TABLE deposits ADD COLUMN tenure_days INTEGER NOT NULL DEFAULT 0",
         "depositor_id": "ALTER TABLE deposits ADD COLUMN depositor_id INTEGER REFERENCES depositors(id)",
         "bank_ref_id": "ALTER TABLE deposits ADD COLUMN bank_ref_id INTEGER REFERENCES banks(id)",
+        "last_notified_on": "ALTER TABLE deposits ADD COLUMN last_notified_on TEXT",
     }
     for col, ddl in migrations.items():
         if col not in existing_cols:
@@ -219,6 +225,21 @@ def init_db():
             "UPDATE deposits SET bank_ref_id = ? WHERE bank_ref_id IS NULL AND bank_name = ?",
             (bank_id, row["bank_name"]),
         )
+
+    # Maturity-reminder email settings (a single row, id=1).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notification_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0,
+            recipient_email TEXT NOT NULL DEFAULT '',
+            sender_email TEXT NOT NULL DEFAULT '',
+            sender_app_password TEXT NOT NULL DEFAULT '',
+            days_before INTEGER NOT NULL DEFAULT 30,
+            last_check_at TEXT,
+            last_check_result TEXT
+        )
+    """)
+    conn.execute("INSERT OR IGNORE INTO notification_settings (id) VALUES (1)")
 
     conn.commit()
     conn.close()
@@ -1125,6 +1146,235 @@ def delete_deposit(deposit_id):
     return redirect(url_for("dashboard"))
 
 
+# ---------- Maturity email notifications ----------
+# Don't re-alert on the same deposit more than once a week, so an "enabled"
+# check that runs every few hours doesn't spam the same reminder daily.
+NOTIFY_RESEND_COOLDOWN_DAYS = 7
+
+
+def get_notification_settings(db) -> dict:
+    row = db.execute("SELECT * FROM notification_settings WHERE id = 1").fetchone()
+    return dict(row) if row else {}
+
+
+def deposits_within_window(db, days_before: int):
+    """Un-matured deposits maturing within `days_before` days, each tagged
+    with whether it's actually due for an alert (i.e. not in the resend
+    cooldown) so the page can preview upcoming maturities honestly."""
+    today = date.today()
+    rows = []
+    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+        s = summarise_deposit(d)
+        if s["is_matured"] or s["days_remaining"] > days_before:
+            continue
+        last = d["last_notified_on"]
+        in_cooldown = bool(last) and (today - date.fromisoformat(last)).days < NOTIFY_RESEND_COOLDOWN_DAYS
+        s["last_notified_on"] = last
+        s["alert_due"] = not in_cooldown
+        rows.append(s)
+    return sorted(rows, key=lambda r: r["days_remaining"])
+
+
+def deposits_due_for_alert(db, days_before: int):
+    return [r for r in deposits_within_window(db, days_before) if r["alert_due"]]
+
+
+def build_maturity_email(rows) -> tuple:
+    """Returns (subject, plain-text body) for a digest of deposits due."""
+    n = len(rows)
+    subject = f"\U0001F3E6 {n} fixed deposit{'s' if n != 1 else ''} maturing soon"
+    lines = [f"{n} deposit(s) are approaching maturity:", ""]
+    for r in rows:
+        lines.append(
+            f"- {r['holder_name'] or 'Unknown holder'} / {r['bank_name'] or 'Unknown bank'}: "
+            f"{format_rupees(r['maturity_amount'])} matures {r['maturity_date']} "
+            f"({r['days_remaining']} day{'s' if r['days_remaining'] != 1 else ''} left)"
+        )
+    lines += ["", "— sent automatically by Fixed Deposit Manager"]
+    return subject, "\n".join(lines)
+
+
+def send_email(settings: dict, subject: str, body: str) -> None:
+    """Send via Gmail SMTP with an App Password. Raises RuntimeError with a
+    user-facing message on any failure."""
+    if not settings.get("sender_email") or not settings.get("sender_app_password"):
+        raise RuntimeError("Sender email / app password isn't set.")
+    if not settings.get("recipient_email"):
+        raise RuntimeError("Recipient email isn't set.")
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = settings["sender_email"]
+    msg["To"] = settings["recipient_email"]
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
+            server.starttls()
+            server.login(settings["sender_email"], settings["sender_app_password"])
+            server.sendmail(settings["sender_email"], [settings["recipient_email"]], msg.as_string())
+    except smtplib.SMTPAuthenticationError:
+        raise RuntimeError("Gmail rejected the sender email / app password.")
+    except (smtplib.SMTPException, OSError) as e:
+        raise RuntimeError(f"Could not send email ({e}).")
+
+
+def _record_check_result(db, result: str) -> None:
+    db.execute(
+        "UPDATE notification_settings SET last_check_at = ?, last_check_result = ? WHERE id = 1",
+        (datetime.now().isoformat(timespec="seconds"), result),
+    )
+    db.commit()
+
+
+def run_maturity_check(db) -> str:
+    """Email a digest of any deposits newly due for a maturity reminder.
+    Always updates last_check_at / last_check_result. Returns the result."""
+    settings = get_notification_settings(db)
+    if not settings.get("enabled"):
+        result = "Notifications are turned off."
+        _record_check_result(db, result)
+        return result
+
+    due = deposits_due_for_alert(db, settings["days_before"])
+    if not due:
+        result = "No deposits due for a reminder."
+        _record_check_result(db, result)
+        return result
+
+    subject, body = build_maturity_email(due)
+    try:
+        send_email(settings, subject, body)
+    except RuntimeError as e:
+        result = f"Failed to send: {e}"
+        _record_check_result(db, result)
+        return result
+
+    today = str(date.today())
+    for r in due:
+        db.execute("UPDATE deposits SET last_notified_on = ? WHERE id = ?", (today, r["id"]))
+    result = f"Emailed a reminder for {len(due)} deposit(s)."
+    _record_check_result(db, result)
+    return result
+
+
+@app.route("/notifications")
+def notifications_page():
+    db = get_db()
+    settings = get_notification_settings(db)
+    upcoming = deposits_within_window(db, settings["days_before"])
+    return render_template(
+        "notifications.html",
+        settings=settings,
+        upcoming=upcoming,
+        cooldown_days=NOTIFY_RESEND_COOLDOWN_DAYS,
+        active_tab="notifications",
+        error=None,
+    )
+
+
+@app.route("/notifications/settings", methods=["POST"])
+def save_notification_settings():
+    db = get_db()
+    current = get_notification_settings(db)
+
+    enabled = 1 if request.form.get("enabled") == "on" else 0
+    recipient_email = request.form.get("recipient_email", "").strip()
+    sender_email = request.form.get("sender_email", "").strip()
+    sender_app_password = request.form.get("sender_app_password", "").strip()
+    # Leaving the password field blank keeps whatever is already saved,
+    # so the page never has to (and never does) echo it back into the HTML.
+    if not sender_app_password:
+        sender_app_password = current.get("sender_app_password", "")
+
+    error = None
+    try:
+        days_before = int(request.form.get("days_before", "").strip())
+        if days_before <= 0:
+            raise ValueError
+    except ValueError:
+        days_before = current.get("days_before", 30)
+        error = "Alert window must be a whole number of days greater than 0."
+
+    if error is None and enabled:
+        if not recipient_email:
+            error = "Recipient email is required to turn notifications on."
+        elif not sender_email or not sender_app_password:
+            error = "Sender Gmail address and app password are required to turn notifications on."
+
+    if error:
+        upcoming = deposits_within_window(db, days_before)
+        return render_template(
+            "notifications.html",
+            settings={
+                "enabled": enabled, "recipient_email": recipient_email,
+                "sender_email": sender_email, "sender_app_password": sender_app_password,
+                "days_before": days_before,
+                "last_check_at": current.get("last_check_at"),
+                "last_check_result": current.get("last_check_result"),
+            },
+            upcoming=upcoming,
+            cooldown_days=NOTIFY_RESEND_COOLDOWN_DAYS,
+            active_tab="notifications",
+            error=error,
+        )
+
+    db.execute(
+        """UPDATE notification_settings SET
+             enabled = ?, recipient_email = ?, sender_email = ?,
+             sender_app_password = ?, days_before = ?
+           WHERE id = 1""",
+        (enabled, recipient_email, sender_email, sender_app_password, days_before),
+    )
+    db.commit()
+    return redirect(url_for("notifications_page"))
+
+
+@app.route("/notifications/check", methods=["POST"])
+def check_notifications_now():
+    run_maturity_check(get_db())
+    return redirect(url_for("notifications_page"))
+
+
+@app.route("/notifications/test", methods=["POST"])
+def send_test_email():
+    db = get_db()
+    settings = get_notification_settings(db)
+    try:
+        send_email(
+            settings,
+            "\U0001F3E6 FD Manager test email",
+            "This is a test email from your Fixed Deposit Manager app.\n\n"
+            "If you're reading this, your email settings are working.",
+        )
+        result = "Test email sent successfully."
+    except RuntimeError as e:
+        result = f"Test email failed: {e}"
+    _record_check_result(db, result)
+    return redirect(url_for("notifications_page"))
+
+
+def _background_maturity_loop(interval_seconds: int = 12 * 60 * 60):
+    """Runs for the lifetime of the process, checking periodically so
+    reminders go out even if nobody opens the Notifications tab."""
+    while True:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            run_maturity_check(conn)
+            conn.close()
+        except Exception:
+            pass  # never let a background hiccup take the app down
+        time.sleep(interval_seconds)
+
+
+def start_background_maturity_checker():
+    """Start the loop once per real process — Flask's debug reloader forks a
+    child with WERKZEUG_RUN_MAIN=true, so gate on that (or no debug at all)
+    to avoid two loops running when the reloader is active."""
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
+        threading.Thread(target=_background_maturity_loop, daemon=True).start()
+
+
 # ---------- Metals ----------
 def get_metal_prices(db) -> dict:
     """metal key -> {"price": per-gram rate, "updated_on": iso date, "source": manual/live}."""
@@ -1437,4 +1687,5 @@ def delete_metal(metal_id):
 
 if __name__ == "__main__":
     init_db()
+    start_background_maturity_checker()
     app.run(debug=True)

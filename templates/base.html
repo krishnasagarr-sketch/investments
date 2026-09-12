@@ -290,6 +290,7 @@
     <a href="{{ url_for('metals_page') }}" class="{% if active_tab == 'metals' %}active{% endif %}">Metals</a>
     <a href="{{ url_for('metal_prices_page') }}" class="{% if active_tab == 'metal_prices' %}active{% endif %}">Market Prices</a>
     <a href="{{ url_for('calculator_page') }}" class="{% if active_tab == 'calculator' %}active{% endif %}">Calculator</a>
+    <a href="{{ url_for('notifications_page') }}" class="{% if active_tab == 'notifications' %}active{% endif %}">Notifications</a>
   </nav>
   {% block content %}{% endblock %}
 </div>
