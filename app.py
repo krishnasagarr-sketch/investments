@@ -1,6 +1,7 @@
 import math
 import os
 import smtplib
+import socket
 import sqlite3
 import threading
 import time
@@ -1214,6 +1215,12 @@ def send_email(settings: dict, subject: str, body: str) -> None:
             server.sendmail(settings["sender_email"], [settings["recipient_email"]], msg.as_string())
     except smtplib.SMTPAuthenticationError:
         raise RuntimeError("Gmail rejected the sender email / app password.")
+    except socket.gaierror:
+        raise RuntimeError(
+            "Could not look up smtp.gmail.com — the machine running this app "
+            "doesn't seem to have a working internet/DNS connection right now. "
+            "Check your Wi-Fi/network and try again."
+        )
     except (smtplib.SMTPException, OSError) as e:
         raise RuntimeError(f"Could not send email ({e}).")
 
