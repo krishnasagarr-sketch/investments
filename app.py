@@ -1,5 +1,6 @@
 import math
 import os
+import secrets
 import smtplib
 import socket
 import sqlite3
@@ -9,7 +10,8 @@ from datetime import date, datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 
-from flask import Flask, render_template, request, redirect, url_for, g
+from flask import Flask, render_template, request, redirect, url_for, g, session
+from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
     import yfinance as yf
@@ -20,6 +22,24 @@ except ImportError:
 app = Flask(__name__)
 
 DB_PATH = Path(__file__).parent / "fixed_deposits.db"
+
+# Secret key for signed session cookies — generated once and persisted next
+# to the DB, so logins survive app restarts. Never committed (gitignored).
+SECRET_KEY_PATH = Path(__file__).parent / ".flask_secret_key"
+if SECRET_KEY_PATH.exists():
+    app.secret_key = SECRET_KEY_PATH.read_text().strip()
+else:
+    app.secret_key = secrets.token_hex(32)
+    SECRET_KEY_PATH.write_text(app.secret_key)
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
+PASSWORD_RESET_TOKEN_LIFETIME = timedelta(hours=1)
+MIN_PASSWORD_LENGTH = 8
+
+# Paths reachable without being logged in. Everything else redirects to
+# /login (or /setup, if no account has been created yet).
+AUTH_EXEMPT_PATHS = {"/setup", "/login", "/forgot-password"}
+AUTH_EXEMPT_PREFIXES = ("/reset-password/", "/static/")
 
 # All amounts in the app are Indian rupees.
 CURRENCY_SYMBOL = "₹"  # ₹
@@ -102,6 +122,33 @@ def close_db(exception=None):
     db = g.pop("db", None)
     if db is not None:
         db.close()
+
+
+def get_auth_user(db):
+    return db.execute("SELECT * FROM auth_user WHERE id = 1").fetchone()
+
+
+@app.before_request
+def _require_login():
+    path = request.path
+    if path.startswith(AUTH_EXEMPT_PREFIXES):
+        return None
+
+    db = get_db()
+    user = get_auth_user(db)
+
+    if user is None:
+        if path != "/setup":
+            return redirect(url_for("setup_page"))
+        return None
+
+    if path == "/setup":
+        return redirect(url_for("login_page"))
+    if path in AUTH_EXEMPT_PATHS:
+        return None
+    if not session.get("logged_in"):
+        return redirect(url_for("login_page", next=path))
+    return None
 
 
 def init_db():
@@ -260,6 +307,18 @@ def init_db():
         )
     """)
     conn.execute("INSERT OR IGNORE INTO notification_settings (id) VALUES (1)")
+
+    # Single admin login for the app (a single row, id=1). No row yet means
+    # the app hasn't been through first-run /setup.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS auth_user (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            email TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            reset_token TEXT,
+            reset_token_expires TEXT
+        )
+    """)
 
     conn.commit()
     conn.close()
@@ -723,6 +782,154 @@ def portfolio_summary(db):
         "total_gain": total_current - total_invested,
         "total_annualised_return": total_annualised_return,
     }
+
+
+# ---------- Authentication ----------
+def build_password_reset_email(reset_url: str) -> tuple:
+    subject = "Password reset — Fixed Deposit Manager"
+    body = (
+        "A password reset was requested for your Fixed Deposit Manager login.\n\n"
+        f"Reset your password: {reset_url}\n\n"
+        "This link expires in 1 hour and can only be used once. "
+        "If you didn't request this, you can safely ignore this email.\n\n"
+        "— sent automatically by Fixed Deposit Manager"
+    )
+    return subject, body
+
+
+def send_password_reset_email(db, to_email: str, reset_url: str) -> None:
+    """Reuses the Gmail sender configured on the Notifications tab. Raises
+    RuntimeError (with a user-facing message) if that isn't set up, or if
+    sending fails."""
+    ns = get_notification_settings(db)
+    settings = {
+        "sender_email": ns.get("sender_email", ""),
+        "sender_app_password": ns.get("sender_app_password", ""),
+        "recipient_email": to_email,
+    }
+    subject, body = build_password_reset_email(reset_url)
+    send_email(settings, subject, body)
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup_page():
+    db = get_db()
+    if get_auth_user(db) is not None:
+        return redirect(url_for("login_page"))
+
+    error = None
+    email = ""
+    if request.method == "POST":
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not email or "@" not in email:
+            error = "Enter a valid email address."
+        elif len(password) < MIN_PASSWORD_LENGTH:
+            error = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+        elif password != confirm_password:
+            error = "Passwords don't match."
+        else:
+            db.execute(
+                "INSERT INTO auth_user (id, email, password_hash) VALUES (1, ?, ?)",
+                (email, generate_password_hash(password)),
+            )
+            db.commit()
+            session.clear()
+            session["logged_in"] = True
+            session.permanent = True
+            return redirect(url_for("summary_page"))
+
+    return render_template("setup.html", error=error, email=email)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    db = get_db()
+    user = get_auth_user(db)
+    error = None
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "")
+        if user is not None and email.lower() == user["email"].lower() \
+                and check_password_hash(user["password_hash"], password):
+            session.clear()
+            session["logged_in"] = True
+            session.permanent = True
+            next_url = request.form.get("next") or url_for("summary_page")
+            return redirect(next_url)
+        error = "Incorrect email or password."
+
+    return render_template("login.html", error=error, next=request.args.get("next", ""))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("login_page"))
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password_page():
+    db = get_db()
+    user = get_auth_user(db)
+    error = None
+    submitted = False
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip()
+        if user is not None and email.lower() == user["email"].lower():
+            token = secrets.token_urlsafe(32)
+            expires = (datetime.utcnow() + PASSWORD_RESET_TOKEN_LIFETIME).isoformat()
+            db.execute(
+                "UPDATE auth_user SET reset_token = ?, reset_token_expires = ? WHERE id = 1",
+                (token, expires),
+            )
+            db.commit()
+            reset_url = url_for("reset_password_page", token=token, _external=True)
+            try:
+                send_password_reset_email(db, user["email"], reset_url)
+            except RuntimeError as e:
+                error = f"Couldn't send the reset email: {e}"
+        submitted = True
+
+    return render_template("forgot_password.html", error=error, submitted=submitted)
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password_page(token):
+    db = get_db()
+    user = get_auth_user(db)
+    valid = (
+        user is not None
+        and user["reset_token"]
+        and secrets.compare_digest(user["reset_token"], token)
+        and user["reset_token_expires"]
+        and datetime.fromisoformat(user["reset_token_expires"]) > datetime.utcnow()
+    )
+    if not valid:
+        return render_template("reset_password.html", invalid=True, error=None)
+
+    error = None
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if len(password) < MIN_PASSWORD_LENGTH:
+            error = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+        elif password != confirm_password:
+            error = "Passwords don't match."
+        else:
+            db.execute(
+                """UPDATE auth_user SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL
+                   WHERE id = 1""",
+                (generate_password_hash(password),),
+            )
+            db.commit()
+            session.clear()
+            return redirect(url_for("login_page"))
+
+    return render_template("reset_password.html", invalid=False, error=error)
 
 
 # ---------- Routes ----------

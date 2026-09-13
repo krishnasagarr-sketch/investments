@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Set up your account — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+  <div class="card" style="max-width:420px; margin:40px auto 0;">
+    <h2 style="font-size:18px; margin:0 0 4px;">Set up your account</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      This is a one-time step — create the single login used to access this app.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" value="{{ email }}" required autofocus>
+        <p class="field-hint">Used to sign in, and as where a password-reset link is sent.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" minlength="8" required>
+      </div>
+
+      <div class="form-group">
+        <label for="confirm_password">Confirm password</label>
+        <input type="password" id="confirm_password" name="confirm_password" minlength="8" required>
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">Create account &amp; sign in</button>
+    </form>
+  </div>
+{% endblock %}

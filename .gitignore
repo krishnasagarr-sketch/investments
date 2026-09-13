@@ -6,6 +6,9 @@
 # Cached ticker directory (NSE stocks + AMFI mutual funds) — refetched automatically
 cache/
 
+# Flask session signing key — generated on first run, must not be shared/committed
+.flask_secret_key
+
 # Python
 __pycache__/
 *.py[cod]

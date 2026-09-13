@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Log in — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+  <div class="card" style="max-width:380px; margin:40px auto 0;">
+    <h2 style="font-size:18px; margin:0 0 16px;">Log in</h2>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required autofocus>
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">Log in</button>
+    </form>
+
+    <p class="field-hint" style="margin-top:16px; text-align:center;">
+      <a href="{{ url_for('forgot_password_page') }}">Forgot your password?</a>
+    </p>
+  </div>
+{% endblock %}

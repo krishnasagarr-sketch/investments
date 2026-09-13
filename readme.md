@@ -35,7 +35,11 @@ where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rat
        ├── summary.html
        ├── chart.html
        ├── calculator.html
-       └── notifications.html
+       ├── notifications.html
+       ├── setup.html
+       ├── login.html
+       ├── forgot_password.html
+       └── reset_password.html
    ```
 
 2. Create a virtual environment (recommended):
@@ -56,12 +60,14 @@ where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rat
 python app.py
 ```
 
-Open **http://127.0.0.1:5000**. A `fixed_deposits.db` SQLite file is created automatically on first run — your data persists across restarts. It holds `depositors` (holder ID + name), `banks` (bank ID + name), `deposits` (references a depositor and a bank by id), `metals` (precious-metal holdings), `metal_prices` (one live ₹/gram rate per metal), `investments` (stock/mutual fund holdings, linked to a depositor), and `notification_settings` (the maturity-email settings, a single row). On startup the app runs in-place migrations, so an older `.db` from a previous version is upgraded automatically; legacy free-text holder / bank names are promoted into `depositors` / `banks` rows, and `metal_prices` is seeded from each metal's most recent holding.
+Open **http://127.0.0.1:5000**. The first visit takes you to a one-time **account setup** page (see **Login** below) before anything else loads. A `fixed_deposits.db` SQLite file is created automatically on first run — your data persists across restarts. It holds `depositors` (holder ID + name), `banks` (bank ID + name), `deposits` (references a depositor and a bank by id), `metals` (precious-metal holdings), `metal_prices` (one live ₹/gram rate per metal), `investments` (stock/mutual fund holdings, linked to a depositor), `notification_settings` (the maturity-email settings, a single row), and `auth_user` (the single login account, a single row). On startup the app runs in-place migrations, so an older `.db` from a previous version is upgraded automatically; legacy free-text holder / bank names are promoted into `depositors` / `banks` rows, and `metal_prices` is seeded from each metal's most recent holding.
 
 > **Add at least one depositor and one bank first** (Depositors / Banks tabs) — the Add Deposit form needs both to attach the deposit to.
 
 ## Features
 
+- **Login** — the whole app sits behind a single login (`auth_user` table, one account). The very first visit shows a **Set up your account** page (email + password) instead of the dashboard; every page after that redirects to **Log in** until you sign in, and stays signed in for 30 days via a signed session cookie. Passwords are hashed with Werkzeug's `generate_password_hash`/`check_password_hash` (never stored in plain text). The session-signing key (`.flask_secret_key`) is generated once on first run and gitignored — don't delete it, or every existing session is invalidated.
+  - **Forgot your password?** on the login page emails a one-time reset link (valid for **1 hour**) to the account's email, reusing the same **Gmail sender + App Password already configured on the Notifications tab** — set that up first if you haven't. The link opens a **Reset your password** page; an expired or already-used link shows an explicit "invalid or has expired" message rather than silently failing.
 - **Notifications** — email yourself when a deposit is close to maturing. On the **Notifications** tab: turn it on, set a recipient email, a **sender Gmail address + Gmail App Password** (not your normal password — generate one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) after enabling 2-Step Verification), and how many days before maturity to alert. Sends via Gmail SMTP using only the Python standard library (`smtplib`) — no new dependency.
   - A background thread checks every **12 hours** (and once at startup) for as long as `python app.py` is running — there's no separate scheduler to configure, but it also means nothing fires while the app is stopped.
   - Each maturing deposit is bundled into **one digest email**; a deposit already alerted is skipped for **7 days** even if it's checked again, so you don't get the same reminder daily. The Notifications page shows every deposit within the window and whether it's due for a fresh alert or was recently sent.

@@ -308,8 +308,16 @@
 <div class="wrap{% if wide_page %} wide{% endif %}">
   <header>
     <h1>🏦 Fixed Deposit Manager</h1>
-    <div>{% block header_action %}{% endblock %}</div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      {% block header_action %}{% endblock %}
+      {% if session.logged_in %}
+        <form method="POST" action="{{ url_for('logout') }}" class="inline">
+          <button type="submit" class="btn secondary">Logout</button>
+        </form>
+      {% endif %}
+    </div>
   </header>
+  {% if session.logged_in %}
   <nav class="tabs">
     <a href="{{ url_for('summary_page') }}" class="{% if active_tab == 'summary' %}active{% endif %}">Dashboard</a>
     <a href="{{ url_for('chart_page') }}" class="{% if active_tab == 'chart' %}active{% endif %}">Chart</a>
@@ -322,6 +330,7 @@
     <a href="{{ url_for('calculator_page') }}" class="{% if active_tab == 'calculator' %}active{% endif %}">Calculator</a>
     <a href="{{ url_for('notifications_page') }}" class="{% if active_tab == 'notifications' %}active{% endif %}">Notifications</a>
   </nav>
+  {% endif %}
   {% block content %}{% endblock %}
 </div>
 
