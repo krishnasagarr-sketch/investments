@@ -3,6 +3,9 @@
 *.sqlite
 *.sqlite3
 
+# Cached ticker directory (NSE stocks + AMFI mutual funds) — refetched automatically
+cache/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1771,10 +1771,169 @@ def delete_metal(metal_id):
     return redirect(url_for("metals_page"))
 
 
-# ---------- Investments (stocks / ETFs) ----------
+# ---------- Ticker directory (NSE stocks + AMFI mutual funds, for the Investments search box) ----------
+TICKER_CACHE_DIR = Path(__file__).parent / "cache"
+NSE_EQUITY_LIST_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+MF_SCHEME_LIST_URL = "https://api.mfapi.in/mf"
+TICKER_CACHE_MAX_AGE_DAYS = 30
+MF_TICKER_PREFIX = "MF:"
+
+_ticker_index = None          # list of {"ticker", "name", "type"} — lazy-built, process-lifetime cache
+_ticker_name_lookup = None    # ticker -> name, built alongside the index
+
+
+def _fetch_text_url(url: str) -> str:
+    """GET a URL and return decoded text. Raises RuntimeError on failure —
+    same contract as _fetch_json_url, just without the JSON parse."""
+    import urllib.request
+    import urllib.error
+
+    req = urllib.request.Request(url, headers={"User-Agent": "fd-manager/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.read().decode()
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e.reason}")
+    except (TimeoutError, OSError) as e:
+        raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e}")
+
+
+def _read_ticker_cache(filename: str):
+    """Returns the cached list if the file exists and isn't stale, else None."""
+    import json
+
+    path = TICKER_CACHE_DIR / filename
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+        fetched_at = date.fromisoformat(payload["fetched_at"])
+        if (date.today() - fetched_at).days > TICKER_CACHE_MAX_AGE_DAYS:
+            return None
+        return payload["items"]
+    except Exception:
+        return None
+
+
+def _write_ticker_cache(filename: str, items: list):
+    import json
+
+    TICKER_CACHE_DIR.mkdir(exist_ok=True)
+    path = TICKER_CACHE_DIR / filename
+    path.write_text(json.dumps({"fetched_at": str(date.today()), "items": items}))
+
+
+def _load_nse_stocks() -> list:
+    """NSE-listed equities as {"ticker": "SYMBOL.NS", "name", "type": "stock"}.
+    Cached to disk for TICKER_CACHE_MAX_AGE_DAYS; falls back to a stale cache
+    (rather than an empty list) if a refresh attempt fails offline."""
+    import csv
+    import io
+
+    cached = _read_ticker_cache("nse_stocks.json")
+    if cached is not None:
+        return cached
+    try:
+        text = _fetch_text_url(NSE_EQUITY_LIST_URL)
+        reader = csv.DictReader(io.StringIO(text))
+        items = [
+            {"ticker": f"{row['SYMBOL'].strip()}.NS", "name": row["NAME OF COMPANY"].strip(), "type": "stock"}
+            for row in reader if row.get("SYMBOL")
+        ]
+        _write_ticker_cache("nse_stocks.json", items)
+        return items
+    except Exception:
+        path = TICKER_CACHE_DIR / "nse_stocks.json"
+        if path.exists():
+            import json
+            return json.loads(path.read_text())["items"]
+        return []
+
+
+def _load_mf_schemes() -> list:
+    """AMFI-registered mutual fund schemes (via mfapi.in) as
+    {"ticker": "MF:<schemeCode>", "name", "type": "mf"}. Cached like stocks."""
+    import json
+
+    cached = _read_ticker_cache("mf_schemes.json")
+    if cached is not None:
+        return cached
+    try:
+        schemes = json.loads(_fetch_text_url(MF_SCHEME_LIST_URL))
+        items = [
+            {"ticker": f"{MF_TICKER_PREFIX}{s['schemeCode']}", "name": s["schemeName"].strip(), "type": "mf"}
+            for s in schemes if s.get("schemeName")
+        ]
+        _write_ticker_cache("mf_schemes.json", items)
+        return items
+    except Exception:
+        path = TICKER_CACHE_DIR / "mf_schemes.json"
+        if path.exists():
+            return json.loads(path.read_text())["items"]
+        return []
+
+
+def get_ticker_index() -> list:
+    """Combined NSE stock + AMFI mutual fund directory, built once per process."""
+    global _ticker_index, _ticker_name_lookup
+    if _ticker_index is None:
+        _ticker_index = _load_nse_stocks() + _load_mf_schemes()
+        _ticker_name_lookup = {item["ticker"]: item["name"] for item in _ticker_index}
+    return _ticker_index
+
+
+def get_ticker_display_name(ticker: str):
+    """Company / scheme name for a ticker already in the directory, else None."""
+    get_ticker_index()  # ensures _ticker_name_lookup is built
+    return _ticker_name_lookup.get(ticker)
+
+
+def search_tickers(query: str, limit: int = 25) -> list:
+    """Prefix matches first, then substring matches, across ticker + name."""
+    q = query.strip().lower()
+    if not q:
+        return []
+    prefix_hits, other_hits = [], []
+    for item in get_ticker_index():
+        ticker_l, name_l = item["ticker"].lower(), item["name"].lower()
+        if ticker_l.startswith(q) or name_l.startswith(q):
+            prefix_hits.append(item)
+        elif q in ticker_l or q in name_l:
+            other_hits.append(item)
+        if len(prefix_hits) >= limit:
+            break
+    return (prefix_hits + other_hits)[:limit]
+
+
+@app.route("/api/tickers/search")
+def api_ticker_search():
+    from flask import jsonify
+    return jsonify(search_tickers(request.args.get("q", ""), limit=25))
+
+
+# ---------- Investments (stocks / ETFs / mutual funds) ----------
+def get_mf_quote(scheme_code: str) -> dict:
+    """Latest NAV for an AMFI scheme code via mfapi.in. Never raises."""
+    import json
+
+    try:
+        payload = json.loads(_fetch_text_url(f"https://api.mfapi.in/mf/{scheme_code}/latest"))
+        nav_rows = payload.get("data") or []
+        if not nav_rows:
+            return {"price": None, "currency": None, "error": "No NAV data found for this scheme."}
+        return {"price": float(nav_rows[0]["nav"]), "currency": "INR", "error": None}
+    except RuntimeError as e:
+        return {"price": None, "currency": None, "error": str(e)}
+    except Exception as e:
+        return {"price": None, "currency": None, "error": str(e)[:200]}
+
+
 def get_stock_quote(ticker: str) -> dict:
-    """Latest price for a ticker via yfinance. Never raises — always returns
+    """Latest price for a ticker via yfinance (or mfapi.in for MF: scheme
+    codes). Never raises — always returns
     {"price": float|None, "currency": str|None, "error": str|None}."""
+    if ticker.startswith(MF_TICKER_PREFIX):
+        return get_mf_quote(ticker[len(MF_TICKER_PREFIX):])
     if not YFINANCE_AVAILABLE:
         return {"price": None, "currency": None, "error": "yfinance isn't installed."}
     try:
@@ -1838,6 +1997,7 @@ def list_investments(db):
         rows.append({
             "id": h["id"],
             "ticker": h["ticker"],
+            "display_name": get_ticker_display_name(h["ticker"]),
             "depositor_id": h["depositor_id"],
             "depositor_name": h["depositor_name"],
             "shares": h["shares"],
@@ -1862,14 +2022,14 @@ def parse_investment_form(form_data, db) -> dict:
     if not ticker:
         raise ValueError("Ticker symbol is required.")
 
-    depositor_id = None
-    if form_data.get("depositor_id"):
-        dep = db.execute(
-            "SELECT id FROM depositors WHERE id = ?", (form_data["depositor_id"],)
-        ).fetchone()
-        if dep is None:
-            raise ValueError("Please choose a valid depositor.")
-        depositor_id = dep["id"]
+    if not form_data.get("depositor_id"):
+        raise ValueError("Please choose a depositor.")
+    dep = db.execute(
+        "SELECT id FROM depositors WHERE id = ?", (form_data["depositor_id"],)
+    ).fetchone()
+    if dep is None:
+        raise ValueError("Please choose a valid depositor.")
+    depositor_id = dep["id"]
 
     try:
         shares = float(form_data["shares"])

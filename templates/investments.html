@@ -57,25 +57,33 @@
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">{{ "Edit holding" if editing else "Add an investment" }}</h2>
     <p class="field-hint" style="margin-bottom:16px;">
-      Current price is fetched live via Yahoo Finance every time you view this page — nothing is cached.
-      For Indian stocks, use the exchange suffix Yahoo expects, e.g. <code>RELIANCE.NS</code> or <code>TCS.BO</code>.
+      Current price is fetched live (via Yahoo Finance for stocks, AMFI NAV for mutual funds) every time you
+      view this page — nothing is cached. Search by name or symbol below, or type a custom ticker
+      (e.g. <code>AAPL</code>) if it isn't in the list.
     </p>
     {% if error %}
       <div class="error-box">{{ error }}</div>
     {% endif %}
 
+    {% if not depositors %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber);">
+        No depositors yet — <a href="{{ url_for('depositors_page') }}">add a depositor</a>. An investment needs one.
+      </div>
+    {% endif %}
+
     <form method="POST"
           action="{% if editing %}{{ url_for('edit_investment', investment_id=editing) }}{% else %}{{ url_for('investments_page') }}{% endif %}">
-      <div class="form-group">
+      <div class="form-group" style="position:relative;">
         <label for="ticker">Ticker</label>
-        <input type="text" id="ticker" name="ticker" placeholder="e.g. RELIANCE.NS, TCS.BO, AAPL"
-               value="{{ form_data.ticker }}" style="text-transform:uppercase;" required>
+        <input type="text" id="ticker" name="ticker" placeholder="Search stocks & mutual funds, or type a ticker…"
+               value="{{ form_data.ticker }}" style="text-transform:uppercase;" autocomplete="off" required>
+        <div id="ticker_suggestions" class="autocomplete-list" hidden></div>
       </div>
 
       <div class="form-group">
-        <label for="depositor_id">Depositor <span class="muted">(optional)</span></label>
-        <select id="depositor_id" name="depositor_id">
-          <option value="" {% if not form_data.depositor_id %}selected{% endif %}>— unassigned —</option>
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" required {% if not depositors %}disabled{% endif %}>
+          <option value="" disabled {% if not form_data.depositor_id %}selected{% endif %}>Select a depositor…</option>
           {% for dep in depositors %}
             <option value="{{ dep.id }}" {% if form_data.depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
           {% endfor %}
@@ -126,7 +134,10 @@
         <tbody>
           {% for h in investments %}
           <tr>
-            <td><strong>{{ h.ticker }}</strong></td>
+            <td>
+              <strong>{{ h.ticker }}</strong>
+              {% if h.display_name %}<div class="muted" style="font-size:12px;">{{ h.display_name }}</div>{% endif %}
+            </td>
             <td>{{ h.depositor_name or "—" }}</td>
             <td>{{ "%.3f"|format(h.shares) }}</td>
             <td>
@@ -182,5 +193,58 @@
       </div>
     {% endif %}
   </div>
+
+  <script>
+    (function () {
+      var input = document.getElementById("ticker");
+      var box = document.getElementById("ticker_suggestions");
+      if (!input || !box) return;
+      var debounceTimer = null;
+      var activeRequest = null;
+
+      function hide() { box.hidden = true; box.innerHTML = ""; }
+
+      function renderResults(results) {
+        box.innerHTML = "";
+        if (!results.length) { hide(); return; }
+        results.forEach(function (item) {
+          var row = document.createElement("div");
+          row.className = "autocomplete-item";
+          row.textContent = item.ticker + " — " + item.name;
+          var tag = document.createElement("span");
+          tag.className = "type-tag";
+          tag.textContent = item.type === "mf" ? "Mutual fund" : "Stock";
+          row.appendChild(tag);
+          row.addEventListener("mousedown", function (e) {
+            e.preventDefault();
+            input.value = item.ticker;
+            hide();
+          });
+          box.appendChild(row);
+        });
+        box.hidden = false;
+      }
+
+      input.addEventListener("input", function () {
+        var q = input.value.trim();
+        clearTimeout(debounceTimer);
+        if (q.length < 2) { hide(); return; }
+        debounceTimer = setTimeout(function () {
+          if (activeRequest) activeRequest.abort();
+          var controller = new AbortController();
+          activeRequest = controller;
+          fetch("{{ url_for('api_ticker_search') }}?q=" + encodeURIComponent(q), { signal: controller.signal })
+            .then(function (r) { return r.json(); })
+            .then(renderResults)
+            .catch(function () {});
+        }, 250);
+      });
+
+      input.addEventListener("blur", function () { setTimeout(hide, 100); });
+      input.addEventListener("focus", function () {
+        if (input.value.trim().length >= 2 && box.innerHTML) box.hidden = false;
+      });
+    })();
+  </script>
 
 {% endblock %}
