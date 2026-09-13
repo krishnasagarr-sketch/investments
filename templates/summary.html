@@ -71,11 +71,19 @@
           <td>{{ gl(met_overall.current - met_overall.invested) }}</td>
           <td>{{ met_overall.annualised_return|pct }}</td>
         </tr>
+        <tr>
+          <td><strong>Investments</strong></td>
+          <td>{{ inv_overall.count }}</td>
+          <td>{{ (inv_overall.invested)|money }}</td>
+          <td>{{ (inv_overall.current)|money }}</td>
+          <td>{{ gl(inv_overall.current - inv_overall.invested) }}</td>
+          <td>{{ inv_overall.annualised_return|pct }}</td>
+        </tr>
       </tbody>
       <tfoot>
         <tr>
           <td><strong>Total</strong></td>
-          <td><strong>{{ dep_overall.count + met_overall.count }}</strong></td>
+          <td><strong>{{ dep_overall.count + met_overall.count + inv_overall.count }}</strong></td>
           <td><strong>{{ (total_invested)|money }}</strong></td>
           <td><strong>{{ (total_current)|money }}</strong></td>
           <td><strong>{{ gl(total_gain) }}</strong></td>
@@ -92,7 +100,7 @@
       <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Holder</th><th>Deposits</th><th>Metals</th><th>Metal (g)</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
+          <tr><th>Holder</th><th>Deposits</th><th>Metals</th><th>Metal (g)</th><th>Investments</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
         </thead>
         <tbody>
           {% for r in combined_holders %}
@@ -101,6 +109,7 @@
             <td>{{ r.deposit_count }}</td>
             <td>{{ r.metal_count }}</td>
             <td>{% if r.metal_grams %}{{ "%.3f"|format(r.metal_grams) }} g{% else %}—{% endif %}</td>
+            <td>{{ r.investment_count }}</td>
             <td>{{ (r.invested)|money }}</td>
             <td>{{ (r.current)|money }}</td>
             <td>{{ gl(r.current - r.invested) }}</td>
@@ -114,6 +123,7 @@
             <td><strong>{{ dep_overall.count }}</strong></td>
             <td><strong>{{ met_overall.count }}</strong></td>
             <td><strong>{% if met_overall.grams %}{{ "%.3f"|format(met_overall.grams) }} g{% else %}—{% endif %}</strong></td>
+            <td><strong>{{ inv_overall.count }}</strong></td>
             <td><strong>{{ (total_invested)|money }}</strong></td>
             <td><strong>{{ (total_current)|money }}</strong></td>
             <td><strong>{{ gl(total_gain) }}</strong></td>
@@ -243,6 +253,86 @@
       </div>
     {% else %}
       <div class="empty-state"><p>No metal holdings yet.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Investments by Ticker</h2>
+    {% if inv_by_ticker %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Ticker</th><th>Holdings</th><th>Shares</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
+        </thead>
+        <tbody>
+          {% for r in inv_by_ticker %}
+          <tr>
+            <td><strong>{{ r.name }}</strong></td>
+            <td>{{ r.count }}</td>
+            <td>{{ "%.3f"|format(r.shares) }}</td>
+            <td>{{ (r.invested)|money }}</td>
+            <td>{{ (r.current)|money }}</td>
+            <td>{{ gl(r.current - r.invested) }}</td>
+            <td>{{ r.annualised_return|pct }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><strong>All investments</strong></td>
+            <td><strong>{{ inv_overall.count }}</strong></td>
+            <td><strong>{{ "%.3f"|format(inv_overall.shares) }}</strong></td>
+            <td><strong>{{ (inv_overall.invested)|money }}</strong></td>
+            <td><strong>{{ (inv_overall.current)|money }}</strong></td>
+            <td><strong>{{ gl(inv_overall.current - inv_overall.invested) }}</strong></td>
+            <td><strong>{{ inv_overall.annualised_return|pct }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No priced investments yet.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Investments by Holder &amp; Ticker</h2>
+    {% if inv_pairs %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Holder</th><th>Ticker</th><th>Holdings</th><th>Shares</th><th>Invested</th><th>Current Value</th><th>Gain / Loss</th><th>Ann. Return</th></tr>
+        </thead>
+        <tbody>
+          {% set ns = namespace(prev="") %}
+          {% for r in inv_pairs %}
+          <tr>
+            <td>{% if r.holder != ns.prev %}<strong>{{ r.holder }}</strong>{% set ns.prev = r.holder %}{% endif %}</td>
+            <td>{{ r.ticker }}</td>
+            <td>{{ r.count }}</td>
+            <td>{{ "%.3f"|format(r.shares) }}</td>
+            <td>{{ (r.invested)|money }}</td>
+            <td>{{ (r.current)|money }}</td>
+            <td>{{ gl(r.current - r.invested) }}</td>
+            <td>{{ r.annualised_return|pct }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>All investments</strong></td>
+            <td><strong>{{ inv_overall.count }}</strong></td>
+            <td><strong>{{ "%.3f"|format(inv_overall.shares) }}</strong></td>
+            <td><strong>{{ (inv_overall.invested)|money }}</strong></td>
+            <td><strong>{{ (inv_overall.current)|money }}</strong></td>
+            <td><strong>{{ gl(inv_overall.current - inv_overall.invested) }}</strong></td>
+            <td><strong>{{ inv_overall.annualised_return|pct }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No priced investments yet.</p></div>
     {% endif %}
   </div>
 

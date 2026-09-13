@@ -11,6 +11,12 @@ from pathlib import Path
 
 from flask import Flask, render_template, request, redirect, url_for, g
 
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    YFINANCE_AVAILABLE = False
+
 app = Flask(__name__)
 
 DB_PATH = Path(__file__).parent / "fixed_deposits.db"
@@ -117,6 +123,19 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             bank_id TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL
+        )
+    """)
+
+    # Stock/ETF holdings. Prices are fetched live via yfinance and converted
+    # to rupees, so nothing is cached here beyond what you paid.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS investments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            depositor_id INTEGER REFERENCES depositors(id),
+            ticker TEXT NOT NULL,
+            shares REAL NOT NULL,
+            purchase_price REAL NOT NULL,
+            purchase_date TEXT NOT NULL
         )
     """)
 
@@ -492,8 +511,9 @@ def summarise_deposit(d) -> dict:
 def list_depositors(db):
     return db.execute(
         """SELECT d.id, d.holder_id, d.name,
-                  (SELECT COUNT(*) FROM deposits WHERE depositor_id = d.id) AS deposit_count,
-                  (SELECT COUNT(*) FROM metals   WHERE depositor_id = d.id) AS metal_count
+                  (SELECT COUNT(*) FROM deposits    WHERE depositor_id = d.id) AS deposit_count,
+                  (SELECT COUNT(*) FROM metals      WHERE depositor_id = d.id) AS metal_count,
+                  (SELECT COUNT(*) FROM investments WHERE depositor_id = d.id) AS investment_count
            FROM depositors d
            ORDER BY d.name COLLATE NOCASE"""
     ).fetchall()
@@ -545,6 +565,7 @@ def depositors_with_totals(db):
             "name": dep["name"],
             "deposit_count": dep["deposit_count"],
             "metal_count": dep["metal_count"],
+            "investment_count": dep["investment_count"],
             "total_invested": t["invested"],
             "total_current": t["current"],
             "total_maturity": t["maturity"],
@@ -568,6 +589,10 @@ def _metal_blank():
     return {"count": 0, "grams": 0.0, "invested": 0.0, "current": 0.0, "days_x_invested": 0.0}
 
 
+def _inv_blank():
+    return {"count": 0, "shares": 0.0, "invested": 0.0, "current": 0.0, "days_x_invested": 0.0}
+
+
 def _with_annualised(acc: dict) -> dict:
     """Add an "annualised_return" key: the invested-weighted average holding
     period, fed into annualised_return_pct. Leaves the input untouched."""
@@ -576,10 +601,13 @@ def _with_annualised(acc: dict) -> dict:
 
 
 def portfolio_summary(db):
-    """Deposits + metal holdings, aggregated for the Dashboard and Chart.
+    """Deposits + metal holdings + investments, aggregated for the Dashboard
+    and Chart.
 
-    For metals, "invested" is cost (grams x purchase price) and "current" is
-    grams x market price; metals have no maturity value.
+    For metals and investments, "invested" is cost (grams/shares x purchase
+    price) and "current" is today's market value; neither has a maturity
+    value. Investments whose live price couldn't be fetched right now are
+    left out of these totals (they still show on the Investments tab).
     """
     _key = lambda kv: kv[0].lower()
 
@@ -617,10 +645,35 @@ def portfolio_summary(db):
         met_overall["current"] += m["value"]
         met_overall["days_x_invested"] += m["cost"] * m["days_held"]
 
-    # ----- combined by holder (deposits + metals) -----
+    # ----- investments -----
+    inv_pair, inv_holder, inv_ticker = {}, {}, {}
+    inv_overall = _inv_blank()
+    for iv in list_investments(db):
+        if iv["value"] is None:
+            continue
+        holder = iv["depositor_name"] or "—"
+        for bucket, k in (
+            (inv_pair, (holder, iv["ticker"])),
+            (inv_holder, holder),
+            (inv_ticker, iv["ticker"]),
+        ):
+            acc = bucket.setdefault(k, _inv_blank())
+            acc["count"] += 1
+            acc["shares"] += iv["shares"]
+            acc["invested"] += iv["cost"]
+            acc["current"] += iv["value"]
+            acc["days_x_invested"] += iv["cost"] * iv["days_held"]
+        inv_overall["count"] += 1
+        inv_overall["shares"] += iv["shares"]
+        inv_overall["invested"] += iv["cost"]
+        inv_overall["current"] += iv["value"]
+        inv_overall["days_x_invested"] += iv["cost"] * iv["days_held"]
+
+    # ----- combined by holder (deposits + metals + investments) -----
     combined = {}
     def _c(h):
         return combined.setdefault(h, {"deposit_count": 0, "metal_count": 0, "metal_grams": 0.0,
+                                       "investment_count": 0,
                                        "invested": 0.0, "current": 0.0, "maturity": 0.0,
                                        "days_x_invested": 0.0})
     for h, v in dep_holder.items():
@@ -634,10 +687,17 @@ def portfolio_summary(db):
         c["metal_grams"] += v["grams"]
         c["invested"] += v["invested"]; c["current"] += v["current"]
         c["days_x_invested"] += v["days_x_invested"]
+    for h, v in inv_holder.items():
+        c = _c(h)
+        c["investment_count"] += v["count"]
+        c["invested"] += v["invested"]; c["current"] += v["current"]
+        c["days_x_invested"] += v["days_x_invested"]
 
-    total_invested = dep_overall["invested"] + met_overall["invested"]
-    total_current = dep_overall["current"] + met_overall["current"]
-    total_days_x_invested = dep_overall["days_x_invested"] + met_overall["days_x_invested"]
+    total_invested = dep_overall["invested"] + met_overall["invested"] + inv_overall["invested"]
+    total_current = dep_overall["current"] + met_overall["current"] + inv_overall["current"]
+    total_days_x_invested = (
+        dep_overall["days_x_invested"] + met_overall["days_x_invested"] + inv_overall["days_x_invested"]
+    )
     total_weighted_days = (total_days_x_invested / total_invested) if total_invested else 0
     total_annualised_return = annualised_return_pct(total_invested, total_current, total_weighted_days)
 
@@ -652,6 +712,11 @@ def portfolio_summary(db):
                                                key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))],
         "met_by_metal": [_with_annualised({"name": mt, **v}) for mt, v in sorted(met_metal.items(), key=_key)],
         "met_overall": _with_annualised(met_overall),
+        "inv_pairs": [_with_annualised({"holder": h, "ticker": tk, **v})
+                      for (h, tk), v in sorted(inv_pair.items(),
+                                               key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))],
+        "inv_by_ticker": [_with_annualised({"name": tk, **v}) for tk, v in sorted(inv_ticker.items(), key=_key)],
+        "inv_overall": _with_annualised(inv_overall),
         "combined_holders": [_with_annualised({"name": h, **v}) for h, v in sorted(combined.items(), key=_key)],
         "total_invested": total_invested,
         "total_current": total_current,
@@ -722,12 +787,14 @@ def chart_page():
         return [{"name": it["name"], "invested": it["invested"], "current": it["current"]}
                 for it in items]
 
-    holder_data = series(ps["combined_holders"])   # deposits + metals
+    holder_data = series(ps["combined_holders"])   # deposits + metals + investments
     bank_data = series(ps["dep_banks"])            # deposits only
     metal_data = series(ps["met_by_metal"])        # metals only
+    investment_data = series(ps["inv_by_ticker"])  # investments only
     axis_max = max(
         [0.0]
-        + [row[k] for row in holder_data + bank_data + metal_data for k in ("invested", "current")]
+        + [row[k] for row in holder_data + bank_data + metal_data + investment_data
+           for k in ("invested", "current")]
     )
     return render_template(
         "chart.html",
@@ -739,10 +806,12 @@ def chart_page():
         holder_data=holder_data,
         bank_data=bank_data,
         metal_data=metal_data,
+        investment_data=investment_data,
         axis_max=axis_max,
         holder_pie=build_pie(holder_data, metric),
         bank_pie=build_pie(bank_data, metric),
         metal_pie=build_pie(metal_data, metric),
+        investment_pie=build_pie(investment_data, metric),
     )
 
 
@@ -1086,6 +1155,7 @@ def delete_depositor(depositor_id):
     in_use = (
         db.execute("SELECT COUNT(*) AS n FROM deposits WHERE depositor_id = ?", (depositor_id,)).fetchone()["n"]
         + db.execute("SELECT COUNT(*) AS n FROM metals WHERE depositor_id = ?", (depositor_id,)).fetchone()["n"]
+        + db.execute("SELECT COUNT(*) AS n FROM investments WHERE depositor_id = ?", (depositor_id,)).fetchone()["n"]
     )
     if in_use == 0:
         db.execute("DELETE FROM depositors WHERE id = ?", (depositor_id,))
@@ -1402,35 +1472,44 @@ METAL_API_SYMBOLS = {
 TROY_OUNCE_GRAMS = 31.1034768
 
 
-def fetch_live_metal_prices() -> dict:
-    """Fetch spot prices (USD/troy oz) and the USD->INR rate, return
-    {metal: price_per_gram_in_rupees}. Raises RuntimeError with a
-    user-facing message on any network/parsing failure."""
+def _fetch_json_url(url: str) -> dict:
+    """GET a URL and parse it as JSON. Raises RuntimeError with a user-facing
+    message on any network/parsing failure — shared by every "fetch live
+    price" feature in the app."""
     import json
     import urllib.request
     import urllib.error
 
-    def get_json(url):
-        req = urllib.request.Request(url, headers={"User-Agent": "fd-manager/1.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                return json.loads(resp.read().decode())
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e.reason}")
-        except (TimeoutError, OSError) as e:
-            raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e}")
-        except (ValueError, json.JSONDecodeError):
-            raise RuntimeError(f"{url.split('/')[2]} returned an unexpected response.")
-
-    fx = get_json("https://api.frankfurter.app/latest?from=USD&to=INR")
+    req = urllib.request.Request(url, headers={"User-Agent": "fd-manager/1.0"})
     try:
-        usd_to_inr = float(fx["rates"]["INR"])
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e.reason}")
+    except (TimeoutError, OSError) as e:
+        raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e}")
+    except (ValueError, json.JSONDecodeError):
+        raise RuntimeError(f"{url.split('/')[2]} returned an unexpected response.")
+
+
+def get_usd_to_inr_rate() -> float:
+    """Live USD->INR rate via frankfurter.app. Raises RuntimeError on failure."""
+    fx = _fetch_json_url("https://api.frankfurter.app/latest?from=USD&to=INR")
+    try:
+        return float(fx["rates"]["INR"])
     except (KeyError, TypeError, ValueError):
         raise RuntimeError("Could not read the USD/INR exchange rate.")
 
+
+def fetch_live_metal_prices() -> dict:
+    """Fetch spot prices (USD/troy oz) and the USD->INR rate, return
+    {metal: price_per_gram_in_rupees}. Raises RuntimeError with a
+    user-facing message on any network/parsing failure."""
+    usd_to_inr = get_usd_to_inr_rate()
+
     prices = {}
     for metal, symbol in METAL_API_SYMBOLS.items():
-        data = get_json(f"https://api.gold-api.com/price/{symbol}")
+        data = _fetch_json_url(f"https://api.gold-api.com/price/{symbol}")
         try:
             usd_per_oz = float(data["price"])
         except (KeyError, TypeError, ValueError):
@@ -1690,6 +1769,230 @@ def delete_metal(metal_id):
     db.execute("DELETE FROM metals WHERE id = ?", (metal_id,))
     db.commit()
     return redirect(url_for("metals_page"))
+
+
+# ---------- Investments (stocks / ETFs) ----------
+def get_stock_quote(ticker: str) -> dict:
+    """Latest price for a ticker via yfinance. Never raises — always returns
+    {"price": float|None, "currency": str|None, "error": str|None}."""
+    if not YFINANCE_AVAILABLE:
+        return {"price": None, "currency": None, "error": "yfinance isn't installed."}
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="1d")
+        if hist.empty:
+            return {"price": None, "currency": None, "error": "No price data found for this ticker."}
+        price = float(hist["Close"].iloc[-1])
+        try:
+            currency = t.fast_info.get("currency")
+        except Exception:
+            currency = None
+        return {"price": price, "currency": currency, "error": None}
+    except Exception as e:
+        return {"price": None, "currency": None, "error": str(e)[:200]}
+
+
+def list_investments(db):
+    """Investment holdings with cost, current value (converted to rupees) and
+    gain/loss. Prices are fetched live via yfinance on every call — a USD
+    quote is converted with one shared USD->INR lookup per render; other
+    currencies are shown un-converted with a note rather than guessed at."""
+    usd_rate = None
+    usd_rate_error = None
+    rows = []
+
+    for h in db.execute("""
+        SELECT investments.*, depositors.name AS depositor_name
+        FROM investments LEFT JOIN depositors ON investments.depositor_id = depositors.id
+        ORDER BY investments.ticker
+    """).fetchall():
+        quote = get_stock_quote(h["ticker"])
+        currency = quote["currency"]
+        current_price = None
+        price_note = None
+
+        if quote["error"]:
+            price_note = quote["error"]
+        elif currency in (None, "INR"):
+            current_price = quote["price"]
+        elif currency == "USD":
+            if usd_rate is None and usd_rate_error is None:
+                try:
+                    usd_rate = get_usd_to_inr_rate()
+                except RuntimeError as e:
+                    usd_rate_error = str(e)
+            if usd_rate is not None:
+                current_price = quote["price"] * usd_rate
+            else:
+                price_note = f"USD rate unavailable ({usd_rate_error})"
+        else:
+            price_note = f"priced in {currency}, not converted to ₹"
+
+        cost = h["shares"] * h["purchase_price"]
+        value = h["shares"] * current_price if current_price is not None else None
+        gain = (value - cost) if value is not None else None
+        gain_pct = (gain / cost * 100.0) if (gain is not None and cost) else None
+        days_held = max((date.today() - date.fromisoformat(h["purchase_date"])).days, 0)
+        annualised_return = annualised_return_pct(cost, value, days_held) if value is not None else None
+
+        rows.append({
+            "id": h["id"],
+            "ticker": h["ticker"],
+            "depositor_id": h["depositor_id"],
+            "depositor_name": h["depositor_name"],
+            "shares": h["shares"],
+            "purchase_price": h["purchase_price"],
+            "purchase_date": h["purchase_date"],
+            "current_price": current_price,
+            "currency": currency,
+            "price_note": price_note,
+            "cost": cost,
+            "value": value,
+            "gain": gain,
+            "gain_pct": gain_pct,
+            "days_held": days_held,
+            "annualised_return": annualised_return,
+        })
+    return rows
+
+
+def parse_investment_form(form_data, db) -> dict:
+    """Validate the holding form. Returns DB column values or raises ValueError."""
+    ticker = form_data["ticker"].strip().upper()
+    if not ticker:
+        raise ValueError("Ticker symbol is required.")
+
+    depositor_id = None
+    if form_data.get("depositor_id"):
+        dep = db.execute(
+            "SELECT id FROM depositors WHERE id = ?", (form_data["depositor_id"],)
+        ).fetchone()
+        if dep is None:
+            raise ValueError("Please choose a valid depositor.")
+        depositor_id = dep["id"]
+
+    try:
+        shares = float(form_data["shares"])
+        purchase_price = float(form_data["purchase_price"])
+    except (TypeError, ValueError):
+        raise ValueError("Please enter valid numbers for shares and price.")
+    if shares <= 0:
+        raise ValueError("Shares must be greater than 0.")
+    if purchase_price <= 0:
+        raise ValueError("Purchase price must be greater than 0.")
+
+    return {
+        "ticker": ticker,
+        "depositor_id": depositor_id,
+        "shares": shares,
+        "purchase_price": purchase_price,
+        "purchase_date": form_data["purchase_date"] or str(date.today()),
+    }
+
+
+BLANK_INVESTMENT_FORM = {
+    "ticker": "", "depositor_id": "", "shares": "", "purchase_price": "", "purchase_date": None,
+}
+
+
+def _investment_to_form_data(row) -> dict:
+    return {
+        "ticker": row["ticker"],
+        "depositor_id": str(row["depositor_id"] or ""),
+        "shares": _trim_number(row["shares"]),
+        "purchase_price": _trim_number(row["purchase_price"]),
+        "purchase_date": row["purchase_date"],
+    }
+
+
+def _render_investments(db, **kwargs):
+    investments = list_investments(db)
+    # Cost/value/gain tiles are all computed over the same "priced" subset,
+    # so they stay internally consistent (value - cost == gain). A holding
+    # with no live price still shows its own cost/N-A in the table below,
+    # it just isn't folded into these totals until it prices successfully.
+    priced = [r for r in investments if r["value"] is not None]
+    return render_template(
+        "investments.html",
+        investments=investments,
+        depositors=db.execute(
+            "SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE"
+        ).fetchall(),
+        total_cost=sum(r["cost"] for r in priced),
+        total_value=sum(r["value"] for r in priced),
+        total_gain=sum(r["gain"] for r in priced),
+        total_annualised_return=weighted_annualised_return(priced, "cost", "value", "days_held"),
+        priced_count=len(priced),
+        total_count=len(investments),
+        yfinance_available=YFINANCE_AVAILABLE,
+        active_tab="investments",
+        wide_page=True,
+        **kwargs,
+    )
+
+
+@app.route("/investments", methods=["GET", "POST"])
+def investments_page():
+    db = get_db()
+    error = None
+    form_data = dict(BLANK_INVESTMENT_FORM)
+    form_data["purchase_date"] = str(date.today())
+
+    if request.method == "POST":
+        for key in form_data:
+            form_data[key] = request.form.get(key, form_data[key])
+        try:
+            cols = parse_investment_form(form_data, db)
+            db.execute(
+                """INSERT INTO investments (ticker, depositor_id, shares, purchase_price, purchase_date)
+                   VALUES (:ticker, :depositor_id, :shares, :purchase_price, :purchase_date)""",
+                cols,
+            )
+            db.commit()
+            return redirect(url_for("investments_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return _render_investments(db, error=error, form_data=form_data, editing=None)
+
+
+@app.route("/investments/<int:investment_id>/edit", methods=["GET", "POST"])
+def edit_investment(investment_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM investments WHERE id = ?", (investment_id,)).fetchone()
+    if row is None:
+        return redirect(url_for("investments_page"))
+
+    error = None
+    form_data = _investment_to_form_data(row)
+
+    if request.method == "POST":
+        for key in form_data:
+            form_data[key] = request.form.get(key, form_data[key])
+        try:
+            cols = parse_investment_form(form_data, db)
+            cols["id"] = investment_id
+            db.execute(
+                """UPDATE investments SET
+                     ticker = :ticker, depositor_id = :depositor_id, shares = :shares,
+                     purchase_price = :purchase_price, purchase_date = :purchase_date
+                   WHERE id = :id""",
+                cols,
+            )
+            db.commit()
+            return redirect(url_for("investments_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return _render_investments(db, error=error, form_data=form_data, editing=investment_id)
+
+
+@app.route("/investments/<int:investment_id>/delete", methods=["POST"])
+def delete_investment(investment_id):
+    db = get_db()
+    db.execute("DELETE FROM investments WHERE id = ?", (investment_id,))
+    db.commit()
+    return redirect(url_for("investments_page"))
 
 
 if __name__ == "__main__":

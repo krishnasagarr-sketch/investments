@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}Investments — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('dashboard') }}" class="btn secondary">← Back to Dashboard</a>
+{% endblock %}
+
+{% macro gl(x) -%}
+  {% if x is none %}—
+  {%- else -%}
+    <span class="{{ 'positive' if x >= 0 else 'negative' }}">{{ "+" if x >= 0 else "−" }}{{ (x | abs)|money }}</span>
+  {%- endif %}
+{%- endmacro %}
+
+{% block content %}
+
+  <div class="card">
+    <div class="summary-grid">
+      <div class="summary-item">
+        <div class="label">Total Cost</div>
+        <div class="value">{{ (total_cost)|money }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Current Value</div>
+        <div class="value">{{ (total_value)|money }}{% if priced_count < total_count %} <span class="muted" style="font-size:13px;">({{ priced_count }}/{{ total_count }} priced)</span>{% endif %}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Unrealised Gain / Loss</div>
+        <div class="value {{ 'positive' if total_gain >= 0 else 'negative' }}">
+          {{ "+" if total_gain >= 0 else "−" }}{{ (total_gain | abs)|money }}
+        </div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Total Return</div>
+        <div class="value {{ 'positive' if total_gain >= 0 else 'negative' }}">
+          {% if total_cost %}{{ "%.1f"|format(total_gain / total_cost * 100) }}%{% else %}—{% endif %}
+        </div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Annualised Return</div>
+        <div class="value {{ 'positive' if (total_annualised_return or 0) >= 0 else 'negative' }}">
+          {{ total_annualised_return|pct }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if not yfinance_available %}
+    <div class="card" style="max-width:520px;">
+      <div class="error-box" style="background:#fff2e0; color:var(--amber); margin:0;">
+        <code>yfinance</code> isn't installed, so live prices can't be fetched — holdings will show as unpriced
+        until you run <code>pip install yfinance</code> in the app's environment.
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">{{ "Edit holding" if editing else "Add an investment" }}</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Current price is fetched live via Yahoo Finance every time you view this page — nothing is cached.
+      For Indian stocks, use the exchange suffix Yahoo expects, e.g. <code>RELIANCE.NS</code> or <code>TCS.BO</code>.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST"
+          action="{% if editing %}{{ url_for('edit_investment', investment_id=editing) }}{% else %}{{ url_for('investments_page') }}{% endif %}">
+      <div class="form-group">
+        <label for="ticker">Ticker</label>
+        <input type="text" id="ticker" name="ticker" placeholder="e.g. RELIANCE.NS, TCS.BO, AAPL"
+               value="{{ form_data.ticker }}" style="text-transform:uppercase;" required>
+      </div>
+
+      <div class="form-group">
+        <label for="depositor_id">Depositor <span class="muted">(optional)</span></label>
+        <select id="depositor_id" name="depositor_id">
+          <option value="" {% if not form_data.depositor_id %}selected{% endif %}>— unassigned —</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="shares">Shares / Units</label>
+        <input type="number" step="any" id="shares" name="shares" placeholder="e.g. 10"
+               value="{{ form_data.shares }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="purchase_price">Purchase price (₹ / share)</label>
+        <input type="number" step="any" id="purchase_price" name="purchase_price" placeholder="e.g. 2500"
+               value="{{ form_data.purchase_price }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="purchase_date">Purchase date</label>
+        <input type="date" id="purchase_date" name="purchase_date" value="{{ form_data.purchase_date }}" required>
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">{{ "Save Changes" if editing else "Add Investment" }}</button>
+      {% if editing %}
+        <a href="{{ url_for('investments_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center;">Cancel</a>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="card">
+    {% if investments %}
+      <div class="table-scroll sticky-last compact">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Holder</th>
+            <th>Shares</th>
+            <th>Price / share</th>
+            <th>Cost</th>
+            <th>Value</th>
+            <th>Gain / Loss</th>
+            <th>Ann. Return</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in investments %}
+          <tr>
+            <td><strong>{{ h.ticker }}</strong></td>
+            <td>{{ h.depositor_name or "—" }}</td>
+            <td>{{ "%.3f"|format(h.shares) }}</td>
+            <td>
+              Buy {{ (h.purchase_price)|money }}
+              <div class="muted" style="font-size:12px;">
+                {% if h.current_price is not none %}
+                  Now {{ (h.current_price)|money }}{% if h.currency and h.currency != "INR" %} (from {{ h.currency }}){% endif %}
+                {% else %}
+                  N/A{% if h.price_note %} — {{ h.price_note }}{% endif %}
+                {% endif %}
+              </div>
+            </td>
+            <td>{{ (h.cost)|money }}</td>
+            <td>{% if h.value is not none %}{{ (h.value)|money }}{% else %}N/A{% endif %}</td>
+            <td>
+              {{ gl(h.gain) }}
+              {% if h.gain_pct is not none %}
+                <div class="muted" style="font-size:12px;">{{ "%+.1f"|format(h.gain_pct) }}% total</div>
+              {% endif %}
+            </td>
+            <td class="{{ 'positive' if (h.annualised_return or 0) >= 0 else 'negative' }}">
+              {{ h.annualised_return|pct }}
+              <div class="muted" style="font-size:12px;">
+                {% if h.annualised_return is none and h.value is not none %}too new &middot; {% endif %}bought {{ h.purchase_date }}
+              </div>
+            </td>
+            <td>
+              <div class="row-actions">
+                <a href="{{ url_for('edit_investment', investment_id=h.id) }}" class="btn link">Edit</a>
+                <form class="inline" method="POST" action="{{ url_for('delete_investment', investment_id=h.id) }}">
+                  <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="4"><strong>Total</strong></td>
+            <td><strong>{{ (total_cost)|money }}</strong></td>
+            <td><strong>{{ (total_value)|money }}</strong></td>
+            <td><strong>{{ gl(total_gain) }}</strong></td>
+            <td><strong>{{ total_annualised_return|pct }}</strong></td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No investments yet. Add one above.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

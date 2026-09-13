@@ -8,7 +8,7 @@
 {#
   All charts are pure inline SVG — no JavaScript, no chart library.
   Two series per category: money in (invested / cost) vs current value.
-  Covers deposits and metals; chart type + pie metric via query params.
+  Covers deposits, metals, and investments; chart type + pie metric via query params.
 #}
 
 {% macro barchart(rows, axis_max) %}
@@ -113,6 +113,7 @@
     {{ section("By Holder — all assets", holder_data, holder_pie) }}
     {{ section("Deposits by Bank", bank_data, bank_pie) }}
     {{ section("Metals by Type", metal_data, metal_pie) }}
+    {{ section("Investments by Ticker", investment_data, investment_pie) }}
   </div>
 
 {% endblock %}
