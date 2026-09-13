@@ -2158,6 +2158,35 @@ def get_stock_quote(ticker: str) -> dict:
         return {"price": None, "currency": None, "error": str(e)[:200]}
 
 
+def quote_to_inr(quote: dict, usd_rate: float = None) -> dict:
+    """Resolves a get_stock_quote()/get_mf_quote() result to a rupee price.
+    Pass a pre-fetched usd_rate to avoid refetching it for every row in a
+    batch; omit it to fetch on demand for a single lookup. Returns
+    {"price": float|None, "price_note": str|None}."""
+    if quote["error"]:
+        return {"price": None, "price_note": quote["error"]}
+    currency = quote["currency"]
+    if currency in (None, "INR"):
+        return {"price": quote["price"], "price_note": None}
+    if currency == "USD":
+        if usd_rate is None:
+            try:
+                usd_rate = get_usd_to_inr_rate()
+            except RuntimeError as e:
+                return {"price": None, "price_note": f"USD rate unavailable ({e})"}
+        return {"price": quote["price"] * usd_rate, "price_note": None}
+    return {"price": None, "price_note": f"priced in {currency}, not converted to ₹"}
+
+
+@app.route("/api/tickers/quote")
+def api_ticker_quote():
+    from flask import jsonify
+    ticker = request.args.get("ticker", "").strip().upper()
+    if not ticker:
+        return jsonify({"price": None, "price_note": "No ticker given."})
+    return jsonify(quote_to_inr(get_stock_quote(ticker)))
+
+
 def list_investments(db):
     """Investment holdings with cost, current value (converted to rupees) and
     gain/loss. Prices are fetched live via yfinance on every call — a USD
@@ -2174,25 +2203,18 @@ def list_investments(db):
     """).fetchall():
         quote = get_stock_quote(h["ticker"])
         currency = quote["currency"]
-        current_price = None
-        price_note = None
 
-        if quote["error"]:
-            price_note = quote["error"]
-        elif currency in (None, "INR"):
-            current_price = quote["price"]
-        elif currency == "USD":
-            if usd_rate is None and usd_rate_error is None:
-                try:
-                    usd_rate = get_usd_to_inr_rate()
-                except RuntimeError as e:
-                    usd_rate_error = str(e)
-            if usd_rate is not None:
-                current_price = quote["price"] * usd_rate
-            else:
-                price_note = f"USD rate unavailable ({usd_rate_error})"
+        if currency == "USD" and usd_rate is None and usd_rate_error is None:
+            try:
+                usd_rate = get_usd_to_inr_rate()
+            except RuntimeError as e:
+                usd_rate_error = str(e)
+
+        if currency == "USD" and usd_rate is None:
+            current_price, price_note = None, f"USD rate unavailable ({usd_rate_error})"
         else:
-            price_note = f"priced in {currency}, not converted to ₹"
+            resolved = quote_to_inr(quote, usd_rate=usd_rate)
+            current_price, price_note = resolved["price"], resolved["price_note"]
 
         cost = h["shares"] * h["purchase_price"]
         value = h["shares"] * current_price if current_price is not None else None

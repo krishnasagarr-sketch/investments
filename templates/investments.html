@@ -100,6 +100,7 @@
         <label for="purchase_price">Purchase price (₹ / share)</label>
         <input type="number" step="any" id="purchase_price" name="purchase_price" placeholder="e.g. 2500"
                value="{{ form_data.purchase_price }}" required>
+        <p class="field-hint" id="purchase_price_hint" hidden>Prefilled with today's price — edit if you paid a different price.</p>
       </div>
 
       <div class="form-group">
@@ -198,11 +199,25 @@
     (function () {
       var input = document.getElementById("ticker");
       var box = document.getElementById("ticker_suggestions");
+      var priceInput = document.getElementById("purchase_price");
+      var priceHint = document.getElementById("purchase_price_hint");
       if (!input || !box) return;
       var debounceTimer = null;
       var activeRequest = null;
 
       function hide() { box.hidden = true; box.innerHTML = ""; }
+
+      function fillCurrentPrice(ticker) {
+        if (!priceInput) return;
+        fetch("{{ url_for('api_ticker_quote') }}?ticker=" + encodeURIComponent(ticker))
+          .then(function (r) { return r.json(); })
+          .then(function (quote) {
+            if (quote.price === null || quote.price === undefined) return;
+            priceInput.value = Math.round(quote.price * 100) / 100;
+            if (priceHint) priceHint.hidden = false;
+          })
+          .catch(function () {});
+      }
 
       function renderResults(results) {
         box.innerHTML = "";
@@ -219,6 +234,7 @@
             e.preventDefault();
             input.value = item.ticker;
             hide();
+            fillCurrentPrice(item.ticker);
           });
           box.appendChild(row);
         });
