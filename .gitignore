@@ -23,6 +23,11 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
+# PyInstaller build output — rebuilt by .github/workflows/build-apps.yml
+build/
+dist/
+*.spec
+
 # Editor / OS
 .DS_Store
 .idea/

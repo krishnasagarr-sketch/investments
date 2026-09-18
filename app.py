@@ -4,6 +4,7 @@ import secrets
 import smtplib
 import socket
 import sqlite3
+import sys
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -19,13 +20,43 @@ try:
 except ImportError:
     YFINANCE_AVAILABLE = False
 
-app = Flask(__name__)
+IS_FROZEN = getattr(sys, "frozen", False)
 
-DB_PATH = Path(__file__).parent / "fixed_deposits.db"
+
+def resource_path(*parts):
+    """Base directory for bundled read-only resources (templates). When
+    packaged with PyInstaller these are extracted to a temp dir (sys._MEIPASS)
+    at each launch; otherwise it's just this file's own directory."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    return base.joinpath(*parts)
+
+
+def data_path(*parts):
+    """Base directory for the user's persistent data (database, session
+    key, ticker cache). Must never be sys._MEIPASS — that temp dir is wiped
+    after the process exits, silently losing everything each run. On
+    Windows the .exe is a portable single file, so next to it is the
+    natural, discoverable place. On macOS, sys.executable for a .app bundle
+    points *inside* the package (Contents/MacOS/...) — not where Mac users
+    expect app data, and can misbehave for a signed app — so it goes in the
+    standard ~/Library/Application Support instead."""
+    if not IS_FROZEN:
+        base = Path(__file__).parent
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "FDManager"
+        base.mkdir(parents=True, exist_ok=True)
+    else:
+        base = Path(sys.executable).parent
+    return base.joinpath(*parts)
+
+
+app = Flask(__name__, template_folder=str(resource_path("templates")))
+
+DB_PATH = data_path("fixed_deposits.db")
 
 # Secret key for signed session cookies — generated once and persisted next
 # to the DB, so logins survive app restarts. Never committed (gitignored).
-SECRET_KEY_PATH = Path(__file__).parent / ".flask_secret_key"
+SECRET_KEY_PATH = data_path(".flask_secret_key")
 if SECRET_KEY_PATH.exists():
     app.secret_key = SECRET_KEY_PATH.read_text().strip()
 else:
@@ -1979,7 +2010,7 @@ def delete_metal(metal_id):
 
 
 # ---------- Ticker directory (NSE stocks + AMFI mutual funds, for the Investments search box) ----------
-TICKER_CACHE_DIR = Path(__file__).parent / "cache"
+TICKER_CACHE_DIR = data_path("cache")
 NSE_EQUITY_LIST_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 MF_SCHEME_LIST_URL = "https://api.mfapi.in/mf"
 TICKER_CACHE_MAX_AGE_DAYS = 30
@@ -2387,4 +2418,14 @@ def delete_investment(investment_id):
 if __name__ == "__main__":
     init_db()
     start_background_maturity_checker()
-    app.run(debug=True)
+    if IS_FROZEN:
+        # Packaged for sharing: no debugger (it allows arbitrary code
+        # execution from the browser — never ship it), and open the browser
+        # automatically since a double-clicked .exe/.app has no terminal to
+        # read a "open this URL" message from.
+        import webbrowser
+
+        threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
+        app.run(debug=False, port=5000)
+    else:
+        app.run(debug=True)

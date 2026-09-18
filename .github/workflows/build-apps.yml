@@ -1,0 +1,59 @@
+name: Build Desktop Apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app.py"
+      - "templates/**"
+      - "requirements.txt"
+      - ".github/workflows/build-apps.yml"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact-name: FDManager-windows
+          - os: macos-latest
+            artifact-name: FDManager-mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Windows EXE
+        if: runner.os == 'Windows'
+        run: pyinstaller --onefile --name FDManager --add-data "templates;templates" app.py
+
+      - name: Build macOS app
+        if: runner.os == 'macOS'
+        run: pyinstaller --windowed --name FDManager --add-data "templates:templates" app.py
+
+      - name: Zip macOS app for upload
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/FDManager.app dist/FDManager-mac.zip
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: dist/FDManager.exe
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: dist/FDManager-mac.zip
