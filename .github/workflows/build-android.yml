@@ -25,6 +25,11 @@ jobs:
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          # Chaquopy's Gradle plugin references an internal Gradle API
+          # (org.gradle.util.VersionNumber) that was removed in Gradle 9 —
+          # pin to the last 8.x line, which AGP 8.5.2 also expects.
+          gradle-version: "8.9"
 
       - name: Build debug APK
         working-directory: android
