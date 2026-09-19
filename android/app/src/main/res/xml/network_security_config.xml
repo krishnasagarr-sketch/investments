@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android blocks plain HTTP by default from API 28+. The app only ever
+     talks to its own embedded server on the device's loopback interface —
+     nothing leaves the phone — so cleartext is allowed for that address
+     specifically, not globally. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

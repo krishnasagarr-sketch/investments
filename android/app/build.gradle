@@ -1,0 +1,71 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+apply plugin: 'com.chaquo.python'
+
+android {
+    namespace 'com.fdmanager.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.fdmanager.app'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+
+        // Real phones are arm64-v8a; x86_64 covers most emulators. Chaquopy
+        // has to bundle a native Python build per ABI, so keeping this list
+        // short keeps both build time and APK size down.
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+
+        python {
+            pip {
+                // Flask + Werkzeug only — yfinance pulls in pandas/numpy,
+                // which Chaquopy *can* package but at a large size/build-time
+                // cost. The app already treats yfinance as optional
+                // (YFINANCE_AVAILABLE), so it degrades gracefully: FD/RD
+                // tracking, notifications, everything works; only live
+                // stock/MF price lookups in Investments are unavailable.
+                install 'flask>=3.0.0'
+            }
+        }
+    }
+
+    sourceSets {
+        main {
+            // Single source of truth: these are symlinks back to the real
+            // app.py / templates/ at the repo root, not copies, so fixes
+            // made there apply here automatically.
+            python.srcDirs = ['src/main/python']
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version '3.11'
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.core:core-ktx:1.13.1'
+}

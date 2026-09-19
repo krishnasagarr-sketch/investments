@@ -28,6 +28,14 @@ build/
 dist/
 *.spec
 
+# Android/Gradle build output and machine-specific config — rebuilt by
+# .github/workflows/build-android.yml. (build/ above already covers
+# android/app/build/ and android/build/ since it matches at any depth.)
+android/.gradle/
+android/local.properties
+android/*.iml
+android/app/*.iml
+
 # Editor / OS
 .DS_Store
 .idea/

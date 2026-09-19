@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.FDManager" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorPrimary">#2563eb</item>
+        <item name="colorPrimaryDark">#1d4ed8</item>
+    </style>
+</resources>

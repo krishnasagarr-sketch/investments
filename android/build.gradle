@@ -1,0 +1,17 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // Chaquopy embeds a real CPython interpreter in the app and runs
+        // app.py directly, rather than us reimplementing the FD/RD math,
+        // auth, and Jinja templates natively in Kotlin.
+        classpath 'com.chaquo.python:gradle:16.1.0'
+    }
+}
+
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+    id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+}
