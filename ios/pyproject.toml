@@ -1,0 +1,24 @@
+[tool.briefcase]
+project_name = "FD Manager"
+bundle = "com.fdmanager"
+version = "1.0.0"
+url = "https://github.com/krishnasagarr-sketch/investments"
+author = "FD Manager"
+author_email = "noreply@example.com"
+
+[tool.briefcase.app.fdmanager]
+formal_name = "FD Manager"
+description = "Track fixed deposits, recurring deposits and investments."
+# The real Flask app (app.py, templates/) lives at the repo root and is
+# symlinked into src/fdmanager/ below it, so this stays the single source
+# of truth — no separate iOS copy to keep in sync.
+sources = ["src/fdmanager"]
+requires = [
+    "flask>=3.0.0",
+]
+
+[tool.briefcase.app.fdmanager.iOS]
+requires = [
+    "toga-iOS>=0.4.0",
+    "std-nslog>=1.0.3",
+]

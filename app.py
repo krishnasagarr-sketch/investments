@@ -22,20 +22,21 @@ except ImportError:
 
 IS_FROZEN = getattr(sys, "frozen", False)
 
-# Set by the Android app's Kotlin shell (via Chaquopy) before it imports this
-# module, to Context.filesDir — the app's private, writable storage. Doubles
-# as the "are we running embedded in the Android app" signal, since nothing
-# else sets this variable.
-ANDROID_DATA_DIR = os.environ.get("FDMANAGER_DATA_DIR")
-IS_ANDROID = ANDROID_DATA_DIR is not None
+# Set by the mobile app shells before they import this module: Android's
+# Kotlin/Chaquopy layer sets it to Context.filesDir, iOS's Toga/app.py sets
+# it to a Documents subfolder — each platform's private, writable storage.
+# Doubles as the "are we embedded in a mobile app, not a desktop/dev
+# process" signal, since nothing else sets this variable.
+MOBILE_DATA_DIR = os.environ.get("FDMANAGER_DATA_DIR")
+IS_MOBILE_EMBED = MOBILE_DATA_DIR is not None
 
 
 def resource_path(*parts):
     """Base directory for bundled read-only resources (templates). When
     packaged with PyInstaller these are extracted to a temp dir (sys._MEIPASS)
-    at each launch; otherwise it's just this file's own directory (which is
-    also correct under Chaquopy on Android, where __file__ resolves to
-    wherever it placed this module's source)."""
+    at each launch; otherwise it's just this file's own directory (also
+    correct on Android via Chaquopy and on iOS via Toga/briefcase, where
+    __file__ resolves to wherever each one placed this module's source)."""
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
     return base.joinpath(*parts)
 
@@ -48,11 +49,11 @@ def data_path(*parts):
     natural, discoverable place. On macOS, sys.executable for a .app bundle
     points *inside* the package (Contents/MacOS/...) — not where Mac users
     expect app data, and can misbehave for a signed app — so it goes in the
-    standard ~/Library/Application Support instead. On Android there's no
-    filesystem concept of "next to the app" at all — Kotlin passes in the
-    app's private storage directory via FDMANAGER_DATA_DIR."""
-    if IS_ANDROID:
-        base = Path(ANDROID_DATA_DIR)
+    standard ~/Library/Application Support instead. Android and iOS have no
+    filesystem concept of "next to the app" at all — their native shells
+    pass in a private storage directory via FDMANAGER_DATA_DIR."""
+    if IS_MOBILE_EMBED:
+        base = Path(MOBILE_DATA_DIR)
         base.mkdir(parents=True, exist_ok=True)
     elif not IS_FROZEN:
         base = Path(__file__).parent
@@ -2459,15 +2460,17 @@ def delete_investment(investment_id):
 def main():
     """Entry point for every packaged form of the app — run directly as a
     script (dev mode), launched from a frozen desktop .exe/.app, or called
-    by Kotlin via Chaquopy on Android (a module Chaquopy imports never gets
-    __name__ == "__main__", so it needs its own callable entry point)."""
+    by the Android (Kotlin/Chaquopy) or iOS (Toga) shell (a module they
+    import never gets __name__ == "__main__", so it needs its own callable
+    entry point)."""
     init_db()
     start_background_maturity_checker()
-    if IS_ANDROID:
-        # Kotlin's WebView loads the page once the server's listening, so
-        # there's no browser to open here, and no debugger to ship. The
-        # reloader isn't appropriate either — it re-execs the process, which
-        # doesn't make sense embedded inside the Android app's own process.
+    if IS_MOBILE_EMBED:
+        # The native shell's WebView loads the page once the server's
+        # listening, so there's no browser to open here, and no debugger to
+        # ship. The reloader isn't appropriate either — it re-execs the
+        # process, which doesn't make sense embedded in the app's own
+        # process on either platform.
         app.run(debug=False, port=5000, use_reloader=False)
     elif IS_FROZEN:
         # Packaged for sharing: no debugger (it allows arbitrary code
