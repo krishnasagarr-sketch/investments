@@ -22,4 +22,14 @@ requires = [
 requires = [
     "toga-iOS>=0.4.0",
     "std-nslog>=1.0.3",
+    # MarkupSafe (a Jinja2/Flask dependency) has never published a universal
+    # py3-none-any wheel, only platform-compiled ones — and Briefcase can't
+    # build packages from source for iOS either, even pure-Python ones
+    # (a documented Briefcase limitation). This is a wheel built locally
+    # from MarkupSafe's own official source with its optional C speedup
+    # extension deliberately made to fail to compile, so its setup.py falls
+    # back to the pure-Python implementation it already ships — same code,
+    # just without the extension. To rebuild for a newer MarkupSafe version:
+    #   CC=/usr/bin/false pip wheel markupsafe==<version> --no-deps -w vendor
+    "./vendor/markupsafe-3.0.3-py3-none-any.whl",
 ]
