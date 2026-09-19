@@ -551,11 +551,14 @@ def summarise_deposit(d) -> dict:
         total_installments = None
         installments_paid = None
         paid_in = d["principal"]
-        if is_matured:
+        if dtype == "simple":
+            # Payout type: interest is disbursed periodically, not retained
+            # in the deposit, so its own value never grows past the
+            # principal — before or after maturity.
+            current_value = d["principal"]
+        elif is_matured:
             current_value = maturity_amount
-        elif dtype == "simple":
-            current_value = d["principal"] + d["principal"] * (d["interest_rate"] / 100) * elapsed_years
-        else:  # cumulative
+        else:  # cumulative, still accruing
             r = d["interest_rate"] / 100
             n = d["compounding_frequency"]
             current_value = d["principal"] * (1 + r / n) ** (n * elapsed_years)
