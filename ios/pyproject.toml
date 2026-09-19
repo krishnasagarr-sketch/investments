@@ -9,6 +9,7 @@ author_email = "noreply@example.com"
 [tool.briefcase.app.fdmanager]
 formal_name = "FD Manager"
 description = "Track fixed deposits, recurring deposits and investments."
+license = "MIT"
 # The real Flask app (app.py, templates/) lives at the repo root and is
 # symlinked into src/fdmanager/ below it, so this stays the single source
 # of truth — no separate iOS copy to keep in sync.
