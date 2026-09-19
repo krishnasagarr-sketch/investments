@@ -450,6 +450,23 @@ def recurring_value_to_date(monthly_installment: float, annual_rate: float,
     return value
 
 
+def recurring_weighted_holding_days(tenure_months: int, installments_paid: int, months_elapsed: int) -> float:
+    """Equal-instalment-weighted average holding period (in days) across an
+    RD's instalments paid so far. Unlike a lump-sum deposit, each instalment
+    has been invested for a different length of time — the first for close
+    to the whole tenure, the latest for almost none — so annualising the
+    return using calendar days since the *first* instalment overstates the
+    time the money was actually at work and understates the return."""
+    if installments_paid <= 0:
+        return 0.0
+    total_months = 0
+    for k in range(1, installments_paid + 1):
+        months_on_deposit = min(months_elapsed - (k - 1), tenure_months - (k - 1))
+        total_months += max(months_on_deposit, 0)
+    avg_months = total_months / installments_paid
+    return avg_months * (DAYS_PER_YEAR / 12)
+
+
 MIN_DAYS_TO_ANNUALISE = 7  # shorter holds swing wildly when annualised; show "—" instead
 
 
@@ -564,7 +581,14 @@ def summarise_deposit(d) -> dict:
             current_value = d["principal"] * (1 + r / n) ** (n * elapsed_years)
 
     accrued_interest = current_value - paid_in
-    days_held = max((today - start).days, 0)
+    if dtype == "recurring":
+        # Annualising an RD needs the average time each instalment was
+        # actually invested, not calendar days since the first one (see
+        # recurring_weighted_holding_days) — otherwise the return comes out
+        # roughly halved, since most of the money went in well after day one.
+        days_held = recurring_weighted_holding_days(d["tenure_months"], installments_paid, months_elapsed)
+    else:
+        days_held = max((today - start).days, 0)
     annualised_return = annualised_return_pct(invested, current_value, days_held)
 
     return {
