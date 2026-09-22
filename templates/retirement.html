@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Retirement — Fixed Deposit Manager{% endblock %}
+
+{% macro gl(x) -%}
+  <span class="{{ 'positive' if x >= 0 else 'negative' }}">{{ "+" if x >= 0 else "−" }}{{ (x | abs)|money }}</span>
+{%- endmacro %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Add a PPF / EPF / NPS account</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      PPF/EPF rates are government-notified and change quarterly, with fiddly
+      minimum-balance rules, and NPS is market-linked — none of that is reliably
+      reproducible here. Instead, log each contribution and update the current
+      balance by hand from the account's own passbook or portal, the same way
+      the Metals tab tracks holdings whose price isn't fetched automatically.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST" action="{{ url_for('retirement_page') }}">
+      <div class="form-group">
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" required {% if not depositors %}disabled{% endif %}>
+          <option value="" disabled {% if not form_data.depositor_id %}selected{% endif %}>Select a depositor…</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="account_type">Account type</label>
+        <select id="account_type" name="account_type">
+          {% for t in ["PPF", "EPF", "NPS"] %}
+            <option value="{{ t }}" {% if form_data.account_type == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="institution">Institution <span class="muted">(optional)</span></label>
+        <input type="text" id="institution" name="institution" placeholder="e.g. SBI, EPFO, NSDL"
+               value="{{ form_data.institution }}">
+      </div>
+      <div class="form-group">
+        <label for="account_number">Account number <span class="muted">(optional)</span></label>
+        <input type="text" id="account_number" name="account_number" placeholder="e.g. PRAN / account no."
+               value="{{ form_data.account_number }}">
+      </div>
+      <div class="form-group">
+        <label for="opened_date">Opened date</label>
+        <input type="date" id="opened_date" name="opened_date" value="{{ form_data.opened_date }}" required>
+      </div>
+      <button type="submit" class="btn" style="width:100%;" {% if not depositors %}disabled{% endif %}>Add Account</button>
+      {% if not depositors %}
+        <p class="field-hint">Add a depositor first on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab.</p>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="card">
+    {% if accounts %}
+      {% for a in accounts %}
+      <div class="card" style="background:#fafafa; margin-bottom:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
+          <div>
+            <strong>{{ a.account_type }}</strong> — {{ a.depositor_name }}
+            {% if a.institution %}<span class="muted">· {{ a.institution }}</span>{% endif %}
+            {% if a.account_number %}<span class="muted">· {{ a.account_number }}</span>{% endif %}
+            <div class="muted" style="font-size:12px;">Opened {{ a.opened_date }}</div>
+          </div>
+          <form class="inline" method="POST" action="{{ url_for('delete_retirement_account', account_id=a.id) }}">
+            <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
+          </form>
+        </div>
+
+        {% if a.over_ppf_limit %}
+          <div class="error-box" style="background:#fff2e0; color:var(--amber); margin-top:12px;">
+            {{ (a.fy_contributed)|money }} contributed this financial year — over the ₹1,50,000 PPF annual limit.
+          </div>
+        {% endif %}
+
+        <div class="summary-grid" style="margin-top:12px;">
+          <div class="summary-item">
+            <div class="label">Total Contributed</div>
+            <div class="value">{{ (a.total_contributed)|money }}</div>
+          </div>
+          <div class="summary-item">
+            <div class="label">Current Balance</div>
+            <div class="value">{{ (a.current_balance)|money }}</div>
+            {% if a.balance_as_of %}<div class="muted" style="font-size:12px;">as of {{ a.balance_as_of }}</div>{% endif %}
+          </div>
+          <div class="summary-item">
+            <div class="label">Gain</div>
+            <div class="value">
+              {{ gl(a.gain) }}
+              {% if a.gain_pct is not none %}<div class="muted" style="font-size:12px;">{{ "%+.1f"|format(a.gain_pct) }}%</div>{% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:12px; grid-template-columns: 1fr 1fr; gap:16px;">
+          <form method="POST" action="{{ url_for('update_retirement_balance', account_id=a.id) }}">
+            <label for="balance-{{ a.id }}" style="font-size:12px;color:var(--muted);">Update current balance (₹)</label>
+            <div style="display:flex; gap:8px;">
+              <input type="number" step="any" id="balance-{{ a.id }}" name="current_balance"
+                     value="{{ '%g'|format(a.current_balance) }}" style="flex:1;">
+              <button type="submit" class="btn secondary">Update</button>
+            </div>
+          </form>
+
+          <form method="POST" action="{{ url_for('add_retirement_contribution', account_id=a.id) }}">
+            <label style="font-size:12px;color:var(--muted);">Log a contribution</label>
+            <div style="display:flex; gap:8px;">
+              <input type="date" name="contribution_date" required style="flex:1;">
+              <input type="number" step="any" name="amount" placeholder="₹" required style="flex:1;">
+              <button type="submit" class="btn secondary">Add</button>
+            </div>
+          </form>
+        </div>
+
+        {% if a.contributions %}
+          <div class="table-scroll compact" style="margin-top:12px;">
+          <table>
+            <thead><tr><th>Date</th><th>Amount</th><th>Note</th><th></th></tr></thead>
+            <tbody>
+              {% for c in a.contributions %}
+              <tr>
+                <td>{{ c.contribution_date }}</td>
+                <td>{{ (c.amount)|money }}</td>
+                <td>{{ c.note or "—" }}</td>
+                <td>
+                  <form class="inline" method="POST" action="{{ url_for('delete_retirement_contribution', contribution_id=c.id) }}">
+                    <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty-state">
+        <p>No PPF/EPF/NPS accounts yet. Add one above.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

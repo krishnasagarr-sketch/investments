@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}TDS — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">TDS on FD interest</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Banks deduct TDS at {{ tds_rate_pct }}% (with PAN on file — 20% without) when a
+      depositor's total interest from a bank in a financial year crosses the threshold
+      (₹40,000 normally, ₹50,000 for senior citizens). This is an estimate from what's
+      recorded here, not a substitute for your bank's own TDS certificate (Form 16A).
+    </p>
+    <form method="GET">
+      <div class="form-group">
+        <label for="fy">Financial year</label>
+        <select id="fy" name="fy" onchange="this.form.submit()">
+          {% for y in fy_options %}
+            <option value="{{ y }}" {% if y == fy_start_year %}selected{% endif %}>FY {{ y }}-{{ (y + 1) % 100 }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="threshold">Threshold (₹)</label>
+        <input type="number" step="any" id="threshold" name="threshold" value="{{ '%g'|format(threshold) }}">
+      </div>
+      <button type="submit" class="btn secondary" style="width:100%;">Apply</button>
+    </form>
+  </div>
+
+  <div class="card">
+    {% if rows %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Depositor</th>
+            <th>Bank</th>
+            <th>Interest ({{ period_start.isoformat() }} to {{ period_end.isoformat() }})</th>
+            <th>Status</th>
+            <th>Estimated TDS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td><strong>{{ r.depositor_name }}</strong></td>
+            <td>{{ r.bank_name }}</td>
+            <td>{{ (r.interest)|money }}</td>
+            <td>
+              {% if r.over_threshold %}
+                <span class="badge matured">above threshold</span>
+              {% else %}
+                <span class="badge active">below threshold</span>
+              {% endif %}
+            </td>
+            <td>{{ (r.estimated_tds)|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>Total</strong></td>
+            <td><strong>{{ (total_interest)|money }}</strong></td>
+            <td></td>
+            <td><strong>{{ (total_estimated_tds)|money }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No interest-earning deposits found for this financial year.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

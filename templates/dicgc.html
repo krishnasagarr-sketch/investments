@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}DICGC — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">DICGC insurance coverage</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      DICGC insures up to {{ (insured_limit)|money }} per depositor, per bank — covering
+      principal and accrued interest together across all deposits that depositor holds at
+      that bank. Anything held beyond that at one bank isn't covered if the bank fails.
+      Splitting large holdings across banks (or depositors) keeps more of it insured.
+    </p>
+  </div>
+
+  <div class="card">
+    {% if rows %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Depositor</th>
+            <th>Bank</th>
+            <th>Total Deposits</th>
+            <th>Insured</th>
+            <th>Uninsured</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td><strong>{{ r.depositor_name }}</strong></td>
+            <td>{{ r.bank_name }}</td>
+            <td>{{ (r.total_deposits)|money }}</td>
+            <td>{{ (r.insured)|money }}</td>
+            <td>{% if r.uninsured %}<span class="negative">{{ (r.uninsured)|money }}</span>{% else %}—{% endif %}</td>
+            <td>
+              {% if r.over_limit %}
+                <span class="badge matured">over limit</span>
+              {% else %}
+                <span class="badge active">fully insured</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="4"><strong>Total uninsured</strong></td>
+            <td colspan="2"><strong>{{ (total_uninsured)|money }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No deposits recorded yet.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

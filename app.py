@@ -367,6 +367,33 @@ def init_db():
         )
     """)
 
+    # PPF / EPF / NPS. Unlike FDs/RDs these don't follow a formula we can
+    # reliably reproduce here (PPF/EPF rates are government-notified and
+    # change quarterly with fiddly minimum-balance rules; NPS is market-linked)
+    # — so current_balance is entered by hand from the account's own passbook
+    # or portal, the same pattern already used for metals' current_price.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS retirement_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            depositor_id INTEGER REFERENCES depositors(id),
+            account_type TEXT NOT NULL CHECK(account_type IN ('PPF','EPF','NPS')),
+            institution TEXT NOT NULL DEFAULT '',
+            account_number TEXT NOT NULL DEFAULT '',
+            opened_date TEXT NOT NULL,
+            current_balance REAL NOT NULL DEFAULT 0,
+            balance_as_of TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS retirement_contributions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES retirement_accounts(id),
+            contribution_date TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount > 0),
+            note TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -516,8 +543,11 @@ def _row_get(d, key, default):
     return d[key] if key in d.keys() else default
 
 
-def summarise_deposit(d) -> dict:
-    """Turn a raw deposits row into a display dict with computed figures."""
+def summarise_deposit(d, as_of: date = None) -> dict:
+    """Turn a raw deposits row into a display dict with computed figures, as
+    of a given date (defaults to today) — an arbitrary `as_of` is what lets
+    deposit_interest_in_period() work out interest earned within a specific
+    window (e.g. a financial year) rather than only "to date"."""
     dtype = _row_get(d, "deposit_type", "cumulative")
     if dtype not in DEPOSIT_TYPES:
         dtype = "cumulative"
@@ -558,7 +588,7 @@ def summarise_deposit(d) -> dict:
     bank_name = _row_get(d, "bank_ref_name", None) or _row_get(d, "bank_name", "")
     bank_code = _row_get(d, "bank_code", "") or ""
 
-    today = date.today()
+    today = as_of or date.today()
     is_matured = today >= maturity_date
 
     # ----- Progress + current value (principal + interest accrued to date) -----
@@ -638,6 +668,54 @@ def summarise_deposit(d) -> dict:
         "days_held": days_held,
         "annualised_return": annualised_return,
     }
+
+
+# ---------- Financial-year / TDS math ----------
+def fy_bounds(fy_start_year: int) -> tuple:
+    """Indian financial year: 1 Apr fy_start_year to 31 Mar fy_start_year+1."""
+    return date(fy_start_year, 4, 1), date(fy_start_year + 1, 3, 31)
+
+
+def current_fy_start_year() -> int:
+    today = date.today()
+    return today.year if today.month >= 4 else today.year - 1
+
+
+def _deposit_maturity_date(d) -> date:
+    start = date.fromisoformat(d["start_date"])
+    unit = _row_get(d, "tenure_unit", "months")
+    dtype = _row_get(d, "deposit_type", "cumulative")
+    if unit == "days" and dtype != "recurring":
+        return start + timedelta(days=_row_get(d, "tenure_days", 0))
+    return add_months(start, d["tenure_months"])
+
+
+def deposit_interest_in_period(d, period_start: date, period_end: date) -> float:
+    """Interest actually accrued on this deposit within [period_start,
+    period_end] — used to work out a financial year's taxable interest for
+    TDS, as distinct from accrued_interest's "since the deposit started".
+
+    A payout ("simple") deposit's own current_value never moves (the
+    interest is paid out, not retained — see summarise_deposit), so it can't
+    be read off as a value delta the way cumulative/recurring can; simple
+    interest is linear by definition, so it's computed directly instead."""
+    dtype = _row_get(d, "deposit_type", "cumulative")
+    start = date.fromisoformat(d["start_date"])
+    maturity_date = _deposit_maturity_date(d)
+
+    window_start = max(period_start, start)
+    window_end = min(period_end, maturity_date)
+    if window_end < window_start:
+        return 0.0
+
+    if dtype == "simple":
+        days = (window_end - window_start).days + 1
+        return d["principal"] * (d["interest_rate"] / 100) * (days / DAYS_PER_YEAR)
+
+    accrued_at_end = summarise_deposit(d, as_of=window_end)["accrued_interest"]
+    day_before = window_start - timedelta(days=1)
+    accrued_before = summarise_deposit(d, as_of=day_before)["accrued_interest"] if day_before >= start else 0.0
+    return max(accrued_at_end - accrued_before, 0.0)
 
 
 # ---------- Master-list helpers ----------
@@ -1613,6 +1691,260 @@ def run_maturity_check(db) -> str:
     result = f"Emailed a reminder for {len(due)} deposit(s)."
     _record_check_result(db, result)
     return result
+
+
+TDS_RATE_PCT = 10  # with PAN on file; 20% otherwise -- shown as a caveat in the UI
+DICGC_INSURED_LIMIT = 500000  # per depositor, per bank -- covers principal + accrued interest
+
+
+def compute_tds_rows(db, fy_start_year: int, threshold: float):
+    period_start, period_end = fy_bounds(fy_start_year)
+    today = date.today()
+    if period_end > today:
+        period_end = today
+
+    groups = {}  # (depositor_id, bank_ref_id) -> {names, interest}
+    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+        interest = deposit_interest_in_period(d, period_start, period_end)
+        if interest <= 0:
+            continue
+        key = (d["depositor_id"], d["bank_ref_id"])
+        if key not in groups:
+            groups[key] = {
+                "depositor_name": d["depositor_name"] or d["holder_name"] or "(unlinked)",
+                "bank_name": d["bank_ref_name"] or d["bank_name"] or "(unlinked)",
+                "interest": 0.0,
+            }
+        groups[key]["interest"] += interest
+
+    rows = []
+    for g in groups.values():
+        interest = round(g["interest"], 2)
+        over = interest > threshold
+        rows.append({
+            "depositor_name": g["depositor_name"],
+            "bank_name": g["bank_name"],
+            "interest": interest,
+            "over_threshold": over,
+            "estimated_tds": round(interest * TDS_RATE_PCT / 100, 2) if over else 0.0,
+        })
+    rows.sort(key=lambda r: r["interest"], reverse=True)
+    return rows, period_start, period_end
+
+
+@app.route("/tds")
+def tds_page():
+    db = get_db()
+    current_fy = current_fy_start_year()
+    try:
+        fy_start_year = int(request.args.get("fy", current_fy))
+    except (TypeError, ValueError):
+        fy_start_year = current_fy
+    try:
+        threshold = float(request.args.get("threshold", 40000))
+    except (TypeError, ValueError):
+        threshold = 40000.0
+
+    rows, period_start, period_end = compute_tds_rows(db, fy_start_year, threshold)
+
+    return render_template(
+        "tds.html", active_tab="tds",
+        fy_options=list(range(current_fy, current_fy - 6, -1)),
+        fy_start_year=fy_start_year, threshold=threshold,
+        period_start=period_start, period_end=period_end,
+        rows=rows, tds_rate_pct=TDS_RATE_PCT,
+        total_interest=round(sum(r["interest"] for r in rows), 2),
+        total_estimated_tds=round(sum(r["estimated_tds"] for r in rows), 2),
+    )
+
+
+@app.route("/dicgc")
+def dicgc_page():
+    db = get_db()
+    groups = {}  # (depositor_id, bank_ref_id) -> {names, total}
+    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+        s = summarise_deposit(d)
+        key = (d["depositor_id"], d["bank_ref_id"])
+        if key not in groups:
+            groups[key] = {
+                "depositor_name": d["depositor_name"] or d["holder_name"] or "(unlinked)",
+                "bank_name": d["bank_ref_name"] or d["bank_name"] or "(unlinked)",
+                "total": 0.0,
+            }
+        groups[key]["total"] += s["current_value"]
+
+    rows = []
+    for g in groups.values():
+        total = round(g["total"], 2)
+        insured = min(total, DICGC_INSURED_LIMIT)
+        uninsured = max(total - DICGC_INSURED_LIMIT, 0.0)
+        rows.append({
+            "depositor_name": g["depositor_name"],
+            "bank_name": g["bank_name"],
+            "total_deposits": total,
+            "insured": round(insured, 2),
+            "uninsured": round(uninsured, 2),
+            "over_limit": uninsured > 0,
+        })
+    rows.sort(key=lambda r: r["uninsured"], reverse=True)
+
+    return render_template(
+        "dicgc.html", active_tab="dicgc", insured_limit=DICGC_INSURED_LIMIT,
+        rows=rows, total_uninsured=round(sum(r["uninsured"] for r in rows), 2),
+    )
+
+
+def retirement_accounts_with_totals(db):
+    accounts = db.execute(
+        """SELECT ra.*, dep.name AS depositor_name
+           FROM retirement_accounts ra
+           LEFT JOIN depositors dep ON dep.id = ra.depositor_id
+           ORDER BY dep.name COLLATE NOCASE, ra.account_type"""
+    ).fetchall()
+    contributed = {
+        r["account_id"]: r["total"]
+        for r in db.execute(
+            "SELECT account_id, SUM(amount) AS total FROM retirement_contributions GROUP BY account_id"
+        ).fetchall()
+    }
+    fy_start, fy_end = fy_bounds(current_fy_start_year())
+    fy_contributed = {
+        r["account_id"]: r["total"]
+        for r in db.execute(
+            """SELECT account_id, SUM(amount) AS total FROM retirement_contributions
+               WHERE contribution_date BETWEEN ? AND ? GROUP BY account_id""",
+            (fy_start.isoformat(), fy_end.isoformat()),
+        ).fetchall()
+    }
+    contributions_by_account = {}
+    for r in db.execute(
+        """SELECT id, account_id, contribution_date, amount, note FROM retirement_contributions
+           ORDER BY contribution_date DESC, id DESC"""
+    ).fetchall():
+        contributions_by_account.setdefault(r["account_id"], []).append(dict(r))
+
+    result = []
+    for a in accounts:
+        total_contributed = contributed.get(a["id"], 0.0) or 0.0
+        gain = a["current_balance"] - total_contributed
+        gain_pct = (gain / total_contributed * 100) if total_contributed > 0 else None
+        this_fy_contributed = fy_contributed.get(a["id"], 0.0) or 0.0
+        result.append({
+            "id": a["id"],
+            "depositor_id": a["depositor_id"],
+            "depositor_name": a["depositor_name"] or "(unlinked)",
+            "account_type": a["account_type"],
+            "institution": a["institution"],
+            "account_number": a["account_number"],
+            "opened_date": a["opened_date"],
+            "current_balance": a["current_balance"],
+            "balance_as_of": a["balance_as_of"],
+            "total_contributed": round(total_contributed, 2),
+            "gain": round(gain, 2),
+            "gain_pct": round(gain_pct, 2) if gain_pct is not None else None,
+            "fy_contributed": round(this_fy_contributed, 2),
+            "over_ppf_limit": a["account_type"] == "PPF" and this_fy_contributed > 150000,
+            "contributions": contributions_by_account.get(a["id"], []),
+        })
+    return result
+
+
+@app.route("/retirement", methods=["GET", "POST"])
+def retirement_page():
+    db = get_db()
+    error = None
+    form_data = {"depositor_id": "", "account_type": "PPF", "institution": "", "account_number": "", "opened_date": date.today().isoformat()}
+
+    if request.method == "POST":
+        form_data["depositor_id"] = request.form.get("depositor_id", "")
+        form_data["account_type"] = request.form.get("account_type", "PPF")
+        form_data["institution"] = request.form.get("institution", "").strip()
+        form_data["account_number"] = request.form.get("account_number", "").strip()
+        form_data["opened_date"] = request.form.get("opened_date", "").strip()
+        try:
+            if not form_data["depositor_id"]:
+                raise ValueError("Choose a depositor.")
+            if form_data["account_type"] not in ("PPF", "EPF", "NPS"):
+                raise ValueError("Invalid account type.")
+            if not form_data["opened_date"]:
+                raise ValueError("Opened date is required.")
+            db.execute(
+                """INSERT INTO retirement_accounts
+                   (depositor_id, account_type, institution, account_number, opened_date)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (form_data["depositor_id"], form_data["account_type"], form_data["institution"],
+                 form_data["account_number"], form_data["opened_date"]),
+            )
+            db.commit()
+            return redirect(url_for("retirement_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return render_template(
+        "retirement.html", active_tab="retirement",
+        depositors=list_depositors(db), accounts=retirement_accounts_with_totals(db),
+        error=error, form_data=form_data,
+    )
+
+
+@app.route("/retirement/<int:account_id>/balance", methods=["POST"])
+def update_retirement_balance(account_id):
+    db = get_db()
+    account = db.execute("SELECT id FROM retirement_accounts WHERE id = ?", (account_id,)).fetchone()
+    if account is None:
+        return redirect(url_for("retirement_page"))
+    try:
+        balance = float(request.form.get("current_balance", ""))
+        if balance < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return redirect(url_for("retirement_page"))
+    db.execute(
+        "UPDATE retirement_accounts SET current_balance = ?, balance_as_of = ? WHERE id = ?",
+        (balance, date.today().isoformat(), account_id),
+    )
+    db.commit()
+    return redirect(url_for("retirement_page"))
+
+
+@app.route("/retirement/<int:account_id>/delete", methods=["POST"])
+def delete_retirement_account(account_id):
+    db = get_db()
+    db.execute("DELETE FROM retirement_contributions WHERE account_id = ?", (account_id,))
+    db.execute("DELETE FROM retirement_accounts WHERE id = ?", (account_id,))
+    db.commit()
+    return redirect(url_for("retirement_page"))
+
+
+@app.route("/retirement/<int:account_id>/contribute", methods=["POST"])
+def add_retirement_contribution(account_id):
+    db = get_db()
+    account = db.execute("SELECT id FROM retirement_accounts WHERE id = ?", (account_id,)).fetchone()
+    if account is None:
+        return redirect(url_for("retirement_page"))
+    contribution_date = request.form.get("contribution_date", "").strip()
+    note = request.form.get("note", "").strip()
+    try:
+        amount = float(request.form.get("amount", ""))
+        if amount <= 0 or not contribution_date:
+            raise ValueError
+    except (TypeError, ValueError):
+        return redirect(url_for("retirement_page"))
+    db.execute(
+        """INSERT INTO retirement_contributions (account_id, contribution_date, amount, note)
+           VALUES (?, ?, ?, ?)""",
+        (account_id, contribution_date, amount, note),
+    )
+    db.commit()
+    return redirect(url_for("retirement_page"))
+
+
+@app.route("/retirement/contributions/<int:contribution_id>/delete", methods=["POST"])
+def delete_retirement_contribution(contribution_id):
+    db = get_db()
+    db.execute("DELETE FROM retirement_contributions WHERE id = ?", (contribution_id,))
+    db.commit()
+    return redirect(url_for("retirement_page"))
 
 
 @app.route("/notifications")
