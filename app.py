@@ -1,6 +1,7 @@
 import math
 import os
 import secrets
+import shutil
 import smtplib
 import socket
 import sqlite3
@@ -11,7 +12,7 @@ from datetime import date, datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 
-from flask import Flask, render_template, request, redirect, url_for, g, session
+from flask import Flask, render_template, request, redirect, url_for, g, session, send_file, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
@@ -2487,6 +2488,55 @@ def delete_investment(investment_id):
     db.execute("DELETE FROM investments WHERE id = ?", (investment_id,))
     db.commit()
     return redirect(url_for("investments_page"))
+
+
+@app.route("/backup")
+def backup_page():
+    return render_template("backup.html", active_tab="backup", error=None)
+
+
+@app.route("/api/backup")
+def backup_database():
+    db = get_db()
+    db.commit()
+    return send_file(
+        DB_PATH,
+        as_attachment=True,
+        download_name=f"fd-manager-backup-{date.today().isoformat()}.db",
+        mimetype="application/octet-stream",
+    )
+
+
+@app.route("/api/restore", methods=["POST"])
+def restore_database():
+    file = request.files.get("backup_file")
+    if file is None or file.filename == "":
+        return jsonify({"error": "Choose a backup file to restore."}), 400
+
+    tmp_path = DB_PATH.parent / f".restore-upload-{secrets.token_hex(8)}.db"
+    file.save(tmp_path)
+
+    try:
+        test_conn = sqlite3.connect(tmp_path)
+        tables = {r[0] for r in test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        test_conn.close()
+    except sqlite3.Error:
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"error": "That file isn't a valid database."}), 400
+
+    required = {"depositors", "deposits", "auth_user"}
+    if not required.issubset(tables):
+        tmp_path.unlink(missing_ok=True)
+        return jsonify({"error": "That file doesn't look like an FD Manager backup (missing expected tables)."}), 400
+
+    safety_copy = DB_PATH.parent / f"fd-manager-before-restore-{date.today().isoformat()}-{secrets.token_hex(4)}.db"
+    if DB_PATH.exists():
+        shutil.copy2(DB_PATH, safety_copy)
+    shutil.move(str(tmp_path), str(DB_PATH))
+
+    init_db()
+
+    return jsonify({"ok": True, "safety_copy": safety_copy.name})
 
 
 def main():

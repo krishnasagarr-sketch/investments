@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Backup — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Backup</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Everything lives in one local file on this device, with no server or cloud copy —
+      losing the device loses the data. Download a backup regularly, especially before
+      a phone reset, app reinstall, or OS update.
+    </p>
+    <a href="{{ url_for('backup_database') }}" class="btn" style="display:inline-block;text-decoration:none;text-align:center;">Download Backup</a>
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Restore</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Replaces everything currently in the app with the contents of the backup file.
+      A safety copy of what's here now is made automatically before restoring, in case
+      this wasn't what you meant to do.
+    </p>
+    <div id="restore-error" class="error-box" style="display:none;"></div>
+    <div class="form-group">
+      <label for="restore-file">Backup file (.db)</label>
+      <input type="file" id="restore-file" accept=".db">
+    </div>
+    <button type="button" class="btn secondary" id="restore-submit" style="width:100%;">Restore from Backup</button>
+    <p id="restore-msg" class="field-hint" style="display:none;"></p>
+  </div>
+
+  <script>
+    document.getElementById('restore-submit').addEventListener('click', async () => {
+      const errorBox = document.getElementById('restore-error');
+      const msg = document.getElementById('restore-msg');
+      errorBox.style.display = 'none';
+      msg.style.display = 'none';
+
+      const fileInput = document.getElementById('restore-file');
+      const file = fileInput.files[0];
+      if (!file) {
+        errorBox.textContent = 'Choose a backup file first.';
+        errorBox.style.display = 'block';
+        return;
+      }
+      if (!confirm('This replaces everything currently in the app with the backup file. Continue?')) return;
+
+      const formData = new FormData();
+      formData.append('backup_file', file);
+      try {
+        const res = await fetch('{{ url_for("restore_database") }}', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Restore failed');
+        msg.textContent = `Restored. A safety copy of your previous data was saved as ${data.safety_copy}. Reloading...`;
+        msg.style.display = 'block';
+        setTimeout(() => window.location.reload(), 1500);
+      } catch (e) {
+        errorBox.textContent = e.message;
+        errorBox.style.display = 'block';
+      }
+    });
+  </script>
+
+{% endblock %}
