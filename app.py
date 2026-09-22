@@ -1744,6 +1744,9 @@ def get_metal_prices(db) -> dict:
 # Spot-price API (gold-api.com, no key required) symbol for each metal we can
 # fetch automatically; troy-ounce quotes are converted to rupees per gram.
 METAL_API_SYMBOLS = {
+    # Only platinum/palladium actually use this — gold/silver come from
+    # IBJA instead — but XAU/XAG stay mapped too, so a metal ever falling
+    # out of IBJA's coverage still has a spot-price fallback available.
     "gold_24k": "XAU",
     "silver": "XAG",
     "platinum": "XPT",
@@ -1781,26 +1784,54 @@ def get_usd_to_inr_rate() -> float:
         raise RuntimeError("Could not read the USD/INR exchange rate.")
 
 
-def fetch_live_metal_prices() -> dict:
-    """Fetch spot prices (USD/troy oz) and the USD->INR rate, return
-    {metal: price_per_gram_in_rupees}. Raises RuntimeError with a
-    user-facing message on any network/parsing failure."""
-    usd_to_inr = get_usd_to_inr_rate()
+IBJA_API_BASE = "https://ibja-api.vercel.app"
 
+
+def fetch_live_metal_prices() -> tuple[dict, dict]:
+    """Fetch current INR/gram prices. Returns (prices, sources) where
+    sources[metal] is 'india' (IBJA reference rate) or 'spot' (global spot,
+    converted at the live USD/INR rate — used only for platinum/palladium,
+    which IBJA doesn't publish). Raises RuntimeError with a user-facing
+    message on any network/parsing failure.
+
+    IBJA's own reference rate already includes import duty, GST and the
+    local market premium, so it reads meaningfully higher than a raw
+    spot-to-rupees conversion — that gap *is* the point: it's what makes
+    this the actual Indian market price rather than an international one
+    converted at the exchange rate alone."""
     prices = {}
-    for metal, symbol in METAL_API_SYMBOLS.items():
-        data = _fetch_json_url(f"https://api.gold-api.com/price/{symbol}")
-        try:
-            usd_per_oz = float(data["price"])
-        except (KeyError, TypeError, ValueError):
-            raise RuntimeError(f"Could not read the spot price for {metal}.")
-        prices[metal] = usd_per_oz / TROY_OUNCE_GRAMS * usd_to_inr
+    sources = {}
 
-    # 22K gold is 22/24ths pure; derive it from the 24K spot rate.
-    if "gold_24k" in prices:
-        prices["gold_22k"] = prices["gold_24k"] * 22 / 24
+    gold = _fetch_json_url(f"{IBJA_API_BASE}/latest")
+    try:
+        prices["gold_24k"] = float(gold["lblGold999_AM"]) / 10  # quoted per 10g
+        prices["gold_22k"] = float(gold["lblGold916_AM"]) / 10
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("Could not read IBJA's gold rate.")
+    sources["gold_24k"] = sources["gold_22k"] = "india"
 
-    return prices
+    silver = _fetch_json_url(f"{IBJA_API_BASE}/silver/latest")
+    try:
+        # Unlike gold, Indian silver rates are conventionally quoted per
+        # kilogram, not per 10g.
+        prices["silver"] = float(silver["lblSilver999_AM"]) / 1000
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("Could not read IBJA's silver rate.")
+    sources["silver"] = "india"
+
+    remaining = {m: s for m, s in METAL_API_SYMBOLS.items() if m not in prices}
+    if remaining:
+        usd_to_inr = get_usd_to_inr_rate()
+        for metal, symbol in remaining.items():
+            data = _fetch_json_url(f"https://api.gold-api.com/price/{symbol}")
+            try:
+                usd_per_oz = float(data["price"])
+            except (KeyError, TypeError, ValueError):
+                raise RuntimeError(f"Could not read the spot price for {metal}.")
+            prices[metal] = usd_per_oz / TROY_OUNCE_GRAMS * usd_to_inr
+            sources[metal] = "spot"
+
+    return prices, sources
 
 
 def list_metals(db):
@@ -1994,19 +2025,20 @@ def update_metal_prices():
 def fetch_metal_prices():
     db = get_db()
     try:
-        live_prices = fetch_live_metal_prices()
+        live_prices, live_sources = fetch_live_metal_prices()
     except RuntimeError as e:
         return _render_metal_prices(db, fetch_error=str(e))
 
     today = str(date.today())
     for metal, price in live_prices.items():
+        source = "live_india" if live_sources.get(metal) == "india" else "live_spot"
         db.execute(
             """INSERT INTO metal_prices (metal, price_per_gram, updated_on, source)
-               VALUES (?, ?, ?, 'live')
+               VALUES (?, ?, ?, ?)
                ON CONFLICT(metal) DO UPDATE SET price_per_gram = excluded.price_per_gram,
                                                 updated_on = excluded.updated_on,
                                                 source = excluded.source""",
-            (metal, price, today),
+            (metal, price, today, source),
         )
     db.commit()
     return redirect(url_for("metal_prices_page"))

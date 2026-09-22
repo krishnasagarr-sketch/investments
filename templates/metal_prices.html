@@ -28,9 +28,15 @@
     <form method="POST" action="{{ url_for('fetch_metal_prices') }}" style="margin-bottom:20px;">
       <button type="submit" class="btn secondary" style="width:100%;">🌐 Fetch Live Prices (Gold, Silver, Platinum, Palladium)</button>
       <p class="field-hint">
-        Spot rate from <a href="https://gold-api.com" target="_blank" rel="noopener">gold-api.com</a>,
-        converted via the USD→INR rate from <a href="https://frankfurter.app" target="_blank" rel="noopener">frankfurter.app</a>.
-        22K is derived from 24K at 22/24 purity. "Other" has no live source — set it by hand.
+        Gold (24K &amp; 22K) and Silver use IBJA's daily reference rate — the same
+        benchmark Indian jewellers and banks price against, via a
+        <a href="https://github.com/0xSaurabhx/IBJA-API" target="_blank" rel="noopener">community-run API</a>.
+        It already includes import duty, GST and the local market premium, so it reads
+        higher than a plain international spot conversion — that's expected, and is
+        what makes it the actual Indian market price. Platinum and Palladium aren't
+        published by IBJA, so those still use the global spot rate from
+        <a href="https://gold-api.com" target="_blank" rel="noopener">gold-api.com</a> converted via the
+        live USD→INR rate. "Other" has no live source — set it by hand.
       </p>
     </form>
 
@@ -43,7 +49,12 @@
             {% if key in live_metal_keys %}<span class="muted" style="font-weight:400;">· auto</span>{% endif %}
             {% if info %}
               <span class="muted" style="font-weight:400;">
-                — {{ "🌐 live" if info.source == "live" else "✎ manual" }}, updated {{ info.updated_on }}
+                —
+                {%- if info.source == "live_india" %} 🇮🇳 IBJA (India)
+                {%- elif info.source == "live_spot" %} 🌐 global spot
+                {%- elif info.source == "live" %} 🌐 live
+                {%- else %} ✎ manual
+                {%- endif %}, updated {{ info.updated_on }}
               </span>
             {% endif %}
           </label>
