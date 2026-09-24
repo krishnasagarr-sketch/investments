@@ -505,10 +505,12 @@ def calculate_cumulative(principal: float, annual_rate: float, t_years: float,
 
 
 def calculate_simple(principal: float, annual_rate: float, t_years: float):
-    """Interest is paid out periodically, not reinvested. I = P * r * t."""
+    """Interest is paid out periodically, not reinvested, so the deposit
+    itself is worth exactly the principal at maturity — the interest already
+    left the deposit as it accrued. I = P * r * t."""
     r = annual_rate / 100
     interest_earned = principal * r * t_years
-    return principal + interest_earned, interest_earned
+    return principal, interest_earned
 
 
 def calculate_recurring(monthly_installment: float, annual_rate: float, tenure_months: int):
