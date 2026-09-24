@@ -454,6 +454,34 @@ def init_db():
         )
     """)
 
+    # Household spending, by category and by whoever incurred it.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            depositor_id INTEGER REFERENCES depositors(id),
+            category TEXT NOT NULL CHECK(category IN
+                ('Household','Medical','Education','Travel','Utilities','Insurance','Other')),
+            expense_date TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount > 0),
+            note TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
+    # Money gifted between two tracked depositors (i.e. within the family, as
+    # opposed to a gift from/to someone outside it -- that's untracked here,
+    # since the point of a *family* gift log is the two-sided relationship,
+    # which only makes sense between two depositors already in the system).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS family_gifts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_depositor_id INTEGER REFERENCES depositors(id),
+            to_depositor_id INTEGER REFERENCES depositors(id),
+            gift_date TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount > 0),
+            note TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
     # Portfolio tags -- a purpose/allocation label (Emergency Fund, Tax-saving,
     # Retirement, ...) attachable to any holding, mirroring ledger_app's
     # Account Groups: one tag per holding, not many-to-many, kept simple on
@@ -2238,6 +2266,142 @@ def delete_other_income(income_id):
     db.execute("DELETE FROM other_income WHERE id = ?", (income_id,))
     db.commit()
     return redirect(url_for("other_income_page"))
+
+
+# ---------- Expenses ----------
+EXPENSE_CATEGORIES = ["Household", "Medical", "Education", "Travel", "Utilities", "Insurance", "Other"]
+
+
+def list_expenses(db):
+    return db.execute(
+        """SELECT e.*, dep.name AS depositor_name FROM expenses e
+           LEFT JOIN depositors dep ON dep.id = e.depositor_id
+           ORDER BY e.expense_date DESC, e.id DESC"""
+    ).fetchall()
+
+
+@app.route("/expenses", methods=["GET", "POST"])
+def expenses_page():
+    db = get_db()
+    error = None
+    form_data = {"depositor_id": "", "category": "Household", "expense_date": date.today().isoformat(),
+                 "amount": "", "note": ""}
+
+    if request.method == "POST":
+        form_data["depositor_id"] = request.form.get("depositor_id", "")
+        form_data["category"] = request.form.get("category", "Household")
+        form_data["expense_date"] = request.form.get("expense_date", "").strip()
+        form_data["amount"] = request.form.get("amount", "")
+        form_data["note"] = request.form.get("note", "").strip()
+        try:
+            if not form_data["depositor_id"]:
+                raise ValueError("Choose a depositor.")
+            if form_data["category"] not in EXPENSE_CATEGORIES:
+                raise ValueError("Invalid category.")
+            if not form_data["expense_date"]:
+                raise ValueError("Date is required.")
+            try:
+                amount = float(form_data["amount"])
+            except (TypeError, ValueError):
+                raise ValueError("Amount must be a number.")
+            if amount <= 0:
+                raise ValueError("Amount must be greater than 0.")
+            db.execute(
+                """INSERT INTO expenses (depositor_id, category, expense_date, amount, note)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (form_data["depositor_id"], form_data["category"], form_data["expense_date"],
+                 amount, form_data["note"]),
+            )
+            db.commit()
+            return redirect(url_for("expenses_page"))
+        except ValueError as e:
+            error = str(e)
+
+    expenses = list_expenses(db)
+    fy_start, fy_end = fy_bounds(current_fy_start_year())
+    this_fy_total = sum(
+        e["amount"] for e in expenses if fy_start.isoformat() <= e["expense_date"] <= fy_end.isoformat()
+    )
+    by_category = {}
+    for e in expenses:
+        if fy_start.isoformat() <= e["expense_date"] <= fy_end.isoformat():
+            by_category[e["category"]] = by_category.get(e["category"], 0.0) + e["amount"]
+
+    return render_template(
+        "expenses.html", active_tab="expenses",
+        depositors=list_depositors(db), categories=EXPENSE_CATEGORIES,
+        expenses=expenses, this_fy_total=this_fy_total, by_category=by_category,
+        error=error, form_data=form_data,
+    )
+
+
+@app.route("/expenses/<int:expense_id>/delete", methods=["POST"])
+def delete_expense(expense_id):
+    db = get_db()
+    db.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+    db.commit()
+    return redirect(url_for("expenses_page"))
+
+
+# ---------- Family gifts ----------
+def list_gifts(db):
+    return db.execute(
+        """SELECT g.*, f.name AS from_name, t.name AS to_name FROM family_gifts g
+           LEFT JOIN depositors f ON f.id = g.from_depositor_id
+           LEFT JOIN depositors t ON t.id = g.to_depositor_id
+           ORDER BY g.gift_date DESC, g.id DESC"""
+    ).fetchall()
+
+
+@app.route("/gifts", methods=["GET", "POST"])
+def gifts_page():
+    db = get_db()
+    error = None
+    form_data = {"from_depositor_id": "", "to_depositor_id": "", "gift_date": date.today().isoformat(),
+                 "amount": "", "note": ""}
+
+    if request.method == "POST":
+        form_data["from_depositor_id"] = request.form.get("from_depositor_id", "")
+        form_data["to_depositor_id"] = request.form.get("to_depositor_id", "")
+        form_data["gift_date"] = request.form.get("gift_date", "").strip()
+        form_data["amount"] = request.form.get("amount", "")
+        form_data["note"] = request.form.get("note", "").strip()
+        try:
+            if not form_data["from_depositor_id"] or not form_data["to_depositor_id"]:
+                raise ValueError("Choose both who gave and who received.")
+            if form_data["from_depositor_id"] == form_data["to_depositor_id"]:
+                raise ValueError("Giver and receiver must be different people.")
+            if not form_data["gift_date"]:
+                raise ValueError("Date is required.")
+            try:
+                amount = float(form_data["amount"])
+            except (TypeError, ValueError):
+                raise ValueError("Amount must be a number.")
+            if amount <= 0:
+                raise ValueError("Amount must be greater than 0.")
+            db.execute(
+                """INSERT INTO family_gifts (from_depositor_id, to_depositor_id, gift_date, amount, note)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (form_data["from_depositor_id"], form_data["to_depositor_id"], form_data["gift_date"],
+                 amount, form_data["note"]),
+            )
+            db.commit()
+            return redirect(url_for("gifts_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return render_template(
+        "gifts.html", active_tab="gifts", depositors=list_depositors(db),
+        gifts=list_gifts(db), error=error, form_data=form_data,
+    )
+
+
+@app.route("/gifts/<int:gift_id>/delete", methods=["POST"])
+def delete_gift(gift_id):
+    db = get_db()
+    db.execute("DELETE FROM family_gifts WHERE id = ?", (gift_id,))
+    db.commit()
+    return redirect(url_for("gifts_page"))
 
 
 @app.route("/tax")

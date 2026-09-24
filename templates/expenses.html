@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Expenses — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:460px;">
+    <h2 style="font-size:16px; margin:0 0 16px;">Log an expense</h2>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      <div class="form-group">
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" required {% if not depositors %}disabled{% endif %}>
+          <option value="" disabled {% if not form_data.depositor_id %}selected{% endif %}>Select a depositor…</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="category">Category</label>
+        <select id="category" name="category">
+          {% for c in categories %}
+            <option value="{{ c }}" {% if form_data.category == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="expense_date">Date</label>
+        <input type="date" id="expense_date" name="expense_date" value="{{ form_data.expense_date }}" required>
+      </div>
+      <div class="form-group">
+        <label for="amount">Amount (₹)</label>
+        <input type="number" step="any" id="amount" name="amount" placeholder="e.g. 5000" value="{{ form_data.amount }}" required>
+      </div>
+      <div class="form-group">
+        <label for="note">Note <span class="muted">(optional)</span></label>
+        <input type="text" id="note" name="note" placeholder="e.g. Grocery run" value="{{ form_data.note }}">
+      </div>
+      <button type="submit" class="btn" style="width:100%;" {% if not depositors %}disabled{% endif %}>Add Expense</button>
+      {% if not depositors %}
+        <p class="field-hint">Add a depositor first on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab.</p>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">This financial year</h2>
+    <div class="summary-grid">
+      <div class="summary-item">
+        <div class="label">Total Spent</div>
+        <div class="value">{{ (this_fy_total)|money }}</div>
+      </div>
+      {% for cat, amt in by_category.items() %}
+      <div class="summary-item">
+        <div class="label">{{ cat }}</div>
+        <div class="value">{{ (amt)|money }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">All expenses</h2>
+    {% if expenses %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead><tr><th>Date</th><th>Depositor</th><th>Category</th><th>Amount</th><th>Note</th><th></th></tr></thead>
+        <tbody>
+          {% for e in expenses %}
+          <tr>
+            <td>{{ e.expense_date }}</td>
+            <td>{{ e.depositor_name or "(unlinked)" }}</td>
+            <td><span class="badge type">{{ e.category }}</span></td>
+            <td>{{ (e.amount)|money }}</td>
+            <td>{{ e.note or "—" }}</td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('delete_expense', expense_id=e.id) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No expenses logged yet.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}

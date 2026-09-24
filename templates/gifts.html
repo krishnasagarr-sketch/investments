@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Gifts — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:460px;">
+    <h2 style="font-size:16px; margin:0 0 16px;">Log a family gift</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Money given between two depositors already tracked here — useful for keeping a
+      record independent of memory, e.g. if it's ever asked about. Gifts between
+      specified relatives (spouse, siblings, parents, in-laws, lineal ascendants/descendants)
+      are exempt from gift tax in India regardless of amount; this doesn't check who
+      counts as a relative, so use your own judgement on that.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      <div class="form-group">
+        <label for="from_depositor_id">From</label>
+        <select id="from_depositor_id" name="from_depositor_id" required {% if not depositors %}disabled{% endif %}>
+          <option value="" disabled {% if not form_data.from_depositor_id %}selected{% endif %}>Select a depositor…</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.from_depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="to_depositor_id">To</label>
+        <select id="to_depositor_id" name="to_depositor_id" required {% if not depositors %}disabled{% endif %}>
+          <option value="" disabled {% if not form_data.to_depositor_id %}selected{% endif %}>Select a depositor…</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.to_depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="gift_date">Date</label>
+        <input type="date" id="gift_date" name="gift_date" value="{{ form_data.gift_date }}" required>
+      </div>
+      <div class="form-group">
+        <label for="amount">Amount (₹)</label>
+        <input type="number" step="any" id="amount" name="amount" placeholder="e.g. 100000" value="{{ form_data.amount }}" required>
+      </div>
+      <div class="form-group">
+        <label for="note">Note <span class="muted">(optional)</span></label>
+        <input type="text" id="note" name="note" placeholder="e.g. Wedding gift" value="{{ form_data.note }}">
+      </div>
+      <button type="submit" class="btn" style="width:100%;" {% if not depositors or depositors|length < 2 %}disabled{% endif %}>Add Gift</button>
+      {% if not depositors or depositors|length < 2 %}
+        <p class="field-hint">Add at least two depositors first on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab.</p>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">All gifts</h2>
+    {% if gifts %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead><tr><th>Date</th><th>From</th><th>To</th><th>Amount</th><th>Note</th><th></th></tr></thead>
+        <tbody>
+          {% for g in gifts %}
+          <tr>
+            <td>{{ g.gift_date }}</td>
+            <td>{{ g.from_name or "(unlinked)" }}</td>
+            <td>{{ g.to_name or "(unlinked)" }}</td>
+            <td>{{ (g.amount)|money }}</td>
+            <td>{{ g.note or "—" }}</td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('delete_gift', gift_id=g.id) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No gifts logged yet.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}
