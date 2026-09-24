@@ -328,6 +328,7 @@ def init_db():
         "bank_ref_id": "ALTER TABLE deposits ADD COLUMN bank_ref_id INTEGER REFERENCES banks(id)",
         "last_notified_on": "ALTER TABLE deposits ADD COLUMN last_notified_on TEXT",
         "deposit_number": "ALTER TABLE deposits ADD COLUMN deposit_number TEXT NOT NULL DEFAULT ''",
+        "owner_id": "ALTER TABLE deposits ADD COLUMN owner_id INTEGER REFERENCES depositors(id)",
     }
     for col, ddl in migrations.items():
         if col not in existing_cols:
@@ -748,6 +749,8 @@ def summarise_deposit(d, as_of: date = None) -> dict:
         "bank_name": bank_name,
         "bank_code": bank_code,
         "deposit_number": _row_get(d, "deposit_number", ""),
+        "owner_id": _row_get(d, "owner_id", None),
+        "owner_name": _row_get(d, "owner_name", None),
         "deposit_type": dtype,
         "deposit_type_label": DEPOSIT_TYPES[dtype],
         "principal": d["principal"],
@@ -930,10 +933,12 @@ DEPOSITS_WITH_REFS = """
            depositors.name AS depositor_name,
            depositors.holder_id AS depositor_holder_id,
            banks.name AS bank_ref_name,
-           banks.bank_id AS bank_code
+           banks.bank_id AS bank_code,
+           owners.name AS owner_name
     FROM deposits
     LEFT JOIN depositors ON deposits.depositor_id = depositors.id
     LEFT JOIN banks ON deposits.bank_ref_id = banks.id
+    LEFT JOIN depositors AS owners ON deposits.owner_id = owners.id
 """
 
 
@@ -1541,6 +1546,7 @@ def parse_deposit_form(form_data, db) -> dict:
         "compounding_frequency": compounding_frequency,
         "tag_id": form_data.get("tag_id") or None,
         "deposit_number": (form_data.get("deposit_number") or "").strip(),
+        "owner_id": form_data.get("owner_id") or None,
         "start_date": form_data["start_date"],
     }
 
@@ -1559,6 +1565,7 @@ def _row_to_form_data(row) -> dict:
         "compounding_frequency": str(row["compounding_frequency"]),
         "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
         "deposit_number": row["deposit_number"] or "",
+        "owner_id": str(row["owner_id"]) if row["owner_id"] else "",
         "start_date": row["start_date"],
     }
 
@@ -1572,7 +1579,7 @@ BLANK_DEPOSIT_FORM = {
     "depositor_id": "", "bank_ref_id": "", "deposit_type": "cumulative",
     "principal": "", "interest_rate": "", "tenure_value": "",
     "tenure_unit": "months", "compounding_frequency": "4", "tag_id": "",
-    "deposit_number": "",
+    "deposit_number": "", "owner_id": "",
     "start_date": None,  # filled with today's date at request time
 }
 
@@ -1610,10 +1617,10 @@ def add_deposit():
                 """INSERT INTO deposits
                    (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                     principal, interest_rate, tenure_months, tenure_days, tenure_unit,
-                    compounding_frequency, tag_id, deposit_number, start_date)
+                    compounding_frequency, tag_id, deposit_number, owner_id, start_date)
                    VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                     :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
-                    :compounding_frequency, :tag_id, :deposit_number, :start_date)""",
+                    :compounding_frequency, :tag_id, :deposit_number, :owner_id, :start_date)""",
                 cols,
             )
             db.commit()
@@ -1626,7 +1633,7 @@ def add_deposit():
 
 DEPOSIT_IMPORT_HEADERS = [
     "depositor_name", "bank_name", "deposit_type", "principal", "interest_rate",
-    "tenure_value", "tenure_unit", "compounding_frequency", "deposit_number", "start_date",
+    "tenure_value", "tenure_unit", "compounding_frequency", "deposit_number", "owner_name", "start_date",
 ]
 
 
@@ -1697,6 +1704,9 @@ def _parse_deposit_import_row(db, row: dict) -> dict:
     holder = db.execute("SELECT holder_id, name FROM depositors WHERE id = ?", (depositor_id,)).fetchone()
     bank = db.execute("SELECT name FROM banks WHERE id = ?", (bank_ref_id,)).fetchone()
 
+    owner_name = (row.get("owner_name") or "").strip()
+    owner_id = _find_or_create_by_name(db, "depositors", owner_name) if owner_name else None
+
     return {
         "depositor_id": depositor_id, "holder_id": holder["holder_id"], "holder_name": holder["name"],
         "bank_ref_id": bank_ref_id, "bank_name": bank["name"], "deposit_type": deposit_type,
@@ -1704,6 +1714,7 @@ def _parse_deposit_import_row(db, row: dict) -> dict:
         "tenure_months": tenure_months, "tenure_days": tenure_days, "tenure_unit": tenure_unit,
         "compounding_frequency": compounding_frequency,
         "deposit_number": (row.get("deposit_number") or "").strip(),
+        "owner_id": owner_id,
         "start_date": start_date,
     }
 
@@ -1736,10 +1747,10 @@ def import_deposits():
                         """INSERT INTO deposits
                            (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                             principal, interest_rate, tenure_months, tenure_days, tenure_unit,
-                            compounding_frequency, deposit_number, start_date)
+                            compounding_frequency, deposit_number, owner_id, start_date)
                            VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                             :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
-                            :compounding_frequency, :deposit_number, :start_date)""",
+                            :compounding_frequency, :deposit_number, :owner_id, :start_date)""",
                         values,
                     )
                     imported += 1
@@ -1752,9 +1763,9 @@ def import_deposits():
 @app.route("/deposits/import/template.csv")
 def deposits_import_template():
     template = ",".join(DEPOSIT_IMPORT_HEADERS) + "\n" + (
-        "Krishna,SBI,cumulative,100000,7.1,12,months,4,FD123456789,2026-01-15\n"
-        "Krishna,SBI,simple,50000,6.5,36,months,,FD987654321,2025-06-01\n"
-        "Bala,HDFC,recurring,5000,7,24,months,,RD555111222,2026-03-01\n"
+        "Krishna,SBI,cumulative,100000,7.1,12,months,4,FD123456789,,2026-01-15\n"
+        "Krishna,SBI,simple,50000,6.5,36,months,,FD987654321,Son,2025-06-01\n"
+        "Bala,HDFC,recurring,5000,7,24,months,,RD555111222,,2026-03-01\n"
     )
     return send_file(
         io.BytesIO(template.encode()), as_attachment=True,
@@ -1787,7 +1798,7 @@ def edit_deposit(deposit_id):
                      tenure_months = :tenure_months, tenure_days = :tenure_days,
                      tenure_unit = :tenure_unit,
                      compounding_frequency = :compounding_frequency, tag_id = :tag_id,
-                     deposit_number = :deposit_number, start_date = :start_date
+                     deposit_number = :deposit_number, owner_id = :owner_id, start_date = :start_date
                    WHERE id = :id""",
                 cols,
             )
@@ -2532,15 +2543,15 @@ def export_deposits_xlsx():
     wb = Workbook()
     ws = wb.active
     ws.title = "Deposits"
-    headers = ["Depositor", "Bank", "Deposit Number", "Type", "Principal", "Rate %", "Tenure",
+    headers = ["Depositor", "Owned By", "Bank", "Deposit Number", "Type", "Principal", "Rate %", "Tenure",
                "Start Date", "Maturity Date", "Current Value", "Interest Earned", "Ann. Return %"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
     for r in rows:
         ws.append([
-            r["holder_name"], r["bank_name"], r["deposit_number"], r["deposit_type_label"], r["principal"],
-            r["interest_rate"], r["tenure_label"], r["start_date"], r["maturity_date"],
+            r["holder_name"], r["owner_name"] or "", r["bank_name"], r["deposit_number"], r["deposit_type_label"],
+            r["principal"], r["interest_rate"], r["tenure_label"], r["start_date"], r["maturity_date"],
             round(r["current_value"], 2), round(r["accrued_interest"], 2),
             round(r["annualised_return"], 2) if r["annualised_return"] is not None else None,
         ])

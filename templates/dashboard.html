@@ -68,6 +68,9 @@
               {% if r.holder_id %}
                 <div class="muted" style="font-size:12px;">ID: {{ r.holder_id }}</div>
               {% endif %}
+              {% if r.owner_name and r.owner_name != r.holder_name %}
+                <div class="muted" style="font-size:12px;">Owned by: {{ r.owner_name }}</div>
+              {% endif %}
             </td>
             <td>
               {{ r.bank_name or "—" }}

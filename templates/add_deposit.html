@@ -37,6 +37,20 @@
       </div>
 
       <div class="form-group">
+        <label for="owner_id">Owned by <span class="muted">(optional)</span></label>
+        <select id="owner_id" name="owner_id">
+          <option value="" {% if not form_data.owner_id %}selected{% endif %}>— same as depositor —</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if form_data.owner_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint">
+          Only if the money actually belongs to someone other than the depositor above — e.g.
+          deposited in your name but really your son's money.
+        </p>
+      </div>
+
+      <div class="form-group">
         <label for="bank_ref_id">Bank</label>
         <select id="bank_ref_id" name="bank_ref_id" required {% if not banks %}disabled{% endif %}>
           <option value="" disabled {% if not form_data.bank_ref_id %}selected{% endif %}>Select a bank…</option>
