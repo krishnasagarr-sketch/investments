@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Interest Check — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Verify FD interest payouts</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      For payout ("simple") FDs, where interest is credited to your bank account rather
+      than reinvested. Pick the depositor and bank, upload that account's statement, and
+      assign each interest credit to the deposit it belongs to — this shows whether what's
+      landed in the account so far matches what should have, catching a missed or short credit.
+    </p>
+    <form method="GET">
+      <div class="form-group">
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" required>
+          <option value="" disabled {% if not depositor_id %}selected{% endif %}>Select a depositor…</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="bank_ref_id">Bank</label>
+        <select id="bank_ref_id" name="bank_ref_id" required>
+          <option value="" disabled {% if not bank_ref_id %}selected{% endif %}>Select a bank…</option>
+          {% for b in banks %}
+            <option value="{{ b.id }}" {% if bank_ref_id == b.id|string %}selected{% endif %}>{{ b.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn secondary" style="width:100%;">View</button>
+    </form>
+  </div>
+
+  {% if depositor_id and bank_ref_id %}
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 4px;">Payout deposits for this pair</h2>
+    {% if deposits_summary %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Principal</th><th>Rate</th><th>Start</th><th>Expected to date</th><th>Received</th><th>Gap</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for d in deposits_summary %}
+          <tr>
+            <td>{{ (d.principal)|money }}</td>
+            <td>{{ d.interest_rate }}%</td>
+            <td>{{ d.start_date }}</td>
+            <td>{{ (d.expected_to_date)|money }}</td>
+            <td>{{ (d.received)|money }}</td>
+            <td>{% if d.gap > 0.01 %}<span class="negative">{{ (d.gap)|money }}</span>{% else %}—{% endif %}</td>
+            <td>
+              {% if d.short %}
+                <span class="badge matured">short</span>
+              {% else %}
+                <span class="badge active">on track</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No payout ("simple") deposits for this depositor + bank.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Import statement</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Date, description and either a single signed amount column or separate debit/credit
+      columns are detected automatically. Only money-in (credit) lines are kept.
+    </p>
+    <form method="POST" action="{{ url_for('import_interest_statement') }}" enctype="multipart/form-data">
+      <input type="hidden" name="depositor_id" value="{{ depositor_id }}">
+      <input type="hidden" name="bank_ref_id" value="{{ bank_ref_id }}">
+      <div class="form-group">
+        <label for="csv_file">Statement CSV</label>
+        <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Import</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 4px;">Statement lines</h2>
+    {% if lines %}
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Assigned to</th><th></th></tr></thead>
+        <tbody>
+          {% for l in lines %}
+          <tr>
+            <td>{{ l.stmt_date }}</td>
+            <td>{{ l.description }}</td>
+            <td>{{ (l.amount)|money }}</td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('match_interest_statement_line', line_id=l.id) }}">
+                <select name="deposit_id" onchange="this.form.submit()">
+                  <option value="">— unassigned —</option>
+                  {% for d in deposits_summary %}
+                    <option value="{{ d.id }}" {% if l.matched_deposit_id == d.id %}selected{% endif %}>
+                      {{ d.start_date }} — {{ (d.principal)|money }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </form>
+            </td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('delete_interest_statement_line', line_id=l.id) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No statement lines imported for this depositor + bank yet.</p></div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+{% endblock %}

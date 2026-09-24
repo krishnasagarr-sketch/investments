@@ -1,6 +1,7 @@
 import csv
 import io
 import math
+import re
 import os
 import secrets
 import shutil
@@ -410,6 +411,25 @@ def init_db():
             contribution_date TEXT NOT NULL,
             amount REAL NOT NULL CHECK(amount > 0),
             note TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
+    # One row per line of an imported bank statement, for verifying that a
+    # payout ("simple") FD's interest actually landed as expected. Scoped to
+    # a depositor+bank pair (what one bank statement covers) rather than a
+    # single deposit, since several FDs at the same bank pay into the same
+    # account -- matched_deposit_id is set when the user assigns a line to
+    # whichever deposit's interest it actually was.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS interest_statement_lines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            depositor_id INTEGER REFERENCES depositors(id),
+            bank_ref_id INTEGER REFERENCES banks(id),
+            stmt_date TEXT NOT NULL,
+            description TEXT NOT NULL,
+            amount REAL NOT NULL,
+            matched_deposit_id INTEGER REFERENCES deposits(id),
+            imported_at TEXT NOT NULL
         )
     """)
 
@@ -2415,6 +2435,206 @@ def delete_retirement_contribution(contribution_id):
     db.execute("DELETE FROM retirement_contributions WHERE id = ?", (contribution_id,))
     db.commit()
     return redirect(url_for("retirement_page"))
+
+
+# ---------- Interest payout reconciliation ----------
+def _normalize_bank_date(raw: str):
+    """Parses ISO dates as-is, and disambiguates DD/MM/YYYY vs MM/DD/YYYY the
+    way Indian bank statements need (day-first whenever ambiguous, inferred
+    from whichever number is >12 otherwise). Returns None if unparseable."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        pass
+    m = re.match(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$", s)
+    if not m:
+        return None
+    a, b, year = int(m.group(1)), int(m.group(2)), m.group(3)
+    day = a if a > 12 else b if b > 12 else a
+    month = b if a > 12 else a if b > 12 else b
+    year = int(year) if len(year) == 4 else (2000 + int(year) if int(year) < 70 else 1900 + int(year))
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _normalize_bank_amount(raw: str):
+    """Preserves a leading '-' (unlike a naive digit-strip) and treats
+    parenthesized amounts as negative, e.g. '(1,200.00)'."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    negative_parens = s.startswith("(") and s.endswith(")")
+    cleaned = re.sub(r"[^0-9.\-]", "", s)
+    try:
+        n = float(cleaned)
+    except ValueError:
+        return None
+    return -abs(n) if negative_parens else n
+
+
+def _parse_bank_csv_rows(text: str) -> list:
+    """Reads a bank statement CSV into [{date, description, amount}], where
+    amount follows the account's own convention (positive = money in). Auto
+    detects a single signed amount column, or separate debit/credit columns
+    (common on Indian bank exports) -- whichever headers are present."""
+    reader = csv.reader(io.StringIO(text))
+    try:
+        headers = [h.strip().lower() for h in next(reader)]
+    except StopIteration:
+        return []
+
+    def find_col(*candidates):
+        for cand in candidates:
+            for i, h in enumerate(headers):
+                if cand in h:
+                    return i
+        return -1
+
+    date_idx = find_col("date")
+    desc_idx = find_col("description", "narration", "particulars", "details", "remarks")
+    amount_idx = find_col("amount")
+    debit_idx = find_col("debit", "withdrawal")
+    credit_idx = find_col("credit", "deposit")
+
+    rows = []
+    for raw_row in reader:
+        if not raw_row or all(not c.strip() for c in raw_row):
+            continue
+        get = lambda i: raw_row[i] if 0 <= i < len(raw_row) else ""
+        stmt_date = _normalize_bank_date(get(date_idx)) if date_idx != -1 else None
+        description = get(desc_idx).strip() if desc_idx != -1 else ""
+        if amount_idx != -1:
+            amount = _normalize_bank_amount(get(amount_idx))
+        elif debit_idx != -1 or credit_idx != -1:
+            debit = abs(_normalize_bank_amount(get(debit_idx)) or 0) if debit_idx != -1 else 0
+            credit = abs(_normalize_bank_amount(get(credit_idx)) or 0) if credit_idx != -1 else 0
+            amount = credit - debit
+        else:
+            amount = None
+        if stmt_date and description and amount:
+            rows.append({"date": stmt_date.isoformat(), "description": description, "amount": amount})
+    return rows
+
+
+
+def _payout_deposits_for_pair(db, depositor_id, bank_ref_id):
+    """Every 'simple' (payout) deposit for this depositor+bank pair, with
+    expected interest to date and interest actually matched from imported
+    statement lines."""
+    deposits = db.execute(
+        DEPOSITS_WITH_REFS + """
+        WHERE deposits.depositor_id = ? AND deposits.bank_ref_id = ? AND deposits.deposit_type = 'simple'
+        ORDER BY deposits.start_date
+        """,
+        (depositor_id, bank_ref_id),
+    ).fetchall()
+
+    today = date.today()
+    result = []
+    for d in deposits:
+        expected = deposit_interest_in_period(d, date.fromisoformat(d["start_date"]), today)
+        received = db.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM interest_statement_lines WHERE matched_deposit_id = ?",
+            (d["id"],),
+        ).fetchone()["total"]
+        result.append({
+            "id": d["id"],
+            "principal": d["principal"],
+            "interest_rate": d["interest_rate"],
+            "start_date": d["start_date"],
+            "expected_to_date": round(expected, 2),
+            "received": round(received, 2),
+            "gap": round(expected - received, 2),
+            "short": received < expected - 0.01,
+        })
+    return result
+
+
+@app.route("/reconcile-interest")
+def reconcile_interest_page():
+    db = get_db()
+    depositor_id = request.args.get("depositor_id", "")
+    bank_ref_id = request.args.get("bank_ref_id", "")
+
+    deposits_summary = []
+    lines = []
+    if depositor_id and bank_ref_id:
+        deposits_summary = _payout_deposits_for_pair(db, depositor_id, bank_ref_id)
+        lines = db.execute(
+            """SELECT l.id, l.stmt_date, l.description, l.amount, l.matched_deposit_id,
+                      dep.start_date AS matched_start_date, dep.principal AS matched_principal
+               FROM interest_statement_lines l
+               LEFT JOIN deposits dep ON dep.id = l.matched_deposit_id
+               WHERE l.depositor_id = ? AND l.bank_ref_id = ?
+               ORDER BY l.stmt_date, l.id""",
+            (depositor_id, bank_ref_id),
+        ).fetchall()
+
+    return render_template(
+        "reconcile_interest.html", active_tab="reconcile_interest",
+        depositors=list_depositors(db), banks=list_banks(db),
+        depositor_id=depositor_id, bank_ref_id=bank_ref_id,
+        deposits_summary=deposits_summary, lines=lines,
+    )
+
+
+@app.route("/reconcile-interest/import", methods=["POST"])
+def import_interest_statement():
+    db = get_db()
+    depositor_id = request.form.get("depositor_id", "")
+    bank_ref_id = request.form.get("bank_ref_id", "")
+    if not depositor_id or not bank_ref_id:
+        return redirect(url_for("reconcile_interest_page"))
+
+    file = request.files.get("csv_file")
+    if file is None or file.filename == "":
+        return redirect(url_for("reconcile_interest_page", depositor_id=depositor_id, bank_ref_id=bank_ref_id))
+
+    try:
+        text = file.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return redirect(url_for("reconcile_interest_page", depositor_id=depositor_id, bank_ref_id=bank_ref_id))
+
+    now = date.today().isoformat()
+    for row in _parse_bank_csv_rows(text):
+        if row["amount"] <= 0:
+            continue  # only money-in lines are relevant to interest credits
+        db.execute(
+            """INSERT INTO interest_statement_lines
+               (depositor_id, bank_ref_id, stmt_date, description, amount, imported_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (depositor_id, bank_ref_id, row["date"], row["description"], row["amount"], now),
+        )
+    db.commit()
+    return redirect(url_for("reconcile_interest_page", depositor_id=depositor_id, bank_ref_id=bank_ref_id))
+
+
+@app.route("/reconcile-interest/lines/<int:line_id>/match", methods=["POST"])
+def match_interest_statement_line(line_id):
+    db = get_db()
+    line = db.execute("SELECT * FROM interest_statement_lines WHERE id = ?", (line_id,)).fetchone()
+    if line is None:
+        return redirect(url_for("reconcile_interest_page"))
+    deposit_id = request.form.get("deposit_id") or None
+    db.execute("UPDATE interest_statement_lines SET matched_deposit_id = ? WHERE id = ?", (deposit_id, line_id))
+    db.commit()
+    return redirect(url_for("reconcile_interest_page", depositor_id=line["depositor_id"], bank_ref_id=line["bank_ref_id"]))
+
+
+@app.route("/reconcile-interest/lines/<int:line_id>/delete", methods=["POST"])
+def delete_interest_statement_line(line_id):
+    db = get_db()
+    line = db.execute("SELECT * FROM interest_statement_lines WHERE id = ?", (line_id,)).fetchone()
+    if line is None:
+        return redirect(url_for("reconcile_interest_page"))
+    db.execute("DELETE FROM interest_statement_lines WHERE id = ?", (line_id,))
+    db.commit()
+    return redirect(url_for("reconcile_interest_page", depositor_id=line["depositor_id"], bank_ref_id=line["bank_ref_id"]))
 
 
 @app.route("/notifications")
