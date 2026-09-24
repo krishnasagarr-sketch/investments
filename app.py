@@ -440,6 +440,20 @@ def init_db():
         )
     """)
 
+    # Non-FD income (salary, rent, business, etc.) for the tax estimator --
+    # FD/RD interest is already computed from the deposits themselves, so
+    # this is everything else that feeds into total income.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS other_income (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            depositor_id INTEGER REFERENCES depositors(id),
+            category TEXT NOT NULL CHECK(category IN ('Salary','Rent','Business','Capital Gains','Other')),
+            income_date TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount > 0),
+            note TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
     # Portfolio tags -- a purpose/allocation label (Emergency Fund, Tax-saving,
     # Retirement, ...) attachable to any holding, mirroring ledger_app's
     # Account Groups: one tag per holding, not many-to-many, kept simple on
@@ -2150,6 +2164,82 @@ def compute_regime_tax(regime: str, gross_income: float, deductions_total: float
     }
 
 
+OTHER_INCOME_CATEGORIES = ["Salary", "Rent", "Business", "Capital Gains", "Other"]
+
+
+def list_other_income(db, depositor_id=None):
+    query = """SELECT oi.*, dep.name AS depositor_name FROM other_income oi
+               LEFT JOIN depositors dep ON dep.id = oi.depositor_id"""
+    params = []
+    if depositor_id:
+        query += " WHERE oi.depositor_id = ?"
+        params.append(depositor_id)
+    query += " ORDER BY oi.income_date DESC, oi.id DESC"
+    return db.execute(query, params).fetchall()
+
+
+def other_income_by_category(db, depositor_id, period_start, period_end):
+    rows = db.execute(
+        """SELECT category, COALESCE(SUM(amount), 0) AS total FROM other_income
+           WHERE depositor_id = ? AND income_date BETWEEN ? AND ?
+           GROUP BY category""",
+        (depositor_id, period_start.isoformat(), period_end.isoformat()),
+    ).fetchall()
+    return {r["category"]: r["total"] for r in rows}
+
+
+@app.route("/income", methods=["GET", "POST"])
+def other_income_page():
+    db = get_db()
+    error = None
+    form_data = {"depositor_id": "", "category": "Rent", "income_date": date.today().isoformat(),
+                 "amount": "", "note": ""}
+
+    if request.method == "POST":
+        form_data["depositor_id"] = request.form.get("depositor_id", "")
+        form_data["category"] = request.form.get("category", "Rent")
+        form_data["income_date"] = request.form.get("income_date", "").strip()
+        form_data["amount"] = request.form.get("amount", "")
+        form_data["note"] = request.form.get("note", "").strip()
+        try:
+            if not form_data["depositor_id"]:
+                raise ValueError("Choose a depositor.")
+            if form_data["category"] not in OTHER_INCOME_CATEGORIES:
+                raise ValueError("Invalid category.")
+            if not form_data["income_date"]:
+                raise ValueError("Date is required.")
+            try:
+                amount = float(form_data["amount"])
+            except (TypeError, ValueError):
+                raise ValueError("Amount must be a number.")
+            if amount <= 0:
+                raise ValueError("Amount must be greater than 0.")
+            db.execute(
+                """INSERT INTO other_income (depositor_id, category, income_date, amount, note)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (form_data["depositor_id"], form_data["category"], form_data["income_date"],
+                 amount, form_data["note"]),
+            )
+            db.commit()
+            return redirect(url_for("other_income_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return render_template(
+        "other_income.html", active_tab="other_income",
+        depositors=list_depositors(db), categories=OTHER_INCOME_CATEGORIES,
+        entries=list_other_income(db), error=error, form_data=form_data,
+    )
+
+
+@app.route("/income/<int:income_id>/delete", methods=["POST"])
+def delete_other_income(income_id):
+    db = get_db()
+    db.execute("DELETE FROM other_income WHERE id = ?", (income_id,))
+    db.commit()
+    return redirect(url_for("other_income_page"))
+
+
 @app.route("/tax")
 def tax_page():
     db = get_db()
@@ -2161,10 +2251,6 @@ def tax_page():
         fy_start_year = int(request.args.get("fy", current_fy))
     except (TypeError, ValueError):
         fy_start_year = current_fy
-    try:
-        other_income = float(request.args.get("other_income") or 0)
-    except (TypeError, ValueError):
-        other_income = 0.0
 
     result = None
     if depositor_id:
@@ -2192,13 +2278,18 @@ def tax_page():
         nps_contributed = contributed("NPS")
         section_80c = min(ppf_contributed, SECTION_80C_LIMIT)
         section_80ccd1b = min(nps_contributed, SECTION_80CCD1B_LIMIT)
-        gross_income = interest_income + other_income
+
+        other_income_breakdown = other_income_by_category(db, depositor_id, period_start, period_end)
+        other_income_total = sum(other_income_breakdown.values())
+        gross_income = interest_income + other_income_total
 
         new_regime = compute_regime_tax("New", gross_income, 0.0)
         old_regime = compute_regime_tax("Old", gross_income, section_80c + section_80ccd1b)
 
         result = {
             "interest_income": round(interest_income, 2),
+            "other_income_breakdown": {k: round(v, 2) for k, v in other_income_breakdown.items()},
+            "other_income_total": round(other_income_total, 2),
             "gross_income": round(gross_income, 2),
             "ppf_contributed": round(ppf_contributed, 2),
             "nps_contributed": round(nps_contributed, 2),
@@ -2215,8 +2306,7 @@ def tax_page():
     return render_template(
         "tax.html", active_tab="tax", depositors=depositors,
         fy_options=list(range(current_fy, current_fy - 6, -1)),
-        fy_start_year=fy_start_year, depositor_id=depositor_id,
-        other_income=other_income, result=result,
+        fy_start_year=fy_start_year, depositor_id=depositor_id, result=result,
         section_80c_limit=SECTION_80C_LIMIT, section_80ccd1b_limit=SECTION_80CCD1B_LIMIT,
     )
 

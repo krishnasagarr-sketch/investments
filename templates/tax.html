@@ -7,11 +7,12 @@
     <h2 style="font-size:16px; margin:0 0 4px;">Income tax estimate</h2>
     <p class="field-hint" style="margin-bottom:16px;">
       A quick estimate from what's tracked here — FD/RD interest for the depositor and
-      financial year below, plus any other income you enter, against both tax regimes.
-      Section 80C and 80CCD(1B) are filled in automatically from PPF/NPS contributions
-      logged on the Retirement tab (Old Regime only, as per current rules). This isn't a
-      substitute for filing software or a CA — it won't know about salary TDS already
-      deducted, other deductions, or capital gains.
+      financial year below, plus anything logged on the <a href="{{ url_for('other_income_page') }}">Other Income</a>
+      tab (salary, rent, business, etc.), against both tax regimes. Section 80C and
+      80CCD(1B) are filled in automatically from PPF/NPS contributions logged on the
+      Retirement tab (Old Regime only, as per current rules). This isn't a substitute
+      for filing software or a CA — it won't know about salary TDS already deducted or
+      other deductions.
     </p>
     <form method="GET">
       <div class="form-group">
@@ -31,10 +32,6 @@
           {% endfor %}
         </select>
       </div>
-      <div class="form-group">
-        <label for="other_income">Other annual income (₹) <span class="muted">(salary, business, etc.)</span></label>
-        <input type="number" step="any" id="other_income" name="other_income" value="{{ '%g'|format(other_income) }}">
-      </div>
       <button type="submit" class="btn secondary" style="width:100%;" {% if not depositors %}disabled{% endif %}>Estimate</button>
       {% if not depositors %}
         <p class="field-hint">Add a depositor first on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab.</p>
@@ -50,6 +47,15 @@
       <div class="summary-item">
         <div class="label">FD/RD Interest</div>
         <div class="value">{{ (result.interest_income)|money }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Other Income</div>
+        <div class="value">{{ (result.other_income_total)|money }}</div>
+        {% if result.other_income_breakdown %}
+          <div class="muted" style="font-size:12px;">
+            {% for cat, amt in result.other_income_breakdown.items() %}{{ cat }}: {{ (amt)|money }}{% if not loop.last %} &middot; {% endif %}{% endfor %}
+          </div>
+        {% endif %}
       </div>
       <div class="summary-item">
         <div class="label">Gross Income</div>
