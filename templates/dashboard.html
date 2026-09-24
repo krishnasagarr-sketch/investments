@@ -39,13 +39,43 @@
         <div class="value">{{ rows|length }}</div>
       </div>
     </div>
+    {% if fcnr_count %}
+      <p class="field-hint" style="margin-top:12px; margin-bottom:0;">
+        {{ fcnr_count }} FCNR deposit(s) held in a foreign currency are excluded from the
+        totals above (see Foreign Currency Deposits below) — mixing currencies into one
+        rupee figure without a conversion would misstate it.
+      </p>
+    {% endif %}
   </div>
+
+  {% if fcnr_summary %}
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Foreign currency deposits (FCNR)</h2>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>Currency</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr></thead>
+      <tbody>
+        {% for f in fcnr_summary %}
+        <tr>
+          <td><strong>{{ f.currency }}</strong></td>
+          <td>{{ f.count }}</td>
+          <td>{{ (f.invested)|money(f.currency) }}</td>
+          <td>{{ (f.current)|money(f.currency) }}</td>
+          <td>{{ (f.maturity)|money(f.currency) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
 
   <div class="card">
     <h2 style="font-size:16px; margin:0 0 14px;">By owner</h2>
     <p class="field-hint" style="margin-bottom:16px;">
       Who the money actually belongs to, not just whose name it's deposited under — a
-      deposit with no "Owned by" set is counted under its holder.
+      deposit with no "Owned by" set is counted under its holder. Rupee deposits only,
+      same reason as above.
     </p>
     {% if ownership_summary %}
       <div class="table-scroll">
@@ -120,12 +150,15 @@
             </td>
             <td>
               <span class="badge type type-{{ r.deposit_type }}">{{ r.deposit_type_label }}</span>
+              {% if r.account_category != "Resident" %}
+                <div><span class="badge type" style="margin-top:4px;">{{ r.account_category }}</span></div>
+              {% endif %}
             </td>
             <td>
-              {{ (r.invested)|money }}
+              {{ (r.invested)|money(r.currency) }}
               {% if r.deposit_type == "recurring" %}
                 <div class="muted" style="font-size:12px;">
-                  {{ (r.monthly_installment)|money }}/mo &middot; {{ r.installments_paid }}/{{ r.total_installments }} paid
+                  {{ (r.monthly_installment)|money(r.currency) }}/mo &middot; {{ r.installments_paid }}/{{ r.total_installments }} paid
                 </div>
               {% endif %}
             </td>
@@ -133,13 +166,13 @@
             <td>{{ r.tenure_label }}</td>
             <td>{{ r.start_date }}</td>
             <td>
-              {{ (r.current_value)|money }}
-              <div class="muted" style="font-size:12px;">+{{ (r.accrued_interest)|money }} accrued</div>
+              {{ (r.current_value)|money(r.currency) }}
+              <div class="muted" style="font-size:12px;">+{{ (r.accrued_interest)|money(r.currency) }} accrued</div>
               <div class="muted" style="font-size:12px;">{{ r.annualised_return|pct }} ann.</div>
             </td>
             <td>
-              {{ (r.maturity_amount)|money }}
-              <div class="muted" style="font-size:12px; color:var(--green); font-weight:600;">+{{ (r.interest_earned)|money }} interest</div>
+              {{ (r.maturity_amount)|money(r.currency) }}
+              <div class="muted" style="font-size:12px; color:var(--green); font-weight:600;">+{{ (r.interest_earned)|money(r.currency) }} interest</div>
             </td>
             <td>
               {% if r.is_matured %}

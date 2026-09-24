@@ -51,6 +51,26 @@
       </div>
 
       <div class="form-group">
+        <label for="account_category">Account Category</label>
+        <select id="account_category" name="account_category">
+          {% for key, label in account_categories.items() %}
+            <option value="{{ key }}" {% if form_data.account_category == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint" id="category_hint"></p>
+      </div>
+
+      <div class="form-group" id="currency_group">
+        <label for="currency">Currency</label>
+        <select id="currency" name="currency">
+          {% for c in fcnr_currencies %}
+            <option value="{{ c }}" {% if form_data.currency == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint">FCNR is held in the deposit's own currency start to finish — amounts below are never converted to rupees.</p>
+      </div>
+
+      <div class="form-group">
         <label for="bank_ref_id">Bank</label>
         <select id="bank_ref_id" name="bank_ref_id" required {% if not banks %}disabled{% endif %}>
           <option value="" disabled {% if not form_data.bank_ref_id %}selected{% endif %}>Select a bank…</option>
@@ -142,6 +162,10 @@
       var tenureUnit = document.getElementById("tenure_unit");
       var compoundingGroup = document.getElementById("compounding_group");
       var hint = document.getElementById("type_hint");
+      var categoryEl = document.getElementById("account_category");
+      var currencyGroup = document.getElementById("currency_group");
+      var currencyEl = document.getElementById("currency");
+      var categoryHint = document.getElementById("category_hint");
 
       var HINTS = {
         cumulative: "Interest is reinvested and paid out with the principal at maturity.",
@@ -149,20 +173,44 @@
         recurring: "You deposit a fixed amount every month; the balance compounds quarterly."
       };
 
+      var SYMBOLS = {
+        INR: "₹", USD: "$", GBP: "£", EUR: "€", JPY: "¥",
+        AUD: "A$", CAD: "C$", SGD: "S$", CHF: "Fr", HKD: "HK$"
+      };
+
+      var CATEGORY_HINTS = {
+        Resident: "",
+        NRE: "Interest is exempt from Indian income tax and TDS, as long as NRI status is maintained.",
+        NRO: "Interest is taxable and TDS applies at the NRI rate under Section 195 — not the resident 10%/₹40,000 threshold shown on the TDS tab.",
+        FCNR: "Held in a foreign currency, never converted to rupees here. Interest is exempt from Indian income tax and TDS, same as NRE."
+      };
+
+      function currentSymbol() {
+        var cat = categoryEl.value;
+        var cur = (cat === "FCNR") ? currencyEl.value : "INR";
+        return SYMBOLS[cur] || (cur + " ");
+      }
+
       function sync() {
         var t = typeEl.value;
         var recurring = (t === "recurring");
+        var symbol = currentSymbol();
         principalLabel.textContent = recurring
-          ? "Monthly Installment (₹)" : "Principal Amount (₹)";
+          ? "Monthly Installment (" + symbol + ")" : "Principal Amount (" + symbol + ")";
         tenureLabel.textContent = recurring ? "Number of Monthly Installments" : "Tenure";
         // Recurring deposits are always monthly — lock the unit to months.
         if (recurring) { tenureUnit.value = "months"; }
         tenureUnit.disabled = recurring;
         compoundingGroup.style.display = (t === "cumulative") ? "" : "none";
         hint.textContent = HINTS[t] || "";
+
+        currencyGroup.style.display = (categoryEl.value === "FCNR") ? "" : "none";
+        categoryHint.textContent = CATEGORY_HINTS[categoryEl.value] || "";
       }
 
       typeEl.addEventListener("change", sync);
+      categoryEl.addEventListener("change", sync);
+      currencyEl.addEventListener("change", sync);
       sync();
     })();
   </script>

@@ -108,8 +108,17 @@ MIN_PASSWORD_LENGTH = 8
 AUTH_EXEMPT_PATHS = {"/setup", "/login", "/forgot-password"}
 AUTH_EXEMPT_PREFIXES = ("/reset-password/", "/static/")
 
-# All amounts in the app are Indian rupees.
+# Most amounts in the app are Indian rupees -- the exception is FCNR
+# deposits, which are held (principal, interest, everything) in a foreign
+# currency by design, not converted to INR anywhere (see format_money()).
 CURRENCY_SYMBOL = "₹"  # ₹
+
+# Symbols/prefixes for FCNR currencies (RBI's permitted list is wider, but
+# these cover what banks commonly actually offer FCNR accounts in).
+CURRENCY_SYMBOLS = {
+    "INR": "₹", "USD": "$", "GBP": "£", "EUR": "€", "JPY": "¥",
+    "AUD": "A$", "CAD": "C$", "SGD": "S$", "CHF": "Fr ", "HKD": "HK$",
+}
 
 
 def _indian_group(digits: str) -> str:
@@ -141,6 +150,22 @@ def format_rupees(value, decimals=2) -> str:
     return ("−" + out) if negative else out
 
 
+def format_money(value, currency="INR", decimals=2) -> str:
+    """Like format_rupees(), but for a foreign-currency (FCNR) amount --
+    plain Western thousands-grouping instead of Indian, with that
+    currency's own symbol/prefix, since it was never converted to INR."""
+    if currency == "INR":
+        return format_rupees(value, decimals)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    negative = value < 0
+    symbol = CURRENCY_SYMBOLS.get(currency, currency + " ")
+    out = f"{symbol}{abs(value):,.{decimals}f}"
+    return ("-" + out) if negative else out
+
+
 def format_pct(v, decimals=1) -> str:
     """Render a nullable signed percentage: None -> '—', else e.g. '+8.2%'."""
     if v is None:
@@ -148,8 +173,8 @@ def format_pct(v, decimals=1) -> str:
     return f"{v:+.{decimals}f}%"
 
 
-app.jinja_env.filters["money"] = lambda v: format_rupees(v, 2)
-app.jinja_env.filters["money0"] = lambda v: format_rupees(v, 0)
+app.jinja_env.filters["money"] = lambda v, currency="INR": format_money(v, currency, 2)
+app.jinja_env.filters["money0"] = lambda v, currency="INR": format_money(v, currency, 0)
 app.jinja_env.filters["pct"] = format_pct
 app.jinja_env.globals["CURRENCY_SYMBOL"] = CURRENCY_SYMBOL
 
@@ -159,6 +184,27 @@ DEPOSIT_TYPES = {
     "simple": "Simple interest (payout)",
     "recurring": "Recurring deposit",
 }
+
+# NRI account categories -- Resident is the ordinary domestic case (unchanged
+# behaviour, default). NRE/NRO are rupee accounts (same currency, same math,
+# different tax treatment); FCNR is held in a foreign currency start to
+# finish, never converted to INR anywhere in this app.
+ACCOUNT_CATEGORIES = {
+    "Resident": "Resident",
+    "NRE": "NRE (Non-Resident External)",
+    "NRO": "NRO (Non-Resident Ordinary)",
+    "FCNR": "FCNR (Foreign Currency Non-Resident)",
+}
+
+# Currencies banks commonly actually open FCNR accounts in (RBI's permitted
+# list is wider than this).
+FCNR_CURRENCIES = ["USD", "GBP", "EUR", "AUD", "CAD", "SGD", "CHF", "JPY", "HKD"]
+
+# NRO interest is taxed at source under Section 195, not the resident 10%
+# rate: 30% plus 4% health & education cess, applying from the first rupee
+# (no ₹40,000 threshold). A surcharge may also apply above certain income
+# levels, which isn't modelled here -- flagged in the UI as an estimate floor.
+NRO_TDS_RATE_PCT = 31.2
 
 # How a tenure figure is expressed. Recurring deposits are always monthly.
 TENURE_UNITS = {"months": "Months", "days": "Days"}
@@ -329,6 +375,8 @@ def init_db():
         "last_notified_on": "ALTER TABLE deposits ADD COLUMN last_notified_on TEXT",
         "deposit_number": "ALTER TABLE deposits ADD COLUMN deposit_number TEXT NOT NULL DEFAULT ''",
         "owner_id": "ALTER TABLE deposits ADD COLUMN owner_id INTEGER REFERENCES depositors(id)",
+        "account_category": "ALTER TABLE deposits ADD COLUMN account_category TEXT NOT NULL DEFAULT 'Resident'",
+        "currency": "ALTER TABLE deposits ADD COLUMN currency TEXT NOT NULL DEFAULT 'INR'",
     }
     for col, ddl in migrations.items():
         if col not in existing_cols:
@@ -751,6 +799,9 @@ def summarise_deposit(d, as_of: date = None) -> dict:
         "deposit_number": _row_get(d, "deposit_number", ""),
         "owner_id": _row_get(d, "owner_id", None),
         "owner_name": _row_get(d, "owner_name", None),
+        "account_category": _row_get(d, "account_category", "Resident"),
+        "account_category_label": ACCOUNT_CATEGORIES.get(_row_get(d, "account_category", "Resident"), "Resident"),
+        "currency": _row_get(d, "currency", "INR"),
         "deposit_type": dtype,
         "deposit_type_label": DEPOSIT_TYPES[dtype],
         "principal": d["principal"],
@@ -873,7 +924,7 @@ def tag_allocation_summary(db):
             totals[key] = {"name": tag_names.get(tag_id, "Untagged"), "value": 0.0}
         totals[key]["value"] += amount
 
-    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR'").fetchall():
         add(d["tag_id"], summarise_deposit(d)["current_value"])
     for m in list_metals(db):
         add(m["tag_id"], m["value"])
@@ -1458,17 +1509,26 @@ def dashboard():
     ).fetchall()
 
     rows = [summarise_deposit(d) for d in deposits]
-    total_invested = sum(r["invested"] for r in rows)
-    total_current = sum(r["current_value"] for r in rows)
-    total_maturity = sum(r["maturity_amount"] for r in rows)
-    total_interest = sum(r["interest_earned"] for r in rows)
-    total_annualised_return = weighted_annualised_return(rows, "invested", "current_value", "days_held")
+
+    # FCNR deposits are held in a foreign currency, never converted to
+    # rupees here (see format_money()) -- mixing them into an INR total
+    # would silently misstate it, so every INR-denominated total below is
+    # scoped to currency == INR, and FCNR gets its own by-currency summary.
+    inr_rows = [r for r in rows if r["currency"] == "INR"]
+    fcnr_rows = [r for r in rows if r["currency"] != "INR"]
+
+    total_invested = sum(r["invested"] for r in inr_rows)
+    total_current = sum(r["current_value"] for r in inr_rows)
+    total_maturity = sum(r["maturity_amount"] for r in inr_rows)
+    total_interest = sum(r["interest_earned"] for r in inr_rows)
+    total_annualised_return = weighted_annualised_return(inr_rows, "invested", "current_value", "days_held")
 
     # Classify by who the money actually belongs to -- owner_name if set,
     # else the holder it's deposited under (an unset "owned by" means the
-    # holder is the owner, not that ownership is unknown).
+    # holder is the owner, not that ownership is unknown). INR-only, same
+    # reasoning as the totals above.
     ownership = {}
-    for r in rows:
+    for r in inr_rows:
         owner = r["owner_name"] or r["holder_name"] or "(unknown)"
         acc = ownership.setdefault(owner, {"owner": owner, "count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0})
         acc["count"] += 1
@@ -1476,6 +1536,18 @@ def dashboard():
         acc["current"] += r["current_value"]
         acc["maturity"] += r["maturity_amount"]
     ownership_summary = sorted(ownership.values(), key=lambda a: a["current"], reverse=True)
+
+    # FCNR deposits, grouped by their own currency (never mixed together).
+    fcnr_by_currency = {}
+    for r in fcnr_rows:
+        acc = fcnr_by_currency.setdefault(r["currency"], {
+            "currency": r["currency"], "count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0,
+        })
+        acc["count"] += 1
+        acc["invested"] += r["invested"]
+        acc["current"] += r["current_value"]
+        acc["maturity"] += r["maturity_amount"]
+    fcnr_summary = sorted(fcnr_by_currency.values(), key=lambda a: a["currency"])
 
     return render_template(
         "dashboard.html",
@@ -1486,6 +1558,8 @@ def dashboard():
         total_interest=total_interest,
         total_annualised_return=total_annualised_return,
         ownership_summary=ownership_summary,
+        fcnr_summary=fcnr_summary,
+        fcnr_count=len(fcnr_rows),
         active_tab="dashboard",
         wide_page=True,
         excel_available=EXCEL_AVAILABLE,
@@ -1545,12 +1619,24 @@ def parse_deposit_form(form_data, db) -> dict:
     elif deposit_type == "recurring":
         compounding_frequency = 4
 
+    account_category = form_data.get("account_category") or "Resident"
+    if account_category not in ACCOUNT_CATEGORIES:
+        raise ValueError("Please choose a valid account category.")
+    if account_category == "FCNR":
+        currency = form_data.get("currency") or ""
+        if currency not in FCNR_CURRENCIES:
+            raise ValueError("Please choose a currency for an FCNR deposit.")
+    else:
+        currency = "INR"  # NRE/NRO/Resident are always rupee-denominated
+
     return {
         "depositor_id": depositor["id"],
         "holder_id": depositor["holder_id"],
         "holder_name": depositor["name"],
         "bank_ref_id": bank["id"],
         "bank_name": bank["name"],
+        "account_category": account_category,
+        "currency": currency,
         "deposit_type": deposit_type,
         "principal": principal,
         "interest_rate": interest_rate,
@@ -1580,6 +1666,8 @@ def _row_to_form_data(row) -> dict:
         "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
         "deposit_number": row["deposit_number"] or "",
         "owner_id": str(row["owner_id"]) if row["owner_id"] else "",
+        "account_category": row["account_category"] or "Resident",
+        "currency": row["currency"] or "INR",
         "start_date": row["start_date"],
     }
 
@@ -1594,6 +1682,7 @@ BLANK_DEPOSIT_FORM = {
     "principal": "", "interest_rate": "", "tenure_value": "",
     "tenure_unit": "months", "compounding_frequency": "4", "tag_id": "",
     "deposit_number": "", "owner_id": "",
+    "account_category": "Resident", "currency": "INR",
     "start_date": None,  # filled with today's date at request time
 }
 
@@ -1610,6 +1699,8 @@ def _render_deposit_form(db, **kwargs):
             "SELECT id, bank_id, name FROM banks ORDER BY name COLLATE NOCASE"
         ).fetchall(),
         tags=list_tags(db),
+        account_categories=ACCOUNT_CATEGORIES,
+        fcnr_currencies=FCNR_CURRENCIES,
         active_tab="dashboard",
         **kwargs,
     )
@@ -1631,10 +1722,12 @@ def add_deposit():
                 """INSERT INTO deposits
                    (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                     principal, interest_rate, tenure_months, tenure_days, tenure_unit,
-                    compounding_frequency, tag_id, deposit_number, owner_id, start_date)
+                    compounding_frequency, tag_id, deposit_number, owner_id,
+                    account_category, currency, start_date)
                    VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                     :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
-                    :compounding_frequency, :tag_id, :deposit_number, :owner_id, :start_date)""",
+                    :compounding_frequency, :tag_id, :deposit_number, :owner_id,
+                    :account_category, :currency, :start_date)""",
                 cols,
             )
             db.commit()
@@ -1647,7 +1740,8 @@ def add_deposit():
 
 DEPOSIT_IMPORT_HEADERS = [
     "depositor_name", "bank_name", "deposit_type", "principal", "interest_rate",
-    "tenure_value", "tenure_unit", "compounding_frequency", "deposit_number", "owner_name", "start_date",
+    "tenure_value", "tenure_unit", "compounding_frequency", "deposit_number", "owner_name",
+    "account_category", "currency", "start_date",
 ]
 
 
@@ -1721,6 +1815,16 @@ def _parse_deposit_import_row(db, row: dict) -> dict:
     owner_name = (row.get("owner_name") or "").strip()
     owner_id = _find_or_create_by_name(db, "depositors", owner_name) if owner_name else None
 
+    account_category = (row.get("account_category") or "Resident").strip() or "Resident"
+    if account_category not in ACCOUNT_CATEGORIES:
+        raise ValueError(f"account_category must be one of: {', '.join(ACCOUNT_CATEGORIES)}")
+    if account_category == "FCNR":
+        currency = (row.get("currency") or "").strip().upper()
+        if currency not in FCNR_CURRENCIES:
+            raise ValueError(f"currency must be one of {', '.join(FCNR_CURRENCIES)} for an FCNR deposit")
+    else:
+        currency = "INR"
+
     return {
         "depositor_id": depositor_id, "holder_id": holder["holder_id"], "holder_name": holder["name"],
         "bank_ref_id": bank_ref_id, "bank_name": bank["name"], "deposit_type": deposit_type,
@@ -1729,6 +1833,8 @@ def _parse_deposit_import_row(db, row: dict) -> dict:
         "compounding_frequency": compounding_frequency,
         "deposit_number": (row.get("deposit_number") or "").strip(),
         "owner_id": owner_id,
+        "account_category": account_category,
+        "currency": currency,
         "start_date": start_date,
     }
 
@@ -1761,10 +1867,12 @@ def import_deposits():
                         """INSERT INTO deposits
                            (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                             principal, interest_rate, tenure_months, tenure_days, tenure_unit,
-                            compounding_frequency, deposit_number, owner_id, start_date)
+                            compounding_frequency, deposit_number, owner_id,
+                            account_category, currency, start_date)
                            VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                             :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
-                            :compounding_frequency, :deposit_number, :owner_id, :start_date)""",
+                            :compounding_frequency, :deposit_number, :owner_id,
+                            :account_category, :currency, :start_date)""",
                         values,
                     )
                     imported += 1
@@ -1777,9 +1885,10 @@ def import_deposits():
 @app.route("/deposits/import/template.csv")
 def deposits_import_template():
     template = ",".join(DEPOSIT_IMPORT_HEADERS) + "\n" + (
-        "Krishna,SBI,cumulative,100000,7.1,12,months,4,FD123456789,,2026-01-15\n"
-        "Krishna,SBI,simple,50000,6.5,36,months,,FD987654321,Son,2025-06-01\n"
-        "Bala,HDFC,recurring,5000,7,24,months,,RD555111222,,2026-03-01\n"
+        "Krishna,SBI,cumulative,100000,7.1,12,months,4,FD123456789,,Resident,INR,2026-01-15\n"
+        "Krishna,SBI,simple,50000,6.5,36,months,,FD987654321,Son,Resident,INR,2025-06-01\n"
+        "Bala,HDFC,recurring,5000,7,24,months,,RD555111222,,Resident,INR,2026-03-01\n"
+        "Krishna,HDFC,cumulative,20000,5.5,24,months,4,FCNR001,,FCNR,USD,2026-01-01\n"
     )
     return send_file(
         io.BytesIO(template.encode()), as_attachment=True,
@@ -1812,7 +1921,8 @@ def edit_deposit(deposit_id):
                      tenure_months = :tenure_months, tenure_days = :tenure_days,
                      tenure_unit = :tenure_unit,
                      compounding_frequency = :compounding_frequency, tag_id = :tag_id,
-                     deposit_number = :deposit_number, owner_id = :owner_id, start_date = :start_date
+                     deposit_number = :deposit_number, owner_id = :owner_id,
+                     account_category = :account_category, currency = :currency, start_date = :start_date
                    WHERE id = :id""",
                 cols,
             )
@@ -2448,10 +2558,18 @@ def tax_page():
         if period_end > today:
             period_end = today
 
+        depositor_deposits = db.execute(
+            DEPOSITS_WITH_REFS + " WHERE deposits.depositor_id = ?", (depositor_id,)
+        ).fetchall()
+        # NRE/FCNR interest is exempt from Indian income tax entirely (Sec
+        # 10(4)); NRO is taxable and stays in the total (it's INR-denominated,
+        # so no currency-mixing issue), but taxed at NRI rates via TDS, not
+        # this resident-slab estimate.
         interest_income = sum(
             deposit_interest_in_period(d, period_start, period_end)
-            for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.depositor_id = ?", (depositor_id,)).fetchall()
+            for d in depositor_deposits if d["account_category"] not in ("NRE", "FCNR")
         )
+        has_nri_accounts = any(d["account_category"] != "Resident" for d in depositor_deposits)
 
         def contributed(account_type):
             row = db.execute(
@@ -2490,6 +2608,7 @@ def tax_page():
             "old_regime": old_regime,
             "better_regime": "New" if new_regime["total_tax"] <= old_regime["total_tax"] else "Old",
             "savings": round(abs(new_regime["total_tax"] - old_regime["total_tax"]), 2),
+            "has_nri_accounts": has_nri_accounts,
         }
 
     return render_template(
@@ -2557,14 +2676,16 @@ def export_deposits_xlsx():
     wb = Workbook()
     ws = wb.active
     ws.title = "Deposits"
-    headers = ["Depositor", "Owned By", "Bank", "Deposit Number", "Type", "Principal", "Rate %", "Tenure",
-               "Start Date", "Maturity Date", "Current Value", "Interest Earned", "Ann. Return %"]
+    headers = ["Depositor", "Owned By", "Bank", "Deposit Number", "Category", "Currency", "Type",
+               "Principal", "Rate %", "Tenure", "Start Date", "Maturity Date", "Current Value",
+               "Interest Earned", "Ann. Return %"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
     for r in rows:
         ws.append([
-            r["holder_name"], r["owner_name"] or "", r["bank_name"], r["deposit_number"], r["deposit_type_label"],
+            r["holder_name"], r["owner_name"] or "", r["bank_name"], r["deposit_number"],
+            r["account_category"], r["currency"], r["deposit_type_label"],
             r["principal"], r["interest_rate"], r["tenure_label"], r["start_date"], r["maturity_date"],
             round(r["current_value"], 2), round(r["accrued_interest"], 2),
             round(r["annualised_return"], 2) if r["annualised_return"] is not None else None,
@@ -2591,13 +2712,17 @@ DICGC_INSURED_LIMIT = 500000  # per depositor, per bank -- covers principal + ac
 
 
 def compute_tds_rows(db, fy_start_year: int, threshold: float):
+    """Resident deposits only -- NRE/FCNR interest is exempt from TDS
+    entirely, and NRO is taxed at a different flat rate with no threshold
+    (see compute_nro_tds_rows), so neither belongs in this resident-rules
+    calculation."""
     period_start, period_end = fy_bounds(fy_start_year)
     today = date.today()
     if period_end > today:
         period_end = today
 
     groups = {}  # (depositor_id, bank_ref_id) -> {names, interest}
-    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.account_category = 'Resident'").fetchall():
         interest = deposit_interest_in_period(d, period_start, period_end)
         if interest <= 0:
             continue
@@ -2625,6 +2750,42 @@ def compute_tds_rows(db, fy_start_year: int, threshold: float):
     return rows, period_start, period_end
 
 
+def compute_nro_tds_rows(db, fy_start_year: int):
+    """NRO interest is taxed at source under Section 195 (30% + 4% cess,
+    surcharge not modelled -- see NRO_TDS_RATE_PCT), applying from the first
+    rupee rather than the resident ₹40,000 threshold."""
+    period_start, period_end = fy_bounds(fy_start_year)
+    today = date.today()
+    if period_end > today:
+        period_end = today
+
+    groups = {}
+    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.account_category = 'NRO'").fetchall():
+        interest = deposit_interest_in_period(d, period_start, period_end)
+        if interest <= 0:
+            continue
+        key = (d["depositor_id"], d["bank_ref_id"])
+        if key not in groups:
+            groups[key] = {
+                "depositor_name": d["depositor_name"] or d["holder_name"] or "(unlinked)",
+                "bank_name": d["bank_ref_name"] or d["bank_name"] or "(unlinked)",
+                "interest": 0.0,
+            }
+        groups[key]["interest"] += interest
+
+    rows = [
+        {
+            "depositor_name": g["depositor_name"],
+            "bank_name": g["bank_name"],
+            "interest": round(g["interest"], 2),
+            "estimated_tds": round(g["interest"] * NRO_TDS_RATE_PCT / 100, 2),
+        }
+        for g in groups.values()
+    ]
+    rows.sort(key=lambda r: r["interest"], reverse=True)
+    return rows
+
+
 @app.route("/tds")
 def tds_page():
     db = get_db()
@@ -2639,6 +2800,7 @@ def tds_page():
         threshold = 40000.0
 
     rows, period_start, period_end = compute_tds_rows(db, fy_start_year, threshold)
+    nro_rows = compute_nro_tds_rows(db, fy_start_year)
 
     return render_template(
         "tds.html", active_tab="tds",
@@ -2648,13 +2810,21 @@ def tds_page():
         rows=rows, tds_rate_pct=TDS_RATE_PCT,
         total_interest=round(sum(r["interest"] for r in rows), 2),
         total_estimated_tds=round(sum(r["estimated_tds"] for r in rows), 2),
+        nro_rows=nro_rows, nro_tds_rate_pct=NRO_TDS_RATE_PCT,
+        total_nro_interest=round(sum(r["interest"] for r in nro_rows), 2),
+        total_nro_tds=round(sum(r["estimated_tds"] for r in nro_rows), 2),
         pdf_available=PDF_AVAILABLE,
     )
 
 
 def compute_dicgc_rows(db):
+    # DICGC does insure FCNR balances too (converted to INR at DICGC's own
+    # rate at the time of a claim), but this app doesn't do live currency
+    # conversion anywhere -- so like the Dashboard totals, FCNR deposits are
+    # left out of this INR figure rather than silently understating or
+    # mis-converting it.
     groups = {}  # (depositor_id, bank_ref_id) -> {names, total}
-    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR'").fetchall():
         s = summarise_deposit(d)
         key = (d["depositor_id"], d["bank_ref_id"])
         if key not in groups:
@@ -2686,10 +2856,13 @@ def compute_dicgc_rows(db):
 def dicgc_page():
     db = get_db()
     rows = compute_dicgc_rows(db)
+    fcnr_count = db.execute(
+        "SELECT COUNT(*) AS n FROM deposits WHERE currency != 'INR'"
+    ).fetchone()["n"]
     return render_template(
         "dicgc.html", active_tab="dicgc", insured_limit=DICGC_INSURED_LIMIT,
         rows=rows, total_uninsured=round(sum(r["uninsured"] for r in rows), 2),
-        pdf_available=PDF_AVAILABLE,
+        fcnr_count=fcnr_count, pdf_available=PDF_AVAILABLE,
     )
 
 

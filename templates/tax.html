@@ -43,6 +43,15 @@
   <div class="card">
     <h2 style="font-size:16px; margin:0 0 4px;">Income & deductions</h2>
     <p class="field-hint" style="margin-bottom:0;">{{ result.period_start.isoformat() }} to {{ result.period_end.isoformat() }}</p>
+    {% if result.has_nri_accounts %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber); margin-top:12px;">
+        This depositor holds an NRE, NRO or FCNR account. NRE/FCNR interest is already
+        excluded above (tax-exempt); NRO interest is included since it's taxable, but see
+        the TDS tab for its actual rate. If this depositor is an NRI, note that this
+        estimate assumes resident tax rules — in particular the Section 87A rebate below
+        doesn't apply to non-residents, so the real tax due may be higher than shown here.
+      </div>
+    {% endif %}
     <div class="summary-grid" style="margin-top:12px;">
       <div class="summary-item">
         <div class="label">FD/RD Interest</div>

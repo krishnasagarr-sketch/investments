@@ -4,12 +4,14 @@
 {% block content %}
 
   <div class="card" style="max-width:520px;">
-    <h2 style="font-size:16px; margin:0 0 4px;">TDS on FD interest</h2>
+    <h2 style="font-size:16px; margin:0 0 4px;">TDS on FD interest (Resident)</h2>
     <p class="field-hint" style="margin-bottom:16px;">
       Banks deduct TDS at {{ tds_rate_pct }}% (with PAN on file — 20% without) when a
       depositor's total interest from a bank in a financial year crosses the threshold
-      (₹40,000 normally, ₹50,000 for senior citizens). This is an estimate from what's
-      recorded here, not a substitute for your bank's own TDS certificate (Form 16A).
+      (₹40,000 normally, ₹50,000 for senior citizens). Resident deposits only — NRE and
+      FCNR interest is exempt from tax and TDS entirely, and NRO has its own rules and
+      rate (see below). This is an estimate from what's recorded here, not a substitute
+      for your bank's own TDS certificate (Form 16A).
     </p>
     <form method="GET">
       <div class="form-group">
@@ -74,6 +76,51 @@
     {% else %}
       <div class="empty-state">
         <p>No interest-earning deposits found for this financial year.</p>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 4px;">TDS on NRO interest</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      NRO interest is taxed at source under Section 195, not the resident rules above:
+      {{ nro_tds_rate_pct }}% flat (30% + 4% health & education cess) from the first
+      rupee — no ₹40,000 threshold. A surcharge may also apply above certain income
+      levels, which isn't included here, so treat this as a floor, not the final figure.
+    </p>
+    {% if nro_rows %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Depositor</th>
+            <th>Bank</th>
+            <th>Interest ({{ period_start.isoformat() }} to {{ period_end.isoformat() }})</th>
+            <th>Estimated TDS ({{ nro_tds_rate_pct }}%)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in nro_rows %}
+          <tr>
+            <td><strong>{{ r.depositor_name }}</strong></td>
+            <td>{{ r.bank_name }}</td>
+            <td>{{ (r.interest)|money }}</td>
+            <td>{{ (r.estimated_tds)|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>Total</strong></td>
+            <td><strong>{{ (total_nro_interest)|money }}</strong></td>
+            <td><strong>{{ (total_nro_tds)|money }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No NRO deposits found for this financial year.</p>
       </div>
     {% endif %}
   </div>

@@ -10,6 +10,11 @@
       principal and accrued interest together across all deposits that depositor holds at
       that bank. Anything held beyond that at one bank isn't covered if the bank fails.
       Splitting large holdings across banks (or depositors) keeps more of it insured.
+      {% if fcnr_count %}
+      DICGC does also insure FCNR balances (converted to rupees at claim time), but
+      {{ fcnr_count }} FCNR deposit(s) held in a foreign currency aren't included in the
+      totals below, since this app doesn't convert currencies anywhere.
+      {% endif %}
     </p>
   </div>
 
