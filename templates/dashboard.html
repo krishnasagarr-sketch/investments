@@ -42,6 +42,43 @@
   </div>
 
   <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">By owner</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Who the money actually belongs to, not just whose name it's deposited under — a
+      deposit with no "Owned by" set is counted under its holder.
+    </p>
+    {% if ownership_summary %}
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Owner</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr></thead>
+        <tbody>
+          {% for o in ownership_summary %}
+          <tr>
+            <td><strong>{{ o.owner }}</strong></td>
+            <td>{{ o.count }}</td>
+            <td>{{ (o.invested)|money }}</td>
+            <td>{{ (o.current)|money }}</td>
+            <td>{{ (o.maturity)|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="tb-total">
+            <td><strong>Total</strong></td>
+            <td>{{ rows|length }}</td>
+            <td><strong>{{ (total_invested)|money }}</strong></td>
+            <td><strong>{{ (total_current)|money }}</strong></td>
+            <td><strong>{{ (total_maturity)|money }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No deposits yet.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
     {% if rows %}
       <div class="table-scroll sticky-last compact">
       <table>

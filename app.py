@@ -1464,6 +1464,19 @@ def dashboard():
     total_interest = sum(r["interest_earned"] for r in rows)
     total_annualised_return = weighted_annualised_return(rows, "invested", "current_value", "days_held")
 
+    # Classify by who the money actually belongs to -- owner_name if set,
+    # else the holder it's deposited under (an unset "owned by" means the
+    # holder is the owner, not that ownership is unknown).
+    ownership = {}
+    for r in rows:
+        owner = r["owner_name"] or r["holder_name"] or "(unknown)"
+        acc = ownership.setdefault(owner, {"owner": owner, "count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0})
+        acc["count"] += 1
+        acc["invested"] += r["invested"]
+        acc["current"] += r["current_value"]
+        acc["maturity"] += r["maturity_amount"]
+    ownership_summary = sorted(ownership.values(), key=lambda a: a["current"], reverse=True)
+
     return render_template(
         "dashboard.html",
         rows=rows,
@@ -1472,6 +1485,7 @@ def dashboard():
         total_maturity=total_maturity,
         total_interest=total_interest,
         total_annualised_return=total_annualised_return,
+        ownership_summary=ownership_summary,
         active_tab="dashboard",
         wide_page=True,
         excel_available=EXCEL_AVAILABLE,
