@@ -44,8 +44,35 @@
     <p class="field-hint">
       Annualised return is the invested-weighted CAGR across all holdings — a rough blend, not a true
       money-weighted (XIRR) return. Holdings under 7 days old are excluded and show "—".
+      {% if fcnr_count %}
+      {{ fcnr_count }} FCNR deposit(s) held in a foreign currency are excluded from every total
+      on this page (see Foreign Currency Deposits below) — this app doesn't convert currencies
+      anywhere, so mixing them into a rupee figure would misstate it.
+      {% endif %}
     </p>
   </div>
+
+  {% if fcnr_summary %}
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Foreign currency deposits (FCNR)</h2>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>Currency</th><th>Deposits</th><th>Invested</th><th>Current Value</th><th>Maturity Value</th></tr></thead>
+      <tbody>
+        {% for f in fcnr_summary %}
+        <tr>
+          <td><strong>{{ f.currency }}</strong></td>
+          <td>{{ f.count }}</td>
+          <td>{{ (f.invested)|money(f.currency) }}</td>
+          <td>{{ (f.current)|money(f.currency) }}</td>
+          <td>{{ (f.maturity)|money(f.currency) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
 
   <div class="card">
     <h2 style="font-size:16px; margin:0 0 14px;">By Asset Class</h2>

@@ -1065,16 +1065,31 @@ def portfolio_summary(db):
     _key = lambda kv: kv[0].lower()
 
     # ----- deposits -----
+    # FCNR deposits are held in a foreign currency, never converted to
+    # rupees anywhere in this app (see format_money()) -- mixing them into
+    # these INR totals would silently misstate them, so they're tallied
+    # separately below instead, by currency.
     dep_pair, dep_holder, dep_bank = {}, {}, {}
     dep_overall = _agg_blank()
+    fcnr_by_currency = {}
     for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
         s = summarise_deposit(d)
+        if s["currency"] != "INR":
+            acc = fcnr_by_currency.setdefault(s["currency"], {
+                "currency": s["currency"], "count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0,
+            })
+            acc["count"] += 1
+            acc["invested"] += s["invested"]
+            acc["current"] += s["current_value"]
+            acc["maturity"] += s["maturity_amount"]
+            continue
         holder = s["holder_name"] or "—"
         bank = s["bank_name"] or "—"
         _agg_add(dep_pair.setdefault((holder, bank), _agg_blank()), s)
         _agg_add(dep_holder.setdefault(holder, _agg_blank()), s)
         _agg_add(dep_bank.setdefault(bank, _agg_blank()), s)
         _agg_add(dep_overall, s)
+    fcnr_summary = sorted(fcnr_by_currency.values(), key=lambda a: a["currency"])
 
     # ----- metals -----
     met_pair, met_holder, met_metal = {}, {}, {}
@@ -1175,6 +1190,8 @@ def portfolio_summary(db):
         "total_current": total_current,
         "total_gain": total_current - total_invested,
         "total_annualised_return": total_annualised_return,
+        "fcnr_summary": fcnr_summary,
+        "fcnr_count": sum(f["count"] for f in fcnr_summary),
     }
 
 
