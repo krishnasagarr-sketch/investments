@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Import Deposits — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Bulk import deposits</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      For moving in a batch of existing FDs/RDs from a spreadsheet instead of entering
+      them one at a time. Download the template below, fill in a row per deposit, and
+      upload it back — depositors and banks are matched by name (case-insensitive) or
+      created automatically if they don't already exist.
+    </p>
+    <a href="{{ url_for('deposits_import_template') }}" class="btn secondary" style="display:inline-block; margin-bottom:16px;">Download CSV Template</a>
+
+    {% if result %}
+      {% if result.error %}
+        <div class="error-box">{{ result.error }}</div>
+      {% else %}
+        <div class="error-box" style="background:#e6f0ea; color:var(--green);">
+          Imported {{ result.imported }} deposit(s){% if result.skipped %}, skipped {{ result.skipped }}{% endif %}.
+        </div>
+        {% if result.errors %}
+          <div class="error-box" style="background:#fff2e0; color:var(--amber);">
+            {% for e in result.errors %}{{ e }}<br>{% endfor %}
+          </div>
+        {% endif %}
+      {% endif %}
+    {% endif %}
+
+    <form method="POST" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="csv_file">Deposits CSV</label>
+        <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Import</button>
+    </form>
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Column reference</h2>
+    <table>
+      <thead><tr><th>Column</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>depositor_name</td><td>Any name — matched or created automatically</td></tr>
+        <tr><td>bank_name</td><td>Any name — matched or created automatically</td></tr>
+        <tr><td>deposit_type</td><td>cumulative, simple, or recurring</td></tr>
+        <tr><td>principal</td><td>Amount (monthly installment, for recurring)</td></tr>
+        <tr><td>interest_rate</td><td>Annual rate, e.g. 7.1</td></tr>
+        <tr><td>tenure_value</td><td>A whole number</td></tr>
+        <tr><td>tenure_unit</td><td>months or days (recurring is always months)</td></tr>
+        <tr><td>compounding_frequency</td><td>1/2/4/12 — leave blank for quarterly (4)</td></tr>
+        <tr><td>start_date</td><td>YYYY-MM-DD</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+{% endblock %}

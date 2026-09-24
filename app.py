@@ -1,3 +1,4 @@
+import csv
 import io
 import math
 import os
@@ -1448,6 +1449,142 @@ def add_deposit():
             error = str(e)
 
     return _render_deposit_form(db, error=error, form_data=form_data, editing=False)
+
+
+DEPOSIT_IMPORT_HEADERS = [
+    "depositor_name", "bank_name", "deposit_type", "principal", "interest_rate",
+    "tenure_value", "tenure_unit", "compounding_frequency", "start_date",
+]
+
+
+def _find_or_create_by_name(db, table: str, name: str) -> int:
+    """Match an existing depositor/bank by name (case-insensitive) before
+    falling back to find_or_create_*, so a CSV import doesn't create a
+    duplicate record just because of a typo'd holder_id/bank_id — those are
+    meant for admin-facing codes, not what a spreadsheet of names has."""
+    row = db.execute(f"SELECT id FROM {table} WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    if row:
+        return row["id"]
+    if table == "depositors":
+        return find_or_create_depositor(db, name, name)
+    return find_or_create_bank(db, name, name)
+
+
+def _parse_deposit_import_row(db, row: dict) -> dict:
+    """Validate one row of a bulk deposit CSV import. Returns DB column
+    values, or raises ValueError with a user-facing message."""
+    depositor_name = (row.get("depositor_name") or "").strip()
+    bank_name = (row.get("bank_name") or "").strip()
+    deposit_type = (row.get("deposit_type") or "").strip().lower()
+    start_date = (row.get("start_date") or "").strip()
+
+    if not depositor_name:
+        raise ValueError("depositor_name is required")
+    if not bank_name:
+        raise ValueError("bank_name is required")
+    if deposit_type not in DEPOSIT_TYPES:
+        raise ValueError(f"deposit_type must be one of: {', '.join(DEPOSIT_TYPES)}")
+    try:
+        date.fromisoformat(start_date)
+    except ValueError:
+        raise ValueError("start_date must be in YYYY-MM-DD format")
+
+    try:
+        principal = float(row.get("principal"))
+        interest_rate = float(row.get("interest_rate"))
+        tenure_value = int(float(row.get("tenure_value")))
+    except (TypeError, ValueError):
+        raise ValueError("principal, interest_rate and tenure_value must be numbers")
+    if principal <= 0:
+        raise ValueError("principal must be greater than 0")
+    if interest_rate <= 0:
+        raise ValueError("interest_rate must be greater than 0")
+    if tenure_value <= 0:
+        raise ValueError("tenure_value must be greater than 0")
+
+    tenure_unit = (row.get("tenure_unit") or "months").strip().lower() or "months"
+    if tenure_unit not in TENURE_UNITS:
+        raise ValueError(f"tenure_unit must be one of: {', '.join(TENURE_UNITS)}")
+    if deposit_type == "recurring":
+        tenure_unit = "months"
+    tenure_months, tenure_days = (0, tenure_value) if tenure_unit == "days" else (tenure_value, 0)
+
+    compounding_raw = (row.get("compounding_frequency") or "").strip()
+    try:
+        compounding_frequency = int(compounding_raw) if compounding_raw else 4
+    except ValueError:
+        raise ValueError("compounding_frequency must be a whole number")
+    if deposit_type == "simple":
+        compounding_frequency = 1
+    elif deposit_type == "recurring":
+        compounding_frequency = 4
+
+    depositor_id = _find_or_create_by_name(db, "depositors", depositor_name)
+    bank_ref_id = _find_or_create_by_name(db, "banks", bank_name)
+    holder = db.execute("SELECT holder_id, name FROM depositors WHERE id = ?", (depositor_id,)).fetchone()
+    bank = db.execute("SELECT name FROM banks WHERE id = ?", (bank_ref_id,)).fetchone()
+
+    return {
+        "depositor_id": depositor_id, "holder_id": holder["holder_id"], "holder_name": holder["name"],
+        "bank_ref_id": bank_ref_id, "bank_name": bank["name"], "deposit_type": deposit_type,
+        "principal": principal, "interest_rate": interest_rate,
+        "tenure_months": tenure_months, "tenure_days": tenure_days, "tenure_unit": tenure_unit,
+        "compounding_frequency": compounding_frequency, "start_date": start_date,
+    }
+
+
+@app.route("/deposits/import", methods=["GET", "POST"])
+def import_deposits():
+    db = get_db()
+    result = None
+    if request.method == "POST":
+        file = request.files.get("csv_file")
+        if file is None or file.filename == "":
+            result = {"error": "Choose a CSV file to import.", "imported": 0, "skipped": 0, "errors": []}
+        else:
+            try:
+                text = file.read().decode("utf-8-sig")
+            except UnicodeDecodeError:
+                result = {"error": "That file doesn't look like a valid CSV (couldn't decode as UTF-8).",
+                          "imported": 0, "skipped": 0, "errors": []}
+            else:
+                reader = csv.DictReader(io.StringIO(text))
+                imported = 0
+                errors = []
+                for i, row in enumerate(reader, start=2):  # header is row 1
+                    try:
+                        values = _parse_deposit_import_row(db, row)
+                    except ValueError as e:
+                        errors.append(f"Row {i}: {e}")
+                        continue
+                    db.execute(
+                        """INSERT INTO deposits
+                           (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
+                            principal, interest_rate, tenure_months, tenure_days, tenure_unit,
+                            compounding_frequency, start_date)
+                           VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
+                            :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
+                            :compounding_frequency, :start_date)""",
+                        values,
+                    )
+                    imported += 1
+                db.commit()
+                result = {"error": None, "imported": imported, "skipped": len(errors), "errors": errors[:30]}
+
+    return render_template("import_deposits.html", active_tab="import", result=result)
+
+
+@app.route("/deposits/import/template.csv")
+def deposits_import_template():
+    template = ",".join(DEPOSIT_IMPORT_HEADERS) + "\n" + (
+        "Krishna,SBI,cumulative,100000,7.1,12,months,4,2026-01-15\n"
+        "Krishna,SBI,simple,50000,6.5,36,months,,2025-06-01\n"
+        "Bala,HDFC,recurring,5000,7,24,months,,2026-03-01\n"
+    )
+    return send_file(
+        io.BytesIO(template.encode()), as_attachment=True,
+        download_name="deposits-import-template.csv", mimetype="text/csv",
+    )
 
 
 @app.route("/edit/<int:deposit_id>", methods=["GET", "POST"])
