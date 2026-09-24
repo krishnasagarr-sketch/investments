@@ -59,6 +59,14 @@
                value="{{ settings.days_before }}">
       </div>
 
+      <div class="form-group">
+        <label for="contribution_reminder_days">
+          Also remind if a PPF/EPF/NPS account has had no contribution logged for this many days
+        </label>
+        <input type="number" id="contribution_reminder_days" name="contribution_reminder_days" min="1" placeholder="e.g. 45"
+               value="{{ settings.contribution_reminder_days }}">
+      </div>
+
       <button type="submit" class="btn" style="width:100%;">Save Settings</button>
     </form>
   </div>
@@ -121,6 +129,46 @@
     {% else %}
       <div class="empty-state">
         <p>Nothing maturing in the next {{ settings.days_before }} days.</p>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">
+      Overdue contributions (no log in {{ settings.contribution_reminder_days }}+ days)
+    </h2>
+    {% if upcoming_contributions %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Depositor</th>
+            <th>Account</th>
+            <th>Days Since Last Contribution</th>
+            <th>Alert</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in upcoming_contributions %}
+          <tr>
+            <td>{{ r.depositor_name }}</td>
+            <td>{{ r.account_type }}{% if r.institution %} ({{ r.institution }}){% endif %}</td>
+            <td>{{ r.days_since }}</td>
+            <td>
+              {% if r.alert_due %}
+                <span class="badge active">due next check</span>
+              {% else %}
+                <span class="badge matured">recently sent</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <p>No overdue contributions.</p>
       </div>
     {% endif %}
   </div>

@@ -374,6 +374,10 @@ def init_db():
         )
     """)
     conn.execute("INSERT OR IGNORE INTO notification_settings (id) VALUES (1)")
+    if "contribution_reminder_days" not in {r[1] for r in conn.execute("PRAGMA table_info(notification_settings)")}:
+        conn.execute(
+            "ALTER TABLE notification_settings ADD COLUMN contribution_reminder_days INTEGER NOT NULL DEFAULT 45"
+        )
 
     # Single admin login for the app (a single row, id=1). No row yet means
     # the app hasn't been through first-run /setup.
@@ -404,6 +408,8 @@ def init_db():
             balance_as_of TEXT
         )
     """)
+    if "last_contribution_reminder_on" not in {r[1] for r in conn.execute("PRAGMA table_info(retirement_accounts)")}:
+        conn.execute("ALTER TABLE retirement_accounts ADD COLUMN last_contribution_reminder_on TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS retirement_contributions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1869,6 +1875,86 @@ def run_maturity_check(db) -> str:
     return result
 
 
+def retirement_accounts_due_for_reminder(db, days_threshold: int):
+    """PPF/EPF/NPS accounts with no contribution logged in the last
+    `days_threshold` days -- counted from the most recent contribution, or
+    from opened_date if there isn't one yet -- each tagged with whether
+    it's actually due for an alert (not in the resend cooldown)."""
+    today = date.today()
+    rows = []
+    for a in db.execute("SELECT * FROM retirement_accounts").fetchall():
+        last_contribution = db.execute(
+            "SELECT MAX(contribution_date) AS d FROM retirement_contributions WHERE account_id = ?",
+            (a["id"],),
+        ).fetchone()["d"]
+        reference_date = date.fromisoformat(last_contribution or a["opened_date"])
+        days_since = (today - reference_date).days
+        if days_since < days_threshold:
+            continue
+        last_reminder = a["last_contribution_reminder_on"]
+        in_cooldown = bool(last_reminder) and (today - date.fromisoformat(last_reminder)).days < NOTIFY_RESEND_COOLDOWN_DAYS
+        depositor = db.execute("SELECT name FROM depositors WHERE id = ?", (a["depositor_id"],)).fetchone()
+        rows.append({
+            "id": a["id"],
+            "depositor_name": depositor["name"] if depositor else "(unlinked)",
+            "account_type": a["account_type"],
+            "institution": a["institution"],
+            "days_since": days_since,
+            "alert_due": not in_cooldown,
+        })
+    return sorted(rows, key=lambda r: -r["days_since"])
+
+
+def retirement_accounts_due_for_alert(db, days_threshold: int):
+    return [r for r in retirement_accounts_due_for_reminder(db, days_threshold) if r["alert_due"]]
+
+
+def build_contribution_reminder_email(rows) -> tuple:
+    n = len(rows)
+    subject = f"\U0001F4B0 {n} retirement contribution{'s' if n != 1 else ''} overdue"
+    lines = [f"{n} PPF/EPF/NPS account(s) haven't had a contribution logged in a while:", ""]
+    for r in rows:
+        institution = f" ({r['institution']})" if r["institution"] else ""
+        lines.append(
+            f"- {r['depositor_name']} / {r['account_type']}{institution}: "
+            f"{r['days_since']} days since the last logged contribution"
+        )
+    lines += ["", "— sent automatically by Fixed Deposit Manager"]
+    return subject, "\n".join(lines)
+
+
+def run_contribution_check(db) -> str:
+    """Email a digest of any PPF/EPF/NPS accounts newly overdue for a
+    contribution reminder. Mirrors run_maturity_check()'s shape, but doesn't
+    write to last_check_at/last_check_result itself -- the caller combines
+    both checks' results into one record."""
+    settings = get_notification_settings(db)
+    if not settings.get("enabled"):
+        return "Notifications are turned off."
+
+    due = retirement_accounts_due_for_alert(db, settings.get("contribution_reminder_days", 45))
+    if not due:
+        return "No contribution reminders due."
+
+    subject, body = build_contribution_reminder_email(due)
+    try:
+        send_email(settings, subject, body)
+    except RuntimeError as e:
+        return f"Failed to send contribution reminder: {e}"
+
+    today = str(date.today())
+    for r in due:
+        db.execute("UPDATE retirement_accounts SET last_contribution_reminder_on = ? WHERE id = ?", (today, r["id"]))
+    db.commit()
+    return f"Emailed a reminder for {len(due)} retirement account(s)."
+
+
+def run_all_notification_checks(db) -> str:
+    result = f"{run_maturity_check(db)} {run_contribution_check(db)}"
+    _record_check_result(db, result)
+    return result
+
+
 # ---------- Income tax estimator ----------
 # Old vs New regime slabs and settings (standard deduction, Section 87A rebate
 # threshold/cap, health & education cess) -- current figures as of this app's
@@ -2642,10 +2728,12 @@ def notifications_page():
     db = get_db()
     settings = get_notification_settings(db)
     upcoming = deposits_within_window(db, settings["days_before"])
+    upcoming_contributions = retirement_accounts_due_for_reminder(db, settings["contribution_reminder_days"])
     return render_template(
         "notifications.html",
         settings=settings,
         upcoming=upcoming,
+        upcoming_contributions=upcoming_contributions,
         cooldown_days=NOTIFY_RESEND_COOLDOWN_DAYS,
         active_tab="notifications",
         error=None,
@@ -2675,6 +2763,15 @@ def save_notification_settings():
         days_before = current.get("days_before", 30)
         error = "Alert window must be a whole number of days greater than 0."
 
+    try:
+        contribution_reminder_days = int(request.form.get("contribution_reminder_days", "").strip())
+        if contribution_reminder_days <= 0:
+            raise ValueError
+    except ValueError:
+        contribution_reminder_days = current.get("contribution_reminder_days", 45)
+        if error is None:
+            error = "Contribution reminder window must be a whole number of days greater than 0."
+
     if error is None and enabled:
         if not recipient_email:
             error = "Recipient email is required to turn notifications on."
@@ -2683,16 +2780,18 @@ def save_notification_settings():
 
     if error:
         upcoming = deposits_within_window(db, days_before)
+        upcoming_contributions = retirement_accounts_due_for_reminder(db, contribution_reminder_days)
         return render_template(
             "notifications.html",
             settings={
                 "enabled": enabled, "recipient_email": recipient_email,
                 "sender_email": sender_email, "sender_app_password": sender_app_password,
-                "days_before": days_before,
+                "days_before": days_before, "contribution_reminder_days": contribution_reminder_days,
                 "last_check_at": current.get("last_check_at"),
                 "last_check_result": current.get("last_check_result"),
             },
             upcoming=upcoming,
+            upcoming_contributions=upcoming_contributions,
             cooldown_days=NOTIFY_RESEND_COOLDOWN_DAYS,
             active_tab="notifications",
             error=error,
@@ -2701,9 +2800,9 @@ def save_notification_settings():
     db.execute(
         """UPDATE notification_settings SET
              enabled = ?, recipient_email = ?, sender_email = ?,
-             sender_app_password = ?, days_before = ?
+             sender_app_password = ?, days_before = ?, contribution_reminder_days = ?
            WHERE id = 1""",
-        (enabled, recipient_email, sender_email, sender_app_password, days_before),
+        (enabled, recipient_email, sender_email, sender_app_password, days_before, contribution_reminder_days),
     )
     db.commit()
     return redirect(url_for("notifications_page"))
@@ -2711,7 +2810,7 @@ def save_notification_settings():
 
 @app.route("/notifications/check", methods=["POST"])
 def check_notifications_now():
-    run_maturity_check(get_db())
+    run_all_notification_checks(get_db())
     return redirect(url_for("notifications_page"))
 
 
@@ -2740,7 +2839,7 @@ def _background_maturity_loop(interval_seconds: int = 12 * 60 * 60):
         try:
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
-            run_maturity_check(conn)
+            run_all_notification_checks(conn)
             conn.close()
         except Exception:
             pass  # never let a background hiccup take the app down
