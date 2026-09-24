@@ -1712,6 +1712,164 @@ def run_maturity_check(db) -> str:
     return result
 
 
+# ---------- Income tax estimator ----------
+# Old vs New regime slabs and settings (standard deduction, Section 87A rebate
+# threshold/cap, health & education cess) -- current figures as of this app's
+# last update. Kept as constants rather than an editable table (unlike
+# ledger_app's full tax admin screens): this is meant as a quick estimate
+# from what's already tracked here, not a substitute for filing software.
+TAX_REGIMES = ("New", "Old")
+
+TAX_SLABS = {
+    "New": [
+        (0, 400000, 0),
+        (400000, 800000, 5),
+        (800000, 1200000, 10),
+        (1200000, 1600000, 15),
+        (1600000, 2000000, 20),
+        (2000000, 2400000, 25),
+        (2400000, None, 30),
+    ],
+    "Old": [
+        (0, 250000, 0),
+        (250000, 500000, 5),
+        (500000, 1000000, 20),
+        (1000000, None, 30),
+    ],
+}
+
+TAX_SETTINGS = {
+    "New": {"standard_deduction": 75000, "rebate_threshold": 1200000, "rebate_max": 60000, "cess_percent": 4},
+    "Old": {"standard_deduction": 50000, "rebate_threshold": 500000, "rebate_max": 12500, "cess_percent": 4},
+}
+
+# Chapter VI-A deductions this estimator can populate automatically from data
+# already tracked on the Retirement tab -- both are Old Regime only.
+SECTION_80C_LIMIT = 150000
+SECTION_80CCD1B_LIMIT = 50000
+
+
+def compute_slab_tax(taxable_income: float, slabs: list) -> float:
+    """Each slab's effective upper bound is the next slab's lower bound (or
+    unbounded for the last one), so income can't be double-counted or
+    skipped against slab boundaries."""
+    ordered = sorted(slabs, key=lambda s: s[0])
+    tax = 0.0
+    for i, (lower, _upper, rate) in enumerate(ordered):
+        upper = ordered[i + 1][0] if i + 1 < len(ordered) else taxable_income
+        if taxable_income <= lower:
+            continue
+        portion = min(taxable_income, upper) - lower
+        if portion > 0:
+            tax += portion * rate / 100
+    return tax
+
+
+def compute_regime_tax(regime: str, gross_income: float, deductions_total: float) -> dict:
+    settings = TAX_SETTINGS[regime]
+    taxable_income = max(0.0, gross_income - settings["standard_deduction"] - deductions_total)
+    gross_tax = compute_slab_tax(taxable_income, TAX_SLABS[regime])
+
+    rebate = 0.0
+    marginal_relief = 0.0
+    if taxable_income <= settings["rebate_threshold"]:
+        rebate = min(gross_tax, settings["rebate_max"])
+    else:
+        # Marginal relief: just above the rebate threshold, tax payable is
+        # capped at the amount of income that exceeds the threshold, so a
+        # rupee more of income can't create a tax bill bigger than that
+        # rupee (avoids a tax "cliff").
+        excess_over_threshold = taxable_income - settings["rebate_threshold"]
+        if gross_tax > excess_over_threshold:
+            marginal_relief = gross_tax - excess_over_threshold
+
+    tax_after_rebate = gross_tax - rebate - marginal_relief
+    cess = tax_after_rebate * settings["cess_percent"] / 100
+    total_tax = tax_after_rebate + cess
+
+    return {
+        "standard_deduction": settings["standard_deduction"],
+        "taxable_income": round(taxable_income, 2),
+        "gross_tax": round(gross_tax, 2),
+        "rebate": round(rebate, 2),
+        "marginal_relief": round(marginal_relief, 2),
+        "cess_percent": settings["cess_percent"],
+        "cess": round(cess, 2),
+        "total_tax": round(total_tax, 2),
+    }
+
+
+@app.route("/tax")
+def tax_page():
+    db = get_db()
+    depositors = list_depositors(db)
+    current_fy = current_fy_start_year()
+
+    depositor_id = request.args.get("depositor_id", "")
+    try:
+        fy_start_year = int(request.args.get("fy", current_fy))
+    except (TypeError, ValueError):
+        fy_start_year = current_fy
+    try:
+        other_income = float(request.args.get("other_income") or 0)
+    except (TypeError, ValueError):
+        other_income = 0.0
+
+    result = None
+    if depositor_id:
+        period_start, period_end = fy_bounds(fy_start_year)
+        today = date.today()
+        if period_end > today:
+            period_end = today
+
+        interest_income = sum(
+            deposit_interest_in_period(d, period_start, period_end)
+            for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.depositor_id = ?", (depositor_id,)).fetchall()
+        )
+
+        def contributed(account_type):
+            row = db.execute(
+                """SELECT COALESCE(SUM(rc.amount), 0) AS total FROM retirement_contributions rc
+                   JOIN retirement_accounts ra ON ra.id = rc.account_id
+                   WHERE ra.depositor_id = ? AND ra.account_type = ?
+                     AND rc.contribution_date BETWEEN ? AND ?""",
+                (depositor_id, account_type, period_start.isoformat(), period_end.isoformat()),
+            ).fetchone()
+            return row["total"] or 0.0
+
+        ppf_contributed = contributed("PPF")
+        nps_contributed = contributed("NPS")
+        section_80c = min(ppf_contributed, SECTION_80C_LIMIT)
+        section_80ccd1b = min(nps_contributed, SECTION_80CCD1B_LIMIT)
+        gross_income = interest_income + other_income
+
+        new_regime = compute_regime_tax("New", gross_income, 0.0)
+        old_regime = compute_regime_tax("Old", gross_income, section_80c + section_80ccd1b)
+
+        result = {
+            "interest_income": round(interest_income, 2),
+            "gross_income": round(gross_income, 2),
+            "ppf_contributed": round(ppf_contributed, 2),
+            "nps_contributed": round(nps_contributed, 2),
+            "section_80c": round(section_80c, 2),
+            "section_80ccd1b": round(section_80ccd1b, 2),
+            "period_start": period_start,
+            "period_end": period_end,
+            "new_regime": new_regime,
+            "old_regime": old_regime,
+            "better_regime": "New" if new_regime["total_tax"] <= old_regime["total_tax"] else "Old",
+            "savings": round(abs(new_regime["total_tax"] - old_regime["total_tax"]), 2),
+        }
+
+    return render_template(
+        "tax.html", active_tab="tax", depositors=depositors,
+        fy_options=list(range(current_fy, current_fy - 6, -1)),
+        fy_start_year=fy_start_year, depositor_id=depositor_id,
+        other_income=other_income, result=result,
+        section_80c_limit=SECTION_80C_LIMIT, section_80ccd1b_limit=SECTION_80CCD1B_LIMIT,
+    )
+
+
 # ---------- PDF / Excel export ----------
 def _pdf_money(value) -> str:
     """fpdf2's core fonts (Helvetica etc.) are latin-1 only and can't render

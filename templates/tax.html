@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Tax — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Income tax estimate</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      A quick estimate from what's tracked here — FD/RD interest for the depositor and
+      financial year below, plus any other income you enter, against both tax regimes.
+      Section 80C and 80CCD(1B) are filled in automatically from PPF/NPS contributions
+      logged on the Retirement tab (Old Regime only, as per current rules). This isn't a
+      substitute for filing software or a CA — it won't know about salary TDS already
+      deducted, other deductions, or capital gains.
+    </p>
+    <form method="GET">
+      <div class="form-group">
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" required {% if not depositors %}disabled{% endif %}>
+          <option value="" disabled {% if not depositor_id %}selected{% endif %}>Select a depositor…</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="fy">Financial year</label>
+        <select id="fy" name="fy">
+          {% for y in fy_options %}
+            <option value="{{ y }}" {% if y == fy_start_year %}selected{% endif %}>FY {{ y }}-{{ (y + 1) % 100 }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="other_income">Other annual income (₹) <span class="muted">(salary, business, etc.)</span></label>
+        <input type="number" step="any" id="other_income" name="other_income" value="{{ '%g'|format(other_income) }}">
+      </div>
+      <button type="submit" class="btn secondary" style="width:100%;" {% if not depositors %}disabled{% endif %}>Estimate</button>
+      {% if not depositors %}
+        <p class="field-hint">Add a depositor first on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab.</p>
+      {% endif %}
+    </form>
+  </div>
+
+  {% if result %}
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 4px;">Income & deductions</h2>
+    <p class="field-hint" style="margin-bottom:0;">{{ result.period_start.isoformat() }} to {{ result.period_end.isoformat() }}</p>
+    <div class="summary-grid" style="margin-top:12px;">
+      <div class="summary-item">
+        <div class="label">FD/RD Interest</div>
+        <div class="value">{{ (result.interest_income)|money }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Gross Income</div>
+        <div class="value">{{ (result.gross_income)|money }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">80C (PPF, up to {{ (section_80c_limit)|money0 }})</div>
+        <div class="value">{{ (result.section_80c)|money }}</div>
+        {% if result.ppf_contributed > section_80c_limit %}
+          <div class="muted" style="font-size:12px;">{{ (result.ppf_contributed)|money }} contributed — capped</div>
+        {% endif %}
+      </div>
+      <div class="summary-item">
+        <div class="label">80CCD(1B) (NPS, up to {{ (section_80ccd1b_limit)|money0 }})</div>
+        <div class="value">{{ (result.section_80ccd1b)|money }}</div>
+        {% if result.nps_contributed > section_80ccd1b_limit %}
+          <div class="muted" style="font-size:12px;">{{ (result.nps_contributed)|money }} contributed — capped</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 4px;">
+      New vs Old Regime
+      <span class="badge active" style="margin-left:8px;">{{ result.better_regime }} Regime saves {{ (result.savings)|money }}</span>
+    </h2>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>New Regime</th>
+          <th>Old Regime</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Standard Deduction</td><td>{{ (result.new_regime.standard_deduction)|money }}</td><td>{{ (result.old_regime.standard_deduction)|money }}</td></tr>
+        <tr><td>Chapter VI-A Deductions</td><td>—</td><td>{{ (result.section_80c + result.section_80ccd1b)|money }}</td></tr>
+        <tr><td><strong>Taxable Income</strong></td><td><strong>{{ (result.new_regime.taxable_income)|money }}</strong></td><td><strong>{{ (result.old_regime.taxable_income)|money }}</strong></td></tr>
+        <tr><td>Tax on Slabs</td><td>{{ (result.new_regime.gross_tax)|money }}</td><td>{{ (result.old_regime.gross_tax)|money }}</td></tr>
+        <tr><td>Section 87A Rebate</td><td>{{ (result.new_regime.rebate)|money }}</td><td>{{ (result.old_regime.rebate)|money }}</td></tr>
+        {% if result.new_regime.marginal_relief or result.old_regime.marginal_relief %}
+        <tr><td>Marginal Relief</td><td>{{ (result.new_regime.marginal_relief)|money }}</td><td>{{ (result.old_regime.marginal_relief)|money }}</td></tr>
+        {% endif %}
+        <tr><td>Health & Education Cess ({{ result.new_regime.cess_percent }}%)</td><td>{{ (result.new_regime.cess)|money }}</td><td>{{ (result.old_regime.cess)|money }}</td></tr>
+        <tr class="tb-total"><td><strong>Total Tax Payable</strong></td><td><strong>{{ (result.new_regime.total_tax)|money }}</strong></td><td><strong>{{ (result.old_regime.total_tax)|money }}</strong></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+
+{% endblock %}
