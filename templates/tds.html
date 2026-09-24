@@ -29,6 +29,9 @@
   </div>
 
   <div class="card">
+    {% if rows and pdf_available %}
+      <a href="{{ url_for('export_tds_pdf', fy=fy_start_year, threshold=threshold) }}" class="btn secondary" style="margin-bottom:16px; display:inline-block;">Export PDF</a>
+    {% endif %}
     {% if rows %}
       <div class="table-scroll sticky-last">
       <table>

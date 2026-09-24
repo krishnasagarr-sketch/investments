@@ -14,6 +14,9 @@
   </div>
 
   <div class="card">
+    {% if rows and pdf_available %}
+      <a href="{{ url_for('export_dicgc_pdf') }}" class="btn secondary" style="margin-bottom:16px; display:inline-block;">Export PDF</a>
+    {% endif %}
     {% if rows %}
       <div class="table-scroll sticky-last">
       <table>

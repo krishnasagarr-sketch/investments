@@ -24,13 +24,18 @@ android {
 
         python {
             pip {
-                // Flask + Werkzeug only — yfinance pulls in pandas/numpy,
-                // which Chaquopy *can* package but at a large size/build-time
-                // cost. The app already treats yfinance as optional
-                // (YFINANCE_AVAILABLE), so it degrades gracefully: FD/RD
-                // tracking, notifications, everything works; only live
-                // stock/MF price lookups in Investments are unavailable.
+                // Flask + Werkzeug, plus openpyxl for Excel export (pure
+                // Python, no native build cost). yfinance and fpdf2 are left
+                // out — yfinance pulls in pandas/numpy, a large size/build-time
+                // cost, and fpdf2 pulls in Pillow, which has no iOS wheels
+                // (see ios/pyproject.toml) so is kept off here too for
+                // desktop/mobile parity. The app already treats both as
+                // optional (YFINANCE_AVAILABLE, PDF_AVAILABLE), so it degrades
+                // gracefully: FD/RD tracking, notifications, Excel export,
+                // everything else works; only live stock/MF prices and PDF
+                // export are desktop-only.
                 install 'flask>=3.0.0'
+                install 'openpyxl>=3.1.0'
             }
         }
     }

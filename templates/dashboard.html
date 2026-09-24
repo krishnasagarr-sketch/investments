@@ -2,6 +2,9 @@
 {% block title %}Dashboard — Fixed Deposit Manager{% endblock %}
 
 {% block header_action %}
+  {% if excel_available %}
+    <a href="{{ url_for('export_deposits_xlsx') }}" class="btn secondary" style="margin-right:8px;">Export Excel</a>
+  {% endif %}
   <a href="{{ url_for('add_deposit') }}" class="btn">+ Add Deposit</a>
 {% endblock %}
 

@@ -1,3 +1,4 @@
+import io
 import math
 import os
 import secrets
@@ -20,6 +21,23 @@ try:
     YFINANCE_AVAILABLE = True
 except ImportError:
     YFINANCE_AVAILABLE = False
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    EXCEL_AVAILABLE = True
+except ImportError:
+    EXCEL_AVAILABLE = False
+
+# fpdf2 pulls in Pillow (a compiled dependency with no iOS wheels, and
+# Briefcase can't build one from source there either — see ios/pyproject.toml)
+# so unlike openpyxl, this is desktop-only: not installed on the Android/iOS
+# builds, same as yfinance above.
+try:
+    from fpdf import FPDF
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 
 IS_FROZEN = getattr(sys, "frozen", False)
 
@@ -1283,6 +1301,7 @@ def dashboard():
         total_annualised_return=total_annualised_return,
         active_tab="dashboard",
         wide_page=True,
+        excel_available=EXCEL_AVAILABLE,
     )
 
 
@@ -1693,6 +1712,92 @@ def run_maturity_check(db) -> str:
     return result
 
 
+# ---------- PDF / Excel export ----------
+def _pdf_money(value) -> str:
+    """fpdf2's core fonts (Helvetica etc.) are latin-1 only and can't render
+    '₹' (U+20B9) -- format_rupees() is for HTML/Jinja only. PDFs use this
+    ASCII-safe 'Rs.' form instead."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    negative = value < 0
+    text = f"{abs(value):.2f}"
+    int_part, _, frac_part = text.partition(".")
+    return ("-Rs. " if negative else "Rs. ") + _indian_group(int_part) + "." + frac_part
+
+
+def _pdf_report(title: str, subtitle: str, headers: list, col_widths: list,
+                 rows: list, totals_row: list = None) -> bytes:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, title, ln=1)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, subtitle, ln=1)
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_fill_color(230, 230, 230)
+    for w, h in zip(col_widths, headers):
+        pdf.cell(w, 8, h, border=1, fill=True)
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "", 10)
+    for row in rows:
+        for w, cell in zip(col_widths, row):
+            pdf.cell(w, 7, str(cell), border=1)
+        pdf.ln()
+
+    if totals_row:
+        pdf.set_font("Helvetica", "B", 10)
+        for w, cell in zip(col_widths, totals_row):
+            pdf.cell(w, 8, str(cell), border=1)
+        pdf.ln()
+
+    return bytes(pdf.output())
+
+
+@app.route("/export/deposits.xlsx")
+def export_deposits_xlsx():
+    if not EXCEL_AVAILABLE:
+        return "Excel export isn't available on this build.", 501
+    db = get_db()
+    deposits = db.execute(DEPOSITS_WITH_REFS + " ORDER BY deposits.start_date DESC").fetchall()
+    rows = [summarise_deposit(d) for d in deposits]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Deposits"
+    headers = ["Depositor", "Bank", "Type", "Principal", "Rate %", "Tenure",
+               "Start Date", "Maturity Date", "Current Value", "Interest Earned", "Ann. Return %"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for r in rows:
+        ws.append([
+            r["holder_name"], r["bank_name"], r["deposit_type_label"], r["principal"],
+            r["interest_rate"], r["tenure_label"], r["start_date"], r["maturity_date"],
+            round(r["current_value"], 2), round(r["accrued_interest"], 2),
+            round(r["annualised_return"], 2) if r["annualised_return"] is not None else None,
+        ])
+
+    for i, header in enumerate(headers, start=1):
+        col_letter = ws.cell(row=1, column=i).column_letter
+        max_len = max(
+            [len(str(header))] + [len(str(ws.cell(row=r, column=i).value or "")) for r in range(2, ws.max_row + 1)]
+        )
+        ws.column_dimensions[col_letter].width = min(max_len + 2, 40)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf, as_attachment=True, download_name="deposits.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 TDS_RATE_PCT = 10  # with PAN on file; 20% otherwise -- shown as a caveat in the UI
 DICGC_INSURED_LIMIT = 500000  # per depositor, per bank -- covers principal + accrued interest
 
@@ -1755,12 +1860,11 @@ def tds_page():
         rows=rows, tds_rate_pct=TDS_RATE_PCT,
         total_interest=round(sum(r["interest"] for r in rows), 2),
         total_estimated_tds=round(sum(r["estimated_tds"] for r in rows), 2),
+        pdf_available=PDF_AVAILABLE,
     )
 
 
-@app.route("/dicgc")
-def dicgc_page():
-    db = get_db()
+def compute_dicgc_rows(db):
     groups = {}  # (depositor_id, bank_ref_id) -> {names, total}
     for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
         s = summarise_deposit(d)
@@ -1787,10 +1891,81 @@ def dicgc_page():
             "over_limit": uninsured > 0,
         })
     rows.sort(key=lambda r: r["uninsured"], reverse=True)
+    return rows
 
+
+@app.route("/dicgc")
+def dicgc_page():
+    db = get_db()
+    rows = compute_dicgc_rows(db)
     return render_template(
         "dicgc.html", active_tab="dicgc", insured_limit=DICGC_INSURED_LIMIT,
         rows=rows, total_uninsured=round(sum(r["uninsured"] for r in rows), 2),
+        pdf_available=PDF_AVAILABLE,
+    )
+
+
+@app.route("/export/tds.pdf")
+def export_tds_pdf():
+    if not PDF_AVAILABLE:
+        return "PDF export isn't available on this build.", 501
+    db = get_db()
+    current_fy = current_fy_start_year()
+    try:
+        fy_start_year = int(request.args.get("fy", current_fy))
+    except (TypeError, ValueError):
+        fy_start_year = current_fy
+    try:
+        threshold = float(request.args.get("threshold", 40000))
+    except (TypeError, ValueError):
+        threshold = 40000.0
+
+    rows, period_start, period_end = compute_tds_rows(db, fy_start_year, threshold)
+    table = [
+        [r["depositor_name"], r["bank_name"], _pdf_money(r["interest"]),
+         "above" if r["over_threshold"] else "below", _pdf_money(r["estimated_tds"])]
+        for r in rows
+    ]
+    totals = ["Total", "", _pdf_money(sum(r["interest"] for r in rows)), "",
+              _pdf_money(sum(r["estimated_tds"] for r in rows))]
+
+    pdf_bytes = _pdf_report(
+        "TDS on FD Interest",
+        f"FY {fy_start_year}-{(fy_start_year + 1) % 100} ({period_start.isoformat()} to {period_end.isoformat()}) "
+        f"-- threshold {_pdf_money(threshold)}, rate {TDS_RATE_PCT}%",
+        ["Depositor", "Bank", "Interest", "Status", "Est. TDS"],
+        [50, 45, 35, 25, 35],
+        table, totals,
+    )
+    return send_file(
+        io.BytesIO(pdf_bytes), as_attachment=True,
+        download_name=f"tds-fy{fy_start_year}-{fy_start_year + 1}.pdf", mimetype="application/pdf",
+    )
+
+
+@app.route("/export/dicgc.pdf")
+def export_dicgc_pdf():
+    if not PDF_AVAILABLE:
+        return "PDF export isn't available on this build.", 501
+    db = get_db()
+    rows = compute_dicgc_rows(db)
+    table = [
+        [r["depositor_name"], r["bank_name"], _pdf_money(r["total_deposits"]),
+         _pdf_money(r["insured"]), _pdf_money(r["uninsured"]) if r["uninsured"] else "-"]
+        for r in rows
+    ]
+    totals = ["Total uninsured", "", "", "", _pdf_money(sum(r["uninsured"] for r in rows))]
+
+    pdf_bytes = _pdf_report(
+        "DICGC Insurance Coverage",
+        f"Insured limit: {_pdf_money(DICGC_INSURED_LIMIT)} per depositor, per bank",
+        ["Depositor", "Bank", "Total Deposits", "Insured", "Uninsured"],
+        [45, 45, 40, 35, 35],
+        table, totals,
+    )
+    return send_file(
+        io.BytesIO(pdf_bytes), as_attachment=True,
+        download_name="dicgc-coverage.pdf", mimetype="application/pdf",
     )
 
 
