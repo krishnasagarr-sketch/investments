@@ -110,6 +110,12 @@
         <input type="date" id="start_date" name="start_date" value="{{ form_data.start_date }}" required>
       </div>
 
+      <div class="form-group">
+        <label for="deposit_number">Deposit / Account Number <span class="muted">(optional)</span></label>
+        <input type="text" id="deposit_number" name="deposit_number" placeholder="e.g. the FD number on your receipt"
+               value="{{ form_data.deposit_number }}">
+      </div>
+
       <button type="submit" class="btn" style="width:100%;">{{ "Save Changes" if editing else "Add Deposit" }}</button>
     </form>
   </div>

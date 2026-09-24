@@ -74,6 +74,9 @@
               {% if r.bank_code and r.bank_code != r.bank_name %}
                 <div class="muted" style="font-size:12px;">ID: {{ r.bank_code }}</div>
               {% endif %}
+              {% if r.deposit_number %}
+                <div class="muted" style="font-size:12px;">FD No: {{ r.deposit_number }}</div>
+              {% endif %}
             </td>
             <td>
               <span class="badge type type-{{ r.deposit_type }}">{{ r.deposit_type_label }}</span>
