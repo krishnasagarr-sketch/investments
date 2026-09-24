@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Tags — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:460px;">
+    <h2 style="font-size:16px; margin:0 0 16px;">Add a tag</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      A purpose or allocation label — Emergency Fund, Tax-saving, Retirement, Kids'
+      Education — attachable to any deposit, metal holding, investment or PPF/EPF/NPS
+      account, so you can see how your money is actually allocated across purposes,
+      not just across banks or asset types.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      <div class="form-group">
+        <label for="name">Tag name</label>
+        <input type="text" id="name" name="name" placeholder="e.g. Emergency Fund" value="{{ name }}" required>
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Add Tag</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Allocation by tag</h2>
+    {% if allocation %}
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Tag</th><th>Current Value</th><th>% of Portfolio</th></tr></thead>
+        <tbody>
+          {% for r in allocation %}
+          <tr>
+            <td>{{ r.name }}</td>
+            <td>{{ (r.value)|money }}</td>
+            <td>{{ "%.1f"|format(r.pct) }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="tb-total"><td><strong>Total</strong></td><td><strong>{{ (grand_total)|money }}</strong></td><td>100.0%</td></tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>Nothing to show yet — add a deposit, metal, investment or retirement account first.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Tags</h2>
+    {% if tags %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead><tr><th>Name</th><th>Deposits</th><th>Metals</th><th>Investments</th><th>Retirement</th><th></th></tr></thead>
+        <tbody>
+          {% for t in tags %}
+          <tr>
+            <td><strong>{{ t.name }}</strong></td>
+            <td>{{ t.deposit_count }}</td>
+            <td>{{ t.metal_count }}</td>
+            <td>{{ t.investment_count }}</td>
+            <td>{{ t.retirement_count }}</td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('delete_tag', tag_id=t.id) }}">
+                <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No tags yet. Add one above.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}

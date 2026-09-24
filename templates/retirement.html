@@ -48,6 +48,15 @@
                value="{{ form_data.account_number }}">
       </div>
       <div class="form-group">
+        <label for="tag_id">Tag <span class="muted">(optional)</span></label>
+        <select id="tag_id" name="tag_id">
+          <option value="" {% if not form_data.tag_id %}selected{% endif %}>— untagged —</option>
+          {% for t in tags %}
+            <option value="{{ t.id }}" {% if form_data.tag_id == t.id|string %}selected{% endif %}>{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
         <label for="opened_date">Opened date</label>
         <input type="date" id="opened_date" name="opened_date" value="{{ form_data.opened_date }}" required>
       </div>

@@ -52,6 +52,17 @@
       </div>
 
       <div class="form-group">
+        <label for="tag_id">Tag <span class="muted">(optional)</span></label>
+        <select id="tag_id" name="tag_id">
+          <option value="" {% if not form_data.tag_id %}selected{% endif %}>— untagged —</option>
+          {% for t in tags %}
+            <option value="{{ t.id }}" {% if form_data.tag_id == t.id|string %}selected{% endif %}>{{ t.name }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint">Manage tags on the <a href="{{ url_for('tags_page') }}">Tags</a> tab.</p>
+      </div>
+
+      <div class="form-group">
         <label for="deposit_type">Deposit Type</label>
         <select id="deposit_type" name="deposit_type">
           {% for key, label in deposit_types.items() %}

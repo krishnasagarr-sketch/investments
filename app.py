@@ -439,6 +439,20 @@ def init_db():
         )
     """)
 
+    # Portfolio tags -- a purpose/allocation label (Emergency Fund, Tax-saving,
+    # Retirement, ...) attachable to any holding, mirroring ledger_app's
+    # Account Groups: one tag per holding, not many-to-many, kept simple on
+    # purpose since a single primary purpose covers the common case.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        )
+    """)
+    for table in ("deposits", "metals", "investments", "retirement_accounts"):
+        if "tag_id" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN tag_id INTEGER REFERENCES portfolio_tags(id)")
+
     conn.commit()
     conn.close()
 
@@ -782,6 +796,87 @@ def list_banks(db):
            LEFT JOIN deposits dep ON dep.bank_ref_id = b.id
            GROUP BY b.id ORDER BY b.name COLLATE NOCASE"""
     ).fetchall()
+
+
+def list_tags(db):
+    return db.execute(
+        """SELECT t.id, t.name,
+                  (SELECT COUNT(*) FROM deposits WHERE tag_id = t.id) AS deposit_count,
+                  (SELECT COUNT(*) FROM metals WHERE tag_id = t.id) AS metal_count,
+                  (SELECT COUNT(*) FROM investments WHERE tag_id = t.id) AS investment_count,
+                  (SELECT COUNT(*) FROM retirement_accounts WHERE tag_id = t.id) AS retirement_count
+           FROM portfolio_tags t
+           ORDER BY t.name COLLATE NOCASE"""
+    ).fetchall()
+
+
+def tag_allocation_summary(db):
+    """Total current value per portfolio tag, across all four holding types
+    (deposits, metals, investments, retirement accounts) plus an "Untagged"
+    bucket -- the point of a single cross-cutting tag rather than one
+    grouping concept per tab."""
+    totals = {}  # tag_id or None -> {"name": ..., "value": 0.0}
+    tag_names = {t["id"]: t["name"] for t in list_tags(db)}
+
+    def add(tag_id, amount):
+        key = tag_id
+        if key not in totals:
+            totals[key] = {"name": tag_names.get(tag_id, "Untagged"), "value": 0.0}
+        totals[key]["value"] += amount
+
+    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+        add(d["tag_id"], summarise_deposit(d)["current_value"])
+    for m in list_metals(db):
+        add(m["tag_id"], m["value"])
+    for iv in list_investments(db):
+        if iv["value"] is not None:
+            add(iv["tag_id"], iv["value"])
+    for a in db.execute("SELECT tag_id, current_balance FROM retirement_accounts").fetchall():
+        add(a["tag_id"], a["current_balance"])
+
+    rows = sorted(totals.values(), key=lambda r: r["value"], reverse=True)
+    grand_total = sum(r["value"] for r in rows)
+    for r in rows:
+        r["pct"] = (r["value"] / grand_total * 100) if grand_total else 0.0
+    return rows, grand_total
+
+
+@app.route("/tags", methods=["GET", "POST"])
+def tags_page():
+    db = get_db()
+    error = None
+    name = ""
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        try:
+            if not name:
+                raise ValueError("Tag name is required.")
+            existing = db.execute("SELECT id FROM portfolio_tags WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+            if existing:
+                raise ValueError(f"A tag named '{name}' already exists.")
+            db.execute("INSERT INTO portfolio_tags (name) VALUES (?)", (name,))
+            db.commit()
+            return redirect(url_for("tags_page"))
+        except ValueError as e:
+            error = str(e)
+
+    allocation, grand_total = tag_allocation_summary(db)
+    return render_template(
+        "tags.html", active_tab="tags", tags=list_tags(db),
+        allocation=allocation, grand_total=grand_total,
+        error=error, name=name,
+    )
+
+
+@app.route("/tags/<int:tag_id>/delete", methods=["POST"])
+def delete_tag(tag_id):
+    db = get_db()
+    for table in ("deposits", "metals", "investments", "retirement_accounts"):
+        db.execute(f"UPDATE {table} SET tag_id = NULL WHERE tag_id = ?", (tag_id,))
+    db.execute("DELETE FROM portfolio_tags WHERE id = ?", (tag_id,))
+    db.commit()
+    return redirect(url_for("tags_page"))
 
 
 DEPOSITS_WITH_REFS = """
@@ -1398,6 +1493,7 @@ def parse_deposit_form(form_data, db) -> dict:
         "tenure_days": tenure_days,
         "tenure_unit": tenure_unit,
         "compounding_frequency": compounding_frequency,
+        "tag_id": form_data.get("tag_id") or None,
         "start_date": form_data["start_date"],
     }
 
@@ -1414,6 +1510,7 @@ def _row_to_form_data(row) -> dict:
         "tenure_value": str(row["tenure_days"] if unit == "days" else row["tenure_months"]),
         "tenure_unit": unit,
         "compounding_frequency": str(row["compounding_frequency"]),
+        "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
         "start_date": row["start_date"],
     }
 
@@ -1426,7 +1523,7 @@ def _trim_number(x):
 BLANK_DEPOSIT_FORM = {
     "depositor_id": "", "bank_ref_id": "", "deposit_type": "cumulative",
     "principal": "", "interest_rate": "", "tenure_value": "",
-    "tenure_unit": "months", "compounding_frequency": "4",
+    "tenure_unit": "months", "compounding_frequency": "4", "tag_id": "",
     "start_date": None,  # filled with today's date at request time
 }
 
@@ -1442,6 +1539,7 @@ def _render_deposit_form(db, **kwargs):
         banks=db.execute(
             "SELECT id, bank_id, name FROM banks ORDER BY name COLLATE NOCASE"
         ).fetchall(),
+        tags=list_tags(db),
         active_tab="dashboard",
         **kwargs,
     )
@@ -1463,10 +1561,10 @@ def add_deposit():
                 """INSERT INTO deposits
                    (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                     principal, interest_rate, tenure_months, tenure_days, tenure_unit,
-                    compounding_frequency, start_date)
+                    compounding_frequency, tag_id, start_date)
                    VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                     :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
-                    :compounding_frequency, :start_date)""",
+                    :compounding_frequency, :tag_id, :start_date)""",
                 cols,
             )
             db.commit()
@@ -1637,7 +1735,7 @@ def edit_deposit(deposit_id):
                      principal = :principal, interest_rate = :interest_rate,
                      tenure_months = :tenure_months, tenure_days = :tenure_days,
                      tenure_unit = :tenure_unit,
-                     compounding_frequency = :compounding_frequency, start_date = :start_date
+                     compounding_frequency = :compounding_frequency, tag_id = :tag_id, start_date = :start_date
                    WHERE id = :id""",
                 cols,
             )
@@ -2412,6 +2510,7 @@ def retirement_accounts_with_totals(db):
             "account_type": a["account_type"],
             "institution": a["institution"],
             "account_number": a["account_number"],
+            "tag_id": a["tag_id"],
             "opened_date": a["opened_date"],
             "current_balance": a["current_balance"],
             "balance_as_of": a["balance_as_of"],
@@ -2429,13 +2528,15 @@ def retirement_accounts_with_totals(db):
 def retirement_page():
     db = get_db()
     error = None
-    form_data = {"depositor_id": "", "account_type": "PPF", "institution": "", "account_number": "", "opened_date": date.today().isoformat()}
+    form_data = {"depositor_id": "", "account_type": "PPF", "institution": "", "account_number": "",
+                 "tag_id": "", "opened_date": date.today().isoformat()}
 
     if request.method == "POST":
         form_data["depositor_id"] = request.form.get("depositor_id", "")
         form_data["account_type"] = request.form.get("account_type", "PPF")
         form_data["institution"] = request.form.get("institution", "").strip()
         form_data["account_number"] = request.form.get("account_number", "").strip()
+        form_data["tag_id"] = request.form.get("tag_id", "")
         form_data["opened_date"] = request.form.get("opened_date", "").strip()
         try:
             if not form_data["depositor_id"]:
@@ -2446,10 +2547,10 @@ def retirement_page():
                 raise ValueError("Opened date is required.")
             db.execute(
                 """INSERT INTO retirement_accounts
-                   (depositor_id, account_type, institution, account_number, opened_date)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (depositor_id, account_type, institution, account_number, tag_id, opened_date)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (form_data["depositor_id"], form_data["account_type"], form_data["institution"],
-                 form_data["account_number"], form_data["opened_date"]),
+                 form_data["account_number"], form_data["tag_id"] or None, form_data["opened_date"]),
             )
             db.commit()
             return redirect(url_for("retirement_page"))
@@ -2459,7 +2560,7 @@ def retirement_page():
     return render_template(
         "retirement.html", active_tab="retirement",
         depositors=list_depositors(db), accounts=retirement_accounts_with_totals(db),
-        error=error, form_data=form_data,
+        tags=list_tags(db), error=error, form_data=form_data,
     )
 
 
@@ -2979,6 +3080,7 @@ def list_metals(db):
             "metal_label": METAL_TYPES.get(m["metal"], m["metal"].title()),
             "depositor_id": m["depositor_id"],
             "depositor_name": m["depositor_name"],
+            "tag_id": m["tag_id"],
             "description": m["description"],
             "grams": m["grams"],
             "purchase_price": m["purchase_price"],
@@ -3026,13 +3128,14 @@ def parse_metal_form(form_data, db) -> dict:
         "description": form_data["description"].strip(),
         "grams": grams,
         "purchase_price": purchase_price,
+        "tag_id": form_data.get("tag_id") or None,
         "purchase_date": form_data["purchase_date"] or str(date.today()),
     }
 
 
 BLANK_METAL_FORM = {
     "metal": "gold_24k", "depositor_id": "", "description": "", "grams": "",
-    "purchase_price": "", "purchase_date": None,
+    "purchase_price": "", "tag_id": "", "purchase_date": None,
 }
 
 
@@ -3043,6 +3146,7 @@ def _metal_to_form_data(row) -> dict:
         "description": row["description"],
         "grams": _trim_number(row["grams"]),
         "purchase_price": _trim_number(row["purchase_price"]),
+        "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
         "purchase_date": row["purchase_date"],
     }
 
@@ -3058,6 +3162,7 @@ def _render_metals(db, **kwargs):
         depositors=db.execute(
             "SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE"
         ).fetchall(),
+        tags=list_tags(db),
         prices_missing=sorted({m["metal"] for m in metals if not m["price_is_market"]}),
         total_cost=sum(m["cost"] for m in metals),
         total_value=sum(m["value"] for m in metals),
@@ -3105,8 +3210,8 @@ def metals_page():
             cols["current_price"] = market["price"] if market else cols["purchase_price"]
             db.execute(
                 """INSERT INTO metals
-                   (metal, depositor_id, description, grams, purchase_price, current_price, purchase_date)
-                   VALUES (:metal, :depositor_id, :description, :grams, :purchase_price, :current_price, :purchase_date)""",
+                   (metal, depositor_id, description, grams, purchase_price, current_price, tag_id, purchase_date)
+                   VALUES (:metal, :depositor_id, :description, :grams, :purchase_price, :current_price, :tag_id, :purchase_date)""",
                 cols,
             )
             db.commit()
@@ -3185,7 +3290,7 @@ def edit_metal(metal_id):
             db.execute(
                 """UPDATE metals SET
                      metal = :metal, depositor_id = :depositor_id, description = :description,
-                     grams = :grams, purchase_price = :purchase_price, purchase_date = :purchase_date
+                     grams = :grams, purchase_price = :purchase_price, tag_id = :tag_id, purchase_date = :purchase_date
                    WHERE id = :id""",
                 cols,
             )
@@ -3456,6 +3561,7 @@ def list_investments(db):
             "display_name": get_ticker_display_name(h["ticker"]),
             "depositor_id": h["depositor_id"],
             "depositor_name": h["depositor_name"],
+            "tag_id": h["tag_id"],
             "shares": h["shares"],
             "purchase_price": h["purchase_price"],
             "purchase_date": h["purchase_date"],
@@ -3502,12 +3608,13 @@ def parse_investment_form(form_data, db) -> dict:
         "depositor_id": depositor_id,
         "shares": shares,
         "purchase_price": purchase_price,
+        "tag_id": form_data.get("tag_id") or None,
         "purchase_date": form_data["purchase_date"] or str(date.today()),
     }
 
 
 BLANK_INVESTMENT_FORM = {
-    "ticker": "", "depositor_id": "", "shares": "", "purchase_price": "", "purchase_date": None,
+    "ticker": "", "depositor_id": "", "shares": "", "purchase_price": "", "tag_id": "", "purchase_date": None,
 }
 
 
@@ -3517,6 +3624,7 @@ def _investment_to_form_data(row) -> dict:
         "depositor_id": str(row["depositor_id"] or ""),
         "shares": _trim_number(row["shares"]),
         "purchase_price": _trim_number(row["purchase_price"]),
+        "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
         "purchase_date": row["purchase_date"],
     }
 
@@ -3534,6 +3642,7 @@ def _render_investments(db, **kwargs):
         depositors=db.execute(
             "SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE"
         ).fetchall(),
+        tags=list_tags(db),
         total_cost=sum(r["cost"] for r in priced),
         total_value=sum(r["value"] for r in priced),
         total_gain=sum(r["gain"] for r in priced),
@@ -3560,8 +3669,8 @@ def investments_page():
         try:
             cols = parse_investment_form(form_data, db)
             db.execute(
-                """INSERT INTO investments (ticker, depositor_id, shares, purchase_price, purchase_date)
-                   VALUES (:ticker, :depositor_id, :shares, :purchase_price, :purchase_date)""",
+                """INSERT INTO investments (ticker, depositor_id, shares, purchase_price, tag_id, purchase_date)
+                   VALUES (:ticker, :depositor_id, :shares, :purchase_price, :tag_id, :purchase_date)""",
                 cols,
             )
             db.commit()
@@ -3591,7 +3700,7 @@ def edit_investment(investment_id):
             db.execute(
                 """UPDATE investments SET
                      ticker = :ticker, depositor_id = :depositor_id, shares = :shares,
-                     purchase_price = :purchase_price, purchase_date = :purchase_date
+                     purchase_price = :purchase_price, tag_id = :tag_id, purchase_date = :purchase_date
                    WHERE id = :id""",
                 cols,
             )
