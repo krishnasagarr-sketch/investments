@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Income &amp; Expenditure — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Income &amp; Expenditure Statement</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Everything earned and spent in the year, from what's tracked here: deposit interest
+      (on an accrual basis — what the deposits earned in the year, whether or not it was
+      paid out), the <a href="{{ url_for('other_income_page') }}">Other Income</a> log, and
+      <a href="{{ url_for('expenses_page') }}">Expenses</a>. The assessment year is the year
+      after the financial year the income was earned in.
+    </p>
+    <form method="GET">
+      <div class="form-group">
+        <label for="fy">Year</label>
+        <select id="fy" name="fy" onchange="this.form.submit()">
+          {% for o in fy_options %}
+            <option value="{{ o.year }}" {% if o.year == statement.fy_start_year %}selected{% endif %}>{{ o.fy }} ({{ o.ay }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" onchange="this.form.submit()">
+          <option value="" {% if not depositor_id %}selected{% endif %}>All depositors</option>
+          {% for dep in depositors %}
+            <option value="{{ dep.id }}" {% if depositor_id == dep.id|string %}selected{% endif %}>{{ dep.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn secondary" style="width:100%;">Show</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+      <div>
+        <h2 style="font-size:16px; margin:0;">{{ statement.fy_label }} <span class="muted" style="font-weight:400;">({{ statement.ay_label }})</span></h2>
+        <p class="field-hint" style="margin:4px 0 0;">
+          {{ statement.period_start.isoformat() }} to {{ statement.period_end.isoformat() }}
+          &middot; {{ depositor_name or "All depositors" }}
+          {% if statement.in_progress %}&middot; year still in progress — figures are to date{% endif %}
+        </p>
+      </div>
+      <div style="display:flex; gap:8px;">
+        {% if pdf_available %}
+          <a href="{{ url_for('export_statement_pdf', fy=statement.fy_start_year, depositor_id=depositor_id) }}" class="btn secondary">Export PDF</a>
+        {% endif %}
+        {% if excel_available %}
+          <a href="{{ url_for('export_statement_xlsx', fy=statement.fy_start_year, depositor_id=depositor_id) }}" class="btn secondary">Export Excel</a>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-item">
+        <div class="label">Total Income</div>
+        <div class="value">{{ (statement.total_income)|money }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Total Expenditure</div>
+        <div class="value">{{ (statement.total_expenditure)|money }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">{{ "Surplus" if statement.surplus >= 0 else "Deficit" }}</div>
+        <div class="value {{ 'positive' if statement.surplus >= 0 else 'negative' }}">{{ (statement.surplus|abs)|money }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Income</h2>
+    {% if statement.income_lines %}
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Particulars</th><th>Amount</th></tr></thead>
+        <tbody>
+          {% for l in statement.income_lines %}
+          <tr>
+            <td>{{ l.label }}</td>
+            <td>{{ (l.amount)|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="tb-total"><td><strong>Total income</strong></td><td><strong>{{ (statement.total_income)|money }}</strong></td></tr>
+          <tr><td class="muted">of which taxable</td><td class="muted">{{ (statement.taxable_income)|money }}</td></tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No income recorded for this year.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Expenditure</h2>
+    {% if statement.expense_lines %}
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Particulars</th><th>Amount</th></tr></thead>
+        <tbody>
+          {% for l in statement.expense_lines %}
+          <tr>
+            <td>{{ l.label }}</td>
+            <td>{{ (l.amount)|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="tb-total"><td><strong>Total expenditure</strong></td><td><strong>{{ (statement.total_expenditure)|money }}</strong></td></tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No expenses recorded for this year.</p></div>
+    {% endif %}
+  </div>
+
+  {% if statement.memo_lines or statement.fcnr_interest %}
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 4px;">For information</h2>
+    <p class="field-hint" style="margin-bottom:14px;">
+      Not part of the income or expenditure above — money that moved, or interest in a
+      foreign currency this app doesn't convert to rupees.
+    </p>
+    <div class="table-scroll">
+    <table>
+      <tbody>
+        {% for l in statement.memo_lines %}
+        <tr><td>{{ l.label }}</td><td>{{ (l.amount)|money }}</td></tr>
+        {% endfor %}
+        {% for f in statement.fcnr_interest %}
+        <tr><td>FCNR interest ({{ f.currency }}, tax-exempt)</td><td>{{ (f.amount)|money(f.currency) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+
+{% endblock %}

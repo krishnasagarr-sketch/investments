@@ -2556,6 +2556,236 @@ def delete_gift(gift_id):
     return redirect(url_for("gifts_page"))
 
 
+# ---------- Income & Expenditure statement ----------
+def fy_label(fy_start_year: int) -> str:
+    return f"FY {fy_start_year}-{(fy_start_year + 1) % 100:02d}"
+
+
+def ay_label(fy_start_year: int) -> str:
+    """The assessment year is the year *after* the financial year the income
+    was earned in -- FY 2025-26 is assessed as AY 2026-27."""
+    return f"AY {fy_start_year + 1}-{(fy_start_year + 2) % 100:02d}"
+
+
+def compute_income_expenditure(db, fy_start_year: int, depositor_id=None) -> dict:
+    """Income and expenditure for one financial year, optionally for a single
+    depositor. Interest is on an accrual basis (what the deposits earned
+    within the year, whether or not it was paid out), matching how the TDS
+    and Tax tabs count it. Uses the holder (depositor_id), not the "owned
+    by" field, for the same reason those tabs do."""
+    period_start, full_end = fy_bounds(fy_start_year)
+    today = date.today()
+    period_end = min(full_end, today)
+    ps, pe = period_start.isoformat(), period_end.isoformat()
+
+    query = DEPOSITS_WITH_REFS
+    params = []
+    if depositor_id:
+        query += " WHERE deposits.depositor_id = ?"
+        params.append(depositor_id)
+    interest = {"Resident": 0.0, "NRO": 0.0, "NRE": 0.0}
+    fcnr_by_currency = {}
+    for d in db.execute(query, params).fetchall():
+        amount = deposit_interest_in_period(d, period_start, period_end)
+        if amount <= 0:
+            continue
+        if d["currency"] != "INR":
+            fcnr_by_currency[d["currency"]] = fcnr_by_currency.get(d["currency"], 0.0) + amount
+        else:
+            interest[d["account_category"]] = interest.get(d["account_category"], 0.0) + amount
+
+    def grouped(table, date_col, amount_filter_col):
+        q = f"SELECT category, COALESCE(SUM(amount), 0) AS total FROM {table} WHERE {date_col} BETWEEN ? AND ?"
+        p = [ps, pe]
+        if depositor_id:
+            q += f" AND {amount_filter_col} = ?"
+            p.append(depositor_id)
+        q += " GROUP BY category"
+        return {r["category"]: r["total"] for r in db.execute(q, p).fetchall()}
+
+    other_income = grouped("other_income", "income_date", "depositor_id")
+    expenses = grouped("expenses", "expense_date", "depositor_id")
+
+    income_lines = []
+    if interest["Resident"] > 0:
+        income_lines.append({"label": "Interest on deposits", "amount": interest["Resident"], "taxable": True})
+    if interest["NRO"] > 0:
+        income_lines.append({"label": "Interest on NRO deposits", "amount": interest["NRO"], "taxable": True})
+    if interest["NRE"] > 0:
+        income_lines.append({"label": "Interest on NRE deposits (tax-exempt)", "amount": interest["NRE"], "taxable": False})
+    for cat in OTHER_INCOME_CATEGORIES:
+        if other_income.get(cat, 0) > 0:
+            income_lines.append({"label": cat, "amount": other_income[cat], "taxable": True})
+    total_income = sum(l["amount"] for l in income_lines)
+    taxable_income = sum(l["amount"] for l in income_lines if l["taxable"])
+
+    expense_lines = [
+        {"label": cat, "amount": expenses[cat]} for cat in EXPENSE_CATEGORIES if expenses.get(cat, 0) > 0
+    ]
+    total_expenditure = sum(l["amount"] for l in expense_lines)
+
+    # Things that move money but aren't income or expenditure, shown for
+    # context rather than folded into the surplus.
+    rc_query = """SELECT ra.account_type, COALESCE(SUM(rc.amount), 0) AS total
+                  FROM retirement_contributions rc JOIN retirement_accounts ra ON ra.id = rc.account_id
+                  WHERE rc.contribution_date BETWEEN ? AND ?"""
+    rc_params = [ps, pe]
+    if depositor_id:
+        rc_query += " AND ra.depositor_id = ?"
+        rc_params.append(depositor_id)
+    rc_query += " GROUP BY ra.account_type"
+    memo_lines = [
+        {"label": f"{r['account_type']} contributions (savings)", "amount": r["total"]}
+        for r in db.execute(rc_query, rc_params).fetchall() if r["total"] > 0
+    ]
+    if depositor_id:
+        given = db.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS t FROM family_gifts WHERE gift_date BETWEEN ? AND ? AND from_depositor_id = ?",
+            (ps, pe, depositor_id)).fetchone()["t"]
+        received = db.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS t FROM family_gifts WHERE gift_date BETWEEN ? AND ? AND to_depositor_id = ?",
+            (ps, pe, depositor_id)).fetchone()["t"]
+        if given > 0:
+            memo_lines.append({"label": "Gifts given to family", "amount": given})
+        if received > 0:
+            memo_lines.append({"label": "Gifts received from family", "amount": received})
+    else:
+        exchanged = db.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS t FROM family_gifts WHERE gift_date BETWEEN ? AND ?",
+            (ps, pe)).fetchone()["t"]
+        if exchanged > 0:
+            memo_lines.append({"label": "Gifts exchanged within the family", "amount": exchanged})
+
+    return {
+        "fy_start_year": fy_start_year,
+        "fy_label": fy_label(fy_start_year),
+        "ay_label": ay_label(fy_start_year),
+        "period_start": period_start,
+        "period_end": period_end,
+        "in_progress": full_end > today,
+        "income_lines": [{**l, "amount": round(l["amount"], 2)} for l in income_lines],
+        "total_income": round(total_income, 2),
+        "taxable_income": round(taxable_income, 2),
+        "expense_lines": [{**l, "amount": round(l["amount"], 2)} for l in expense_lines],
+        "total_expenditure": round(total_expenditure, 2),
+        "surplus": round(total_income - total_expenditure, 2),
+        "fcnr_interest": [{"currency": c, "amount": round(a, 2)} for c, a in sorted(fcnr_by_currency.items())],
+        "memo_lines": [{**l, "amount": round(l["amount"], 2)} for l in memo_lines],
+    }
+
+
+def _statement_request_args(db):
+    """Shared by the page and its exports: (fy_start_year, depositor row or None)."""
+    current_fy = current_fy_start_year()
+    try:
+        fy_start_year = int(request.args.get("fy", current_fy))
+    except (TypeError, ValueError):
+        fy_start_year = current_fy
+    depositor = None
+    raw = request.args.get("depositor_id", "")
+    if raw:
+        depositor = db.execute("SELECT id, name FROM depositors WHERE id = ?", (raw,)).fetchone()
+    return fy_start_year, depositor
+
+
+@app.route("/statement")
+def statement_page():
+    db = get_db()
+    fy_start_year, depositor = _statement_request_args(db)
+    current_fy = current_fy_start_year()
+    statement = compute_income_expenditure(db, fy_start_year, depositor["id"] if depositor else None)
+    return render_template(
+        "statement.html", active_tab="statement",
+        statement=statement, depositors=list_depositors(db),
+        depositor_id=str(depositor["id"]) if depositor else "",
+        depositor_name=depositor["name"] if depositor else None,
+        fy_options=[{"year": y, "fy": fy_label(y), "ay": ay_label(y)}
+                    for y in range(current_fy, current_fy - 10, -1)],
+        pdf_available=PDF_AVAILABLE, excel_available=EXCEL_AVAILABLE,
+    )
+
+
+def _statement_flat_rows(st: dict) -> list:
+    """(kind, label, amount) rows shared by the PDF and Excel exports;
+    kind is 'header', 'line' or 'total'."""
+    rows = [("header", "INCOME", None)]
+    rows += [("line", l["label"], l["amount"]) for l in st["income_lines"]]
+    rows.append(("total", "Total income", st["total_income"]))
+    rows.append(("line", "  of which taxable", st["taxable_income"]))
+    rows.append(("header", "EXPENDITURE", None))
+    rows += [("line", l["label"], l["amount"]) for l in st["expense_lines"]]
+    rows.append(("total", "Total expenditure", st["total_expenditure"]))
+    rows.append(("total", "Surplus / (Deficit)", st["surplus"]))
+    if st["memo_lines"] or st["fcnr_interest"]:
+        rows.append(("header", "FOR INFORMATION (not in the totals above)", None))
+        rows += [("line", l["label"], l["amount"]) for l in st["memo_lines"]]
+    return rows
+
+
+def _statement_title(st: dict, depositor_name) -> tuple:
+    title = "Income and Expenditure Statement"
+    subtitle = (f"{st['fy_label']} ({st['ay_label']}) -- {st['period_start'].isoformat()} to "
+                f"{st['period_end'].isoformat()} -- {depositor_name or 'All depositors'}")
+    return title, subtitle
+
+
+@app.route("/export/statement.pdf")
+def export_statement_pdf():
+    if not PDF_AVAILABLE:
+        return "PDF export isn't available on this build.", 501
+    db = get_db()
+    fy_start_year, depositor = _statement_request_args(db)
+    st = compute_income_expenditure(db, fy_start_year, depositor["id"] if depositor else None)
+    title, subtitle = _statement_title(st, depositor["name"] if depositor else None)
+    rows = [[label, _pdf_money(amount) if amount is not None else ""]
+            for _kind, label, amount in _statement_flat_rows(st)]
+    for f in st["fcnr_interest"]:
+        rows.append([f"FCNR interest ({f['currency']}, tax-exempt)", f"{f['currency']} {f['amount']:,.2f}"])
+    pdf_bytes = _pdf_report(title, subtitle, ["Particulars", "Amount"], [120, 60], rows)
+    return send_file(
+        io.BytesIO(pdf_bytes), as_attachment=True,
+        download_name=f"income-expenditure-fy{fy_start_year}-{fy_start_year + 1}.pdf", mimetype="application/pdf",
+    )
+
+
+@app.route("/export/statement.xlsx")
+def export_statement_xlsx():
+    if not EXCEL_AVAILABLE:
+        return "Excel export isn't available on this build.", 501
+    db = get_db()
+    fy_start_year, depositor = _statement_request_args(db)
+    st = compute_income_expenditure(db, fy_start_year, depositor["id"] if depositor else None)
+    title, subtitle = _statement_title(st, depositor["name"] if depositor else None)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Income & Expenditure"
+    ws.append([title])
+    ws.append([subtitle])
+    ws.append([])
+    ws.append(["Particulars", "Amount (INR)"])
+    for cell in ws[4]:
+        cell.font = Font(bold=True)
+    ws["A1"].font = Font(bold=True, size=14)
+    for kind, label, amount in _statement_flat_rows(st):
+        ws.append([label, amount])
+        if kind in ("header", "total"):
+            for cell in ws[ws.max_row]:
+                cell.font = Font(bold=True)
+    for f in st["fcnr_interest"]:
+        ws.append([f"FCNR interest ({f['currency']}, tax-exempt)", f"{f['currency']} {f['amount']:,.2f}"])
+    ws.column_dimensions["A"].width = 52
+    ws.column_dimensions["B"].width = 18
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf, as_attachment=True, download_name=f"income-expenditure-fy{fy_start_year}-{fy_start_year + 1}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @app.route("/tax")
 def tax_page():
     db = get_db()
