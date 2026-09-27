@@ -17,6 +17,9 @@
     {% if fetch_error %}
       <div class="error-box">Couldn't fetch live prices: {{ fetch_error }}</div>
     {% endif %}
+    {% if fetch_notice %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber);">{{ fetch_notice }}</div>
+    {% endif %}
     {% if prices_missing %}
       <div class="error-box" style="background:#fff2e0; color:var(--amber);">
         No market price set for:

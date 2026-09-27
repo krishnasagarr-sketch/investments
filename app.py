@@ -3699,6 +3699,11 @@ def _fetch_json_url(url: str) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # The server *was* reached and answered with an error status -- not
+        # a connectivity problem, so don't report e.reason ("Not Found") as
+        # if it were one.
+        raise RuntimeError(f"{url.split('/')[2]} answered with an error (HTTP {e.code}).")
     except urllib.error.URLError as e:
         raise RuntimeError(f"Could not reach {url.split('/')[2]}: {e.reason}")
     except (TimeoutError, OSError) as e:
@@ -3719,12 +3724,30 @@ def get_usd_to_inr_rate() -> float:
 IBJA_API_BASE = "https://ibja-api.vercel.app"
 
 
-def fetch_live_metal_prices() -> tuple[dict, dict]:
-    """Fetch current INR/gram prices. Returns (prices, sources) where
+def _ibja_last_published() -> tuple:
+    """(rates, iso_date) for the most recent morning rate IBJA has published,
+    from its history feed. IBJA only publishes on business days, so on a
+    weekend or holiday its /latest endpoints answer 404 until the next
+    session -- the history feed still has the last one."""
+    from datetime import datetime
+
+    history = _fetch_json_url(f"{IBJA_API_BASE}/history")
+    try:
+        entries = [(datetime.strptime(e["date"], "%d/%m/%Y").date(), e) for e in history["am"]]
+        rate_date, entry = max(entries, key=lambda pair: pair[0])
+        return entry, rate_date.isoformat()
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("Could not read IBJA's rate history.")
+
+
+def fetch_live_metal_prices() -> tuple[dict, dict, dict, list]:
+    """Fetch current INR/gram prices. Returns (prices, sources, dates, notes):
     sources[metal] is 'india' (IBJA reference rate) or 'spot' (global spot,
     converted at the live USD/INR rate — used only for platinum/palladium,
-    which IBJA doesn't publish). Raises RuntimeError with a user-facing
-    message on any network/parsing failure.
+    which IBJA doesn't publish); dates[metal] is the day an IBJA rate is
+    actually from when that isn't today (weekend/holiday fallback); notes are
+    user-facing remarks about how the rates were obtained. Raises
+    RuntimeError with a user-facing message on any network/parsing failure.
 
     IBJA's own reference rate already includes import duty, GST and the
     local market premium, so it reads meaningfully higher than a raw
@@ -3733,23 +3756,56 @@ def fetch_live_metal_prices() -> tuple[dict, dict]:
     converted at the exchange rate alone."""
     prices = {}
     sources = {}
+    dates = {}
+    notes = []
+    last_published = None  # fetched at most once, only if /latest has nothing
 
-    gold = _fetch_json_url(f"{IBJA_API_BASE}/latest")
+    def fallback():
+        nonlocal last_published
+        if last_published is None:
+            last_published = _ibja_last_published()
+        return last_published
+
     try:
-        prices["gold_24k"] = float(gold["lblGold999_AM"]) / 10  # quoted per 10g
-        prices["gold_22k"] = float(gold["lblGold916_AM"]) / 10
-    except (KeyError, TypeError, ValueError):
-        raise RuntimeError("Could not read IBJA's gold rate.")
+        gold = _fetch_json_url(f"{IBJA_API_BASE}/latest")
+        try:
+            prices["gold_24k"] = float(gold["lblGold999_AM"]) / 10  # quoted per 10g
+            prices["gold_22k"] = float(gold["lblGold916_AM"]) / 10
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("Could not read IBJA's gold rate.")
+    except RuntimeError:
+        entry, rate_date = fallback()
+        try:
+            prices["gold_24k"] = float(entry["gold_999"]) / 10
+            prices["gold_22k"] = float(entry["gold_916"]) / 10
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("Could not read IBJA's gold rate.")
+        dates["gold_24k"] = dates["gold_22k"] = rate_date
     sources["gold_24k"] = sources["gold_22k"] = "india"
 
-    silver = _fetch_json_url(f"{IBJA_API_BASE}/silver/latest")
     try:
-        # Unlike gold, Indian silver rates are conventionally quoted per
-        # kilogram, not per 10g.
-        prices["silver"] = float(silver["lblSilver999_AM"]) / 1000
-    except (KeyError, TypeError, ValueError):
-        raise RuntimeError("Could not read IBJA's silver rate.")
+        silver = _fetch_json_url(f"{IBJA_API_BASE}/silver/latest")
+        try:
+            # Unlike gold, Indian silver rates are conventionally quoted per
+            # kilogram, not per 10g.
+            prices["silver"] = float(silver["lblSilver999_AM"]) / 1000
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("Could not read IBJA's silver rate.")
+    except RuntimeError:
+        entry, rate_date = fallback()
+        try:
+            prices["silver"] = float(entry["silver_999"]) / 1000
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("Could not read IBJA's silver rate.")
+        dates["silver"] = rate_date
     sources["silver"] = "india"
+
+    if dates:
+        shown = max(dates.values())
+        notes.append(
+            f"IBJA hasn't published a rate for today (it only publishes on business days), "
+            f"so gold and silver use its last published rate, from {shown}."
+        )
 
     remaining = {m: s for m, s in METAL_API_SYMBOLS.items() if m not in prices}
     if remaining:
@@ -3763,7 +3819,7 @@ def fetch_live_metal_prices() -> tuple[dict, dict]:
             prices[metal] = usd_per_oz / TROY_OUNCE_GRAMS * usd_to_inr
             sources[metal] = "spot"
 
-    return prices, sources
+    return prices, sources, dates, notes
 
 
 def list_metals(db):
@@ -3898,7 +3954,7 @@ def _render_metal_prices(db, **kwargs):
 
 @app.route("/metal-prices")
 def metal_prices_page():
-    return _render_metal_prices(get_db(), fetch_error=None)
+    return _render_metal_prices(get_db(), fetch_error=None, fetch_notice=session.pop("metal_price_notice", None))
 
 
 @app.route("/metals", methods=["GET", "POST"])
@@ -3961,7 +4017,7 @@ def update_metal_prices():
 def fetch_metal_prices():
     db = get_db()
     try:
-        live_prices, live_sources = fetch_live_metal_prices()
+        live_prices, live_sources, rate_dates, notes = fetch_live_metal_prices()
     except RuntimeError as e:
         return _render_metal_prices(db, fetch_error=str(e))
 
@@ -3974,9 +4030,11 @@ def fetch_metal_prices():
                ON CONFLICT(metal) DO UPDATE SET price_per_gram = excluded.price_per_gram,
                                                 updated_on = excluded.updated_on,
                                                 source = excluded.source""",
-            (metal, price, today, source),
+            (metal, price, rate_dates.get(metal, today), source),
         )
     db.commit()
+    if notes:
+        session["metal_price_notice"] = " ".join(notes)
     return redirect(url_for("metal_prices_page"))
 
 
