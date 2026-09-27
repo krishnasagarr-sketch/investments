@@ -1,20 +1,16 @@
 # Fixed Deposit Manager
 
-A web app for tracking bank deposits — built with Flask and SQLite. Add each deposit's amount, rate, and tenure, and it calculates the maturity amount, tracks maturity dates, and shows total interest earned across all your deposits.
+A personal finance web app for an Indian household — built with Flask and SQLite. It started
+as a fixed/recurring deposit tracker and has grown into a broader tool: deposits (including
+NRI accounts), metals, stock/mutual fund investments, retirement savings, income and expense
+logging, and India-specific tax/compliance estimates (TDS, DICGC insurance, an income tax
+estimate, an Income & Expenditure statement). Runs as a local web app, a desktop executable
+(Windows/Mac), or embedded in native Android/iOS shells — same code, same database format,
+everywhere.
 
-All amounts are shown in Indian rupees (`₹`), with lakh/crore digit grouping (e.g. `₹12,34,567.89`).
-
-Supports three deposit types:
-
-| Type | How interest works | Maturity formula |
-|---|---|---|
-| **Cumulative (reinvested)** | Interest is reinvested and paid with the principal at maturity | `A = P × (1 + r/n)^(n×t)` |
-| **Simple interest (payout)** | Interest is paid out periodically and *not* reinvested | `A = P + (P × r × t)` |
-| **Recurring deposit (RD)** | One fixed installment per month; the balance compounds quarterly | sum of each installment `M × (1 + r/4)^(months_on_deposit / 3)` |
-
-where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rate as a decimal, `n` = compounding periods per year, `t` = tenure in years.
-
-**Tenure** can be entered in **months** or **days** (cumulative and simple-interest deposits). Day tenures convert to years on a 365-day basis (`t = days / 365`) and the maturity date is the start date plus that many days. Recurring deposits are always monthly.
+All rupee amounts use Indian digit grouping (`₹12,34,567.89`). Foreign-currency (FCNR) amounts
+are shown in their own currency and are **never converted to rupees** — see [FCNR / NRE / NRO
+deposits](#fcnr--nre--nro-deposits) below.
 
 ## Setup
 
@@ -24,22 +20,7 @@ where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rat
    ├── app.py
    ├── requirements.txt
    └── templates/
-       ├── base.html
-       ├── dashboard.html
-       ├── add_deposit.html
-       ├── depositors.html
-       ├── banks.html
-       ├── metals.html
-       ├── metal_prices.html
-       ├── investments.html
-       ├── summary.html
-       ├── chart.html
-       ├── calculator.html
-       ├── notifications.html
-       ├── setup.html
-       ├── login.html
-       ├── forgot_password.html
-       └── reset_password.html
+       └── *.html
    ```
 
 2. Create a virtual environment (recommended):
@@ -60,60 +41,327 @@ where `P` = principal (or `M` = monthly installment for an RD), `r` = annual rat
 python app.py
 ```
 
-Open **http://127.0.0.1:5000**. The first visit takes you to a one-time **account setup** page (see **Login** below) before anything else loads. A `fixed_deposits.db` SQLite file is created automatically on first run — your data persists across restarts. It holds `depositors` (holder ID + name), `banks` (bank ID + name), `deposits` (references a depositor and a bank by id), `metals` (precious-metal holdings), `metal_prices` (one live ₹/gram rate per metal), `investments` (stock/mutual fund holdings, linked to a depositor), `notification_settings` (the maturity-email settings, a single row), and `auth_user` (the single login account, a single row). On startup the app runs in-place migrations, so an older `.db` from a previous version is upgraded automatically; legacy free-text holder / bank names are promoted into `depositors` / `banks` rows, and `metal_prices` is seeded from each metal's most recent holding.
+Open **http://127.0.0.1:5000**. The first visit takes you to a one-time **account setup** page
+(see [Login](#login--security) below) before anything else loads.
 
-> **Add at least one depositor and one bank first** (Depositors / Banks tabs) — the Add Deposit form needs both to attach the deposit to.
+A `fixed_deposits.db` SQLite file is created automatically on first run — your data persists
+across restarts. On startup the app runs in-place schema migrations, so an older `.db` from a
+previous version upgrades automatically; legacy free-text holder/bank names are promoted into
+proper `depositors`/`banks` records.
 
-## Features
+> **Add at least one depositor and one bank first** (Depositors / Banks tabs) — the Add Deposit
+> form needs both.
 
-- **Login** — the whole app sits behind a single login (`auth_user` table, one account). The very first visit shows a **Set up your account** page (email + password) instead of the dashboard; every page after that redirects to **Log in** until you sign in, and stays signed in for 30 days via a signed session cookie. Passwords are hashed with Werkzeug's `generate_password_hash`/`check_password_hash` (never stored in plain text). The session-signing key (`.flask_secret_key`) is generated once on first run and gitignored — don't delete it, or every existing session is invalidated.
-  - **Forgot your password?** on the login page emails a one-time reset link (valid for **1 hour**) to the account's email, reusing the same **Gmail sender + App Password already configured on the Notifications tab** — set that up first if you haven't. The link opens a **Reset your password** page; an expired or already-used link shows an explicit "invalid or has expired" message rather than silently failing.
-- **Notifications** — email yourself when a deposit is close to maturing. On the **Notifications** tab: turn it on, set a recipient email, a **sender Gmail address + Gmail App Password** (not your normal password — generate one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) after enabling 2-Step Verification), and how many days before maturity to alert. Sends via Gmail SMTP using only the Python standard library (`smtplib`) — no new dependency.
-  - A background thread checks every **12 hours** (and once at startup) for as long as `python app.py` is running — there's no separate scheduler to configure, but it also means nothing fires while the app is stopped.
-  - Each maturing deposit is bundled into **one digest email**; a deposit already alerted is skipped for **7 days** even if it's checked again, so you don't get the same reminder daily. The Notifications page shows every deposit within the window and whether it's due for a fresh alert or was recently sent.
-  - **Send Test Email** verifies your SMTP settings immediately without touching deposit state; **Check & Send Now** runs the real check on demand. Both report success/failure right on the page — a bad password shows *"Gmail rejected the sender email / app password"* rather than failing silently.
-  - The app password is stored in `fixed_deposits.db` (gitignored, never committed) — leaving the password field blank on save keeps whatever is already stored, so it's never echoed back into the page.
+### Optional dependencies
 
-- **Calculator** — a standalone interest calculator: pick a deposit type (cumulative / simple interest / recurring), enter the principal or monthly instalment, annual rate, and a **duration in months and days**, and it shows the maturity amount and interest earned — using the exact same math as the rest of the app. For **simple interest**, it also shows the interest payout per **month** and per **quarter** (constant every period, since simple interest doesn't compound). Recurring deposits ignore the days field (RD instalments are always whole months). **Nothing on this page is saved** — it's pure calculation via the URL's query string (`?deposit_type=simple&principal=...`), so a result is shareable/bookmarkable without touching the database.
-- **Dashboard** — the first tab: whole-portfolio totals (deposits, metals, **and investments**) — total invested, current value, unrealised gain/loss with return %, deposit maturity value, and **annualised return**. Then breakdowns (each with its own Ann. Return column): **by asset class** (deposits vs metals vs investments), **by holder across all assets** (including total metal grams and investment count per holder), **deposits by holder & bank**, **metals by type**, **metals by holder & type**, **investments by ticker**, **investments by holder & ticker**, and **deposits by bank**.
-- **Annualised return** — a CAGR-style figure (`(current/invested)^(365/days held) − 1`) shown per deposit, per metal holding, and as an invested-weighted blend for every group and the whole portfolio. It's a rough blend across positions with different start dates, not a true money-weighted (XIRR) return — treat it as directional. Holdings younger than 7 days show "—" rather than an exaggerated figure (a 1-day gain projected over a year would be misleading).
-- **Chart** — the same figures as a chart, covering deposits, metals, and investments. Pick the **chart type** (bar or pie) with the toggle at the top:
-  - **Bar** — two grouped horizontal bars per row: invested (money in / cost) vs current value. Sections: by holder (all assets), deposits by bank, metals by type, investments by ticker.
-  - **Pie** — invested *or* current value, showing each holder's / bank's / metal's / ticker's share of the total, with an amount + percentage legend.
+`requirements.txt` installs everything the desktop build uses. Two features degrade gracefully
+if their library is missing (checked once at startup, never crashes a page):
 
-  All charts are pure inline SVG — no JavaScript or chart library. The selection is kept in the URL (`/chart?type=pie&metric=invested`).
-- **Depositors** — a separate master list (`depositors` table) of people who hold deposits, each with a unique **holder ID** (customer number, PAN, etc.) and a **name**. Managed on the **Depositors** tab, which also shows each depositor's **total invested** (principal only, no interest), **current value** and **total maturity value**, with a combined total across everyone. A depositor can't be removed while any deposit references it.
-- **Banks** — a separate master list (`banks` table), each with a unique **bank ID** (IFSC / branch code / any identifier) and a **name**. Managed on the **Banks** tab; a bank can't be removed while any deposit references it.
-- **Metals** — record precious-metal holdings (`metals` table): metal (**Gold 24K**, **Gold 22K**, silver, platinum, palladium, other — 24K and 22K are tracked separately, each with its own market rate), an optional **depositor** (linked to the depositors list), an optional description, weight in **grams**, and the **purchase price in ₹ per gram**. Current value is driven by a separate **market-price table** (`metal_prices`), managed on its own **Market Prices** tab. A metal with no rate set falls back to each holding's purchase price (value = cost) and the Metals tab shows a banner linking to Market Prices. The Metals tab itself shows cost, current value, total return %, annualised return, and unrealised gain/loss per holding and overall.
-- **Market Prices** — a separate tab (`/metal-prices`) holding the "Current market prices" panel: one live ₹/gram rate per metal, so you set the rate once and every holding of that metal revalues everywhere.
-  - **Fetch Live Prices** — pulls the current spot rate for gold, silver, platinum and palladium (24K gold's rate is used to derive 22K at 22/24 purity) and converts it to ₹/gram, using [gold-api.com](https://gold-api.com) for spot prices and [frankfurter.app](https://frankfurter.app) for the USD→INR rate — no API key needed, no new Python dependency (uses the standard library). Network failures show an error and leave existing prices untouched.
-  - **Manual entry** stays available in the same panel — type a price directly to override, or to set "Other" (which has no live source). Each price shows whether it's `🌐 live` or `✎ manual`, and when it was last updated.
-- **Investments** — track stock and mutual fund holdings (`investments` table): ticker, a **required depositor**, shares/units, purchase price in ₹/unit, and purchase date. The **Ticker** field is a searchable dropdown covering every NSE-listed stock and every AMFI-registered mutual fund scheme (~2,500 stocks + ~38,000 schemes) — type a few letters of the name or symbol to search both at once; you can also type a custom ticker (e.g. a US stock like `AAPL`) if it isn't in the list. The stock/fund directory is fetched once per app run from the [NSE equity list](https://archives.nseindia.com) and [mfapi.in](https://www.mfapi.in) and cached to disk (`cache/`, gitignored, refreshed automatically after 30 days). Picking a suggestion also fetches its **current price live and prefills the Purchase price field** with it (already converted to ₹) — edit the value if you actually paid a different price.
-  - **Stocks** are priced **live via `yfinance`** on every page view and converted to rupees if the ticker trades in USD — for Indian stocks (NSE `.NS` / BSE `.BO` suffixes) it's already in ₹, so no conversion is applied.
-  - **Mutual funds** are priced by their latest **AMFI NAV via mfapi.in**, always in ₹.
-  - A ticker that can't be priced (invalid symbol, no data, offline) shows "N/A" with the reason instead of crashing the page, and is left out of the portfolio totals until it prices successfully — it still shows its own row on the Investments tab. Shows cost, current value, total return %, annualised return, and unrealised gain/loss per holding and overall, same as Metals.
-- **Add deposits** — pick the depositor and the bank from dropdowns, then deposit type, amount (lump-sum principal, or monthly installment for an RD), annual interest rate, tenure (months or days), compounding frequency (cumulative only), start date. The form relabels fields, switches the tenure unit, and shows/hides compounding frequency based on the type you pick.
-- **Edit deposits** — the **Edit** link on each dashboard row opens the same form pre-filled; saving updates the row in place.
-- **Holder / bank tracking** — each deposit is linked to its depositor and its bank; the dashboard shows the depositor's name + holder ID and the bank's name + bank ID (older, unlinked rows show "—")
-- **Automatic calculations** — maturity date, maturity amount, and interest earned, using the formula for the chosen deposit type (see table above)
-- **Current value** — for every deposit, the value *today* (principal + interest accrued so far): simple interest accrues linearly, cumulative compounds, and an RD sums each installment paid to date compounded quarterly. Once a deposit matures, current value equals the maturity amount.
-- **RD progress** — recurring-deposit rows show the installment amount and how many have been paid so far (`₹1,000.00/mo · 11/24 paid`); the "Invested" figure is that cash paid in to date.
-- **Status tracking** — shows "Matured" or days remaining until maturity for each deposit
-- **Portfolio summary** — total invested, current value, total maturity value, and total interest at maturity across all deposits (for RDs, "invested" is the installment amount × the number of installments **paid so far**, not the full-term commitment)
-- **Remove deposits / depositors** — the **Remove** button is a two-step confirm (click once to arm, again within 4 s to delete). It doesn't use a native `confirm()` dialog, so it still works in embedded browsers that block those.
+| Feature | Library | If missing |
+|---|---|---|
+| PDF export (TDS, DICGC, Income & Expenditure statement) | `fpdf2` | Export PDF button is hidden |
+| Excel export (Deposits, Income & Expenditure statement) | `openpyxl` | Export Excel button is hidden |
+| Live stock/mutual fund prices (Investments) | `yfinance` | Investments tab shows a banner; holdings still list, just unpriced |
 
-## Notes
+This matters most on Android/iOS builds, which install a smaller dependency set — see
+[Mobile builds](#mobile-builds).
 
-- Interest rate should be entered as a percentage (e.g., `6.5` for 6.5%), not a decimal.
-- **Simple-interest deposits:** the "Maturity Amount" column shows principal + total interest over the term. In practice that interest is paid out to you along the way rather than in one lump at maturity.
-- **Recurring deposits:** the RD formula assumes quarterly compounding and one installment at the start of each month, which is what most Indian banks use. Your bank's figure may differ by a small amount depending on its exact day-count and rounding.
-- This tool doesn't account for tax on interest (e.g., TDS) or premature withdrawal penalties — it assumes the deposit runs to full maturity as entered.
-- All figures are for personal tracking only; confirm exact maturity values with your bank.
+## Deposits
 
-## Possible next steps
+The core object: a fixed deposit (FD) or recurring deposit (RD) held at a bank.
 
-- Track TDS/tax withheld on interest
-- Reminders/notifications as FDs approach maturity
-- Auto-renewal tracking (roll maturity amount into a new FD)
-- Multi-currency support
-- Export to CSV for tax filing
+### Deposit types
+
+| Type | How interest works | Maturity amount |
+|---|---|---|
+| **Cumulative (reinvested)** | Interest is reinvested and paid with the principal at maturity | `A = P × (1 + r/n)^(n×t)` |
+| **Simple interest (payout)** | Interest is paid out periodically (monthly/quarterly) and *not* reinvested | Equal to the principal — the interest already left the deposit as it accrued |
+| **Recurring deposit (RD)** | One fixed installment per month; the balance compounds quarterly | Sum of each installment `M × (1 + r/4)^(months on deposit / 3)` |
+
+`P` = principal (or `M` = monthly installment for an RD), `r` = annual rate as a decimal,
+`n` = compounding periods per year, `t` = tenure in years.
+
+**Tenure** can be entered in **months** or **days** (cumulative and simple-interest deposits).
+Day tenures convert to years on a 365-day basis. Recurring deposits are always monthly.
+
+**Current value** (the deposit's worth *today*): simple interest accrues linearly, cumulative
+compounds, an RD sums each installment paid to date compounded quarterly. A matured deposit's
+current value equals its maturity amount.
+
+**Annualised return** — a CAGR-style figure (`(current/invested)^(365/days held) − 1`), shown
+per deposit and as an invested-weighted blend for every group and the whole portfolio. It's a
+rough blend across positions with different start dates, not a true money-weighted (XIRR)
+return. Holdings younger than 7 days show "—" rather than an exaggerated figure.
+
+### FCNR / NRE / NRO deposits
+
+Each deposit has an **Account Category**: Resident (default), NRE, NRO, or FCNR — with real tax
+treatment differences, not just a label:
+
+- **NRE** and **FCNR** interest is exempt from Indian income tax and TDS entirely (Section
+  10(4)), as long as NRI status is maintained — excluded from the TDS tab and the Tax
+  estimate's taxable income.
+- **NRO** interest is taxable, but at the NRI rate under Section 195 — **31.2%** (30% + 4%
+  cess; a surcharge may also apply above certain income levels, not modelled here) from the
+  **first rupee**, not the resident 10%/₹40,000-threshold rules. Shown in its own section on
+  the TDS tab, since even the same depositor+bank pair can hold both a Resident and an NRO
+  deposit.
+- **FCNR** is held in a foreign **currency** (USD, GBP, EUR, AUD, CAD, SGD, CHF, JPY, or HKD)
+  from start to finish. This app does no live currency conversion anywhere, so FCNR deposits
+  are **excluded from every rupee-denominated total** (Dashboard, DICGC, Tags, Income &
+  Expenditure) and shown separately, grouped by their own currency, instead of being silently
+  mixed into a rupee figure.
+
+The Tax estimate flags when a depositor holds any NRI account, since the Section 87A rebate it
+shows doesn't apply to non-residents.
+
+### Other deposit fields
+
+- **Owned by** — optional; only set this if the money actually belongs to someone other than
+  the depositor it's held under (e.g. deposited in a parent's name but really the child's
+  money). The Dashboard's **By owner** table classifies every deposit by this — falling back to
+  the holder when it's blank — separately from **By holder**, which always groups by who the
+  bank has on record. Tax/TDS/DICGC always use the **holder**, never the owner.
+- **Deposit / Account Number** — optional, free text — the FD/RD number on the bank's own
+  receipt.
+- **Tag** — optional, see [Tags](#tags) below.
+
+### Bulk CSV import
+
+The **Import** tab moves in a batch of existing deposits from a spreadsheet instead of
+one-at-a-time entry. Download the CSV template, fill in a row per deposit, upload it back.
+Depositors and banks are matched by name (case-insensitive) or created automatically. Invalid
+rows are skipped individually with a specific reason and row number, rather than failing the
+whole import.
+
+## Dashboard & Chart
+
+- **Deposits tab** (`/`) — the deposits list and its own totals, plus a **By owner** breakdown
+  and a **Foreign currency deposits (FCNR)** table for anything not counted in the rupee totals.
+- **Dashboard tab** (`/summary`) — whole-portfolio totals across deposits, metals, *and*
+  investments: total invested, current value, unrealised gain/loss, deposit maturity value, and
+  annualised return. Breakdowns: by asset class, by holder (all assets combined), deposits by
+  holder & bank, metals by type, metals by holder & type, investments by ticker, investments by
+  holder & ticker, deposits by bank. FCNR deposits get their own by-currency table here too,
+  excluded from every total on the page for the same reason as above.
+- **Chart tab** — the same figures as inline SVG bar or pie charts (no JS charting library):
+  invested vs current value, by holder / bank / metal / ticker. FCNR deposits are excluded from
+  charts for the same currency-mixing reason.
+
+## Depositors & Banks
+
+Separate master lists. Each **depositor** has a holder ID (customer number, PAN, etc.) and a
+name; each **bank** has a bank ID (IFSC/branch code/anything) and a name. Deposits, metals, and
+investments all link to a depositor by reference, so renaming one updates everywhere it's used.
+A depositor or bank can't be removed while anything still references it.
+
+## Tags
+
+Cross-cutting purpose/allocation labels (Emergency Fund, Tax-saving, Retirement, Kids'
+Education, …) attachable to any deposit, metal holding, investment, or PPF/EPF/NPS account —
+one tag per holding. The **Tags** tab shows an allocation view (current value and % of
+portfolio per tag, plus an "Untagged" bucket) spanning all four holding types, which none of
+the per-tab totals do on their own. This is separate from **Owned by** — a tag is about
+*purpose*, ownership is about *whose money it is*.
+
+## Metals & Market Prices
+
+Record precious-metal holdings: metal (Gold 24K, Gold 22K, silver, platinum, palladium, or
+other — 24K and 22K tracked separately, each with its own market rate), an optional depositor
+and tag, weight in grams, and purchase price per gram. Current value comes from a shared
+**Market Prices** table (one live ₹/gram rate per metal), so setting the rate once revalues
+every holding of that metal everywhere.
+
+- **Fetch Live Prices** — gold and silver use the **IBJA (India Bullion & Jewellers
+  Association)** daily reference rate, the same benchmark Indian jewellers and banks price
+  against — it already includes import duty, GST, and the local market premium, so it reads
+  higher than a plain international spot conversion (that's expected — it's what makes it the
+  *Indian* market price). Platinum and palladium aren't published by IBJA, so those use the
+  global spot rate converted at the live USD→INR rate. IBJA only publishes on business days;
+  on a weekend or holiday, gold and silver fall back to IBJA's **last published rate**, and the
+  page says so.
+- **Manual entry** stays available — type a price directly to override, or to set "Other"
+  (which has no live source).
+
+## Investments
+
+Track stock and mutual fund holdings: ticker (searchable across NSE-listed stocks and
+AMFI-registered mutual fund schemes, or type a custom ticker like a US stock), a required
+depositor, optional tag, shares/units, purchase price, and purchase date.
+
+- **Stocks** are priced live via `yfinance` on every page view, converted to rupees if quoted
+  in USD.
+- **Mutual funds** are priced by their latest AMFI NAV.
+- A ticker that can't be priced shows "N/A" with the reason and is left out of portfolio totals
+  until it prices successfully.
+
+## Calculator
+
+A standalone interest calculator — pick a deposit type, enter principal/installment, rate, and
+duration, and see the maturity amount and interest earned, using the same math as the rest of
+the app. Nothing here is saved; the result lives in the URL's query string, so it's
+shareable/bookmarkable.
+
+## Notifications
+
+Email reminders, sent via Gmail SMTP (an app password, not your normal password — generate one
+at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) after
+enabling 2-Step Verification). A background thread checks every **12 hours** (and once at
+startup) while the app is running.
+
+- **Maturity alerts** — email when a deposit is within a configurable number of days of
+  maturing (default 30).
+- **Contribution reminders** — email when a PPF/EPF/NPS account has had **no contribution
+  logged** for a configurable number of days (default 45), counted from the most recent
+  contribution or the account's opened date.
+
+Both share one resend cooldown (**7 days** — an already-alerted item isn't re-emailed sooner
+even if checked again) and are bundled into digest emails. **Send Test Email** verifies SMTP
+settings without touching any state; **Check & Send Now** runs the real check on demand.
+
+## Other Income
+
+Log dated income entries per depositor under **Salary, Rent, Business, Capital Gains, or
+Other** — anything besides FD/RD interest, which is computed automatically from the deposits
+themselves. Feeds into the Tax estimate and the Income & Expenditure statement.
+
+## Expenses
+
+Log dated spending per depositor under **Household, Medical, Education, Travel, Utilities,
+Insurance, or Other**, with a running this-financial-year total and category breakdown shown on
+the page. Feeds into the Income & Expenditure statement.
+
+## Gifts
+
+Log money given between two depositors already tracked here — i.e. *within the family*, not
+to/from an outside party (from, to, date, amount, note). India exempts gifts between specified
+relatives (spouse, siblings, parents, in-laws, lineal ascendants/descendants) from gift tax
+regardless of amount; this doesn't determine who counts as a relative, so use your own
+judgement. Shown as "for information" on the Income & Expenditure statement, not counted as
+income or expenditure.
+
+## Income & Expenditure Statement
+
+Pick a financial year (labelled with its matching assessment year, e.g. **FY 2025-26 (AY
+2026-27)**) and optionally a single depositor, and get:
+
+- **Income** — deposit interest on an **accrual basis** (what the deposits earned within the
+  year, whether or not it was paid out — same convention as TDS and Tax), plus the Other Income
+  log by category. NRE interest is listed but marked tax-exempt and excluded from the taxable
+  figure; NRO is included as taxable.
+- **Expenditure** — the Expenses log by category.
+- **Surplus or deficit**, and how much of the income is taxable.
+- **For information** — retirement contributions and family gifts (they move money without
+  being income or expenditure), and FCNR interest in its own currency.
+
+Exports to PDF and Excel. The current (in-progress) year shows figures to date.
+
+## Tax estimate
+
+Pick a depositor and financial year for a quick estimate — FD/RD interest (excluding
+tax-exempt NRE/FCNR) plus Other Income — against **both** tax regimes side by side. Section 80C
+(from PPF contributions, capped at ₹1,50,000) and Section 80CCD(1B) (from NPS contributions,
+capped at ₹50,000) are filled in automatically from what's logged on the Retirement tab
+(Old Regime only, per current rules), and it calls out which regime is cheaper. Flags when the
+depositor holds any NRI account, since the Section 87A rebate shown doesn't apply to
+non-residents. This is an estimate from what's tracked here — not a substitute for filing
+software or a CA; it doesn't know about salary TDS already deducted or other deductions.
+
+## TDS
+
+Estimates TDS (tax deducted at source) on FD interest, split by the rules that actually apply:
+
+- **Resident deposits** — 10% (20% without PAN on file) once a depositor's total interest from
+  one bank in a financial year crosses **₹40,000** (₹50,000 for senior citizens) — a
+  configurable threshold on the page.
+- **NRO deposits** — their own section, **31.2%** flat from the first rupee, no threshold (see
+  [FCNR / NRE / NRO deposits](#fcnr--nre--nro-deposits)).
+- **NRE and FCNR** interest doesn't appear here at all — it's tax-exempt.
+
+Exports to PDF.
+
+## DICGC
+
+DICGC insures deposits up to **₹5,00,000 per depositor, per bank** — covering principal and
+accrued interest together across every rupee deposit that depositor holds there. This tab
+groups deposits the same way and flags anything over the limit. FCNR deposits are excluded from
+this rupee total (DICGC does insure them too, converted at claim time, but this app doesn't do
+that conversion) — the page notes how many are excluded. Exports to PDF.
+
+## Interest Check
+
+Verifies that a payout ("simple interest") FD's interest actually landed in the bank account as
+expected. Pick a depositor + bank, upload that account's bank statement (CSV — a single signed
+amount column or separate debit/credit columns are both auto-detected, along with day-first
+DD/MM/YYYY dates), and assign each imported credit to the deposit it belongs to. Compares what's
+been received against the linear interest the deposit should have accrued to date, flagging any
+deposit running short. Statement lines are scoped to a depositor+bank pair, since several FDs
+at the same bank pay into the same account.
+
+## Retirement (PPF / EPF / NPS)
+
+PPF, EPF, and NPS rates are government-notified and change over time, with rules (minimum
+balance dates, market-linked NPS returns) this app doesn't try to reproduce — so **current
+balance is entered by hand** from the account's own passbook or portal, the same pattern used
+for metals' market price. Contributions are logged individually (date, amount, note) to compute
+gain, and a PPF account flags when its contributions in the current financial year exceed the
+**₹1,50,000** annual limit.
+
+## Backup & Restore
+
+Download the entire SQLite database as a single file, or restore from a previously downloaded
+one. Restoring makes an automatic safety copy of whatever was there first, and validates that
+the uploaded file is actually a database with the expected tables before overwriting anything.
+
+## Login & Security
+
+The whole app sits behind a single login (one account, set up once on first run). Passwords are
+hashed with Werkzeug (`generate_password_hash`/`check_password_hash`, never stored in plain
+text); sessions are signed and last 30 days. The signing key (`.flask_secret_key`) is generated
+once on first run and gitignored — don't delete it, or every existing session is invalidated.
+
+**Forgot your password?** emails a one-time reset link (valid 1 hour), reusing the Gmail sender
+already configured on the Notifications tab.
+
+## Mobile builds
+
+The same `app.py`/`templates/` are embedded, via symlinks, into native shells so the Flask app
+runs on-device with no server to reach over the network:
+
+- **Android** — Chaquopy embeds CPython in a Kotlin app (`android/`). Its dependency set is
+  smaller than desktop's for size/build-time reasons: Flask + openpyxl only. No `yfinance`
+  (pulls in pandas/numpy) and no `fpdf2` (pulls in Pillow) — so Investments' live pricing and
+  PDF export are desktop-only; everything else, including Excel export, works.
+- **iOS** — Briefcase/Toga embeds CPython behind a WKWebView-backed WebView widget (`ios/`).
+  Same reduced dependency set as Android, for the same reasons (plus MarkupSafe needing a
+  locally-built pure-Python wheel, since Briefcase can't build from source for iOS — see
+  `ios/pyproject.toml`).
+
+Both are built by GitHub Actions (`.github/workflows/build-android.yml`,
+`build-ios.yml`) alongside the desktop build (`build-apps.yml`, which produces the Windows
+`.exe` and Mac `.app`) whenever `app.py` or `templates/` changes on `main`.
+
+## Data model
+
+Everything lives in one SQLite file (`fixed_deposits.db`, gitignored). Key tables: `depositors`,
+`banks`, `deposits`, `metals` + `metal_prices`, `investments`, `retirement_accounts` +
+`retirement_contributions`, `other_income`, `expenses`, `family_gifts`, `portfolio_tags`,
+`interest_statement_lines` (Interest Check), `notification_settings`, and `auth_user`. Schema
+migrations run automatically on startup, so upgrading from an older version is a normal
+`git pull` + restart, no manual steps.
+
+## Notes & limitations
+
+- Interest rate should be entered as a percentage (e.g., `6.5`), not a decimal.
+- The RD formula assumes quarterly compounding and one installment at the start of each month
+  (standard for Indian banks) — your bank's exact figure may differ slightly by day-count and
+  rounding.
+- This app does no live currency conversion — FCNR amounts are never turned into rupees, by
+  design (see [FCNR / NRE / NRO deposits](#fcnr--nre--nro-deposits)).
+- TDS, DICGC, and Tax figures are estimates from what's tracked here, not a substitute for your
+  bank's TDS certificate (Form 16A), DICGC's own records, or a CA/filing software — in
+  particular, NRO's 31.2% TDS estimate doesn't model surcharge, and the Tax estimate assumes
+  resident rules (the Section 87A rebate doesn't apply to NRIs).
+- Premature-withdrawal penalties and auto-renewal aren't modelled — every deposit is assumed to
+  run to its full tenure as entered.
+- All figures are for personal tracking only; confirm exact values with your bank/CA.
