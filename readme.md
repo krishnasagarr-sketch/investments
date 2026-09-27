@@ -134,6 +134,32 @@ Depositors and banks are matched by name (case-insensitive) or created automatic
 rows are skipped individually with a specific reason and row number, rather than failing the
 whole import.
 
+### Reinvesting, closing, and History
+
+Once a deposit matures, its row on the Deposits tab shows a **Reinvest** link alongside Edit and
+Remove. It opens a page summarising the maturity (principal, interest earned, maturity amount)
+and asks what to do next:
+
+- **Reinvest — full maturity amount**, **principal only**, or **interest only**
+- **Reinvest — modified amount** — a custom figure, for topping up with fresh money or
+  reinvesting less than the full amount because part of it was withdrawn
+- **Withdraw everything** — close it out with no reinvestment
+
+Choosing any "Reinvest" option opens a form for the new deposit, prefilled from the old one's
+depositor, owner, bank, tag, account category, currency, rate, tenure, and compounding
+frequency — all editable before saving. A matured RD reinvests as a fresh FD, not a new RD,
+since it pays out as a lump sum.
+
+Either way, the old deposit is **closed**, not deleted: it disappears from the Deposits tab,
+the Dashboard/Chart, DICGC, Tags, and the Excel export, but is kept on the **History** tab with
+its closure type, closed date, and (if reinvested) a link to the new deposit it became. A
+**Reopen** button on History undoes a closure if it was done by mistake.
+
+Closing a deposit never erases its tax history: **TDS, the Tax estimate, and the Income &
+Expenditure statement** compute a deposit's interest from its own start/maturity dates for
+whichever financial year they fall in, regardless of whether it's currently open or closed — so
+a deposit that matured and was closed partway through a year still counts fully for that year.
+
 ## Dashboard & Chart
 
 - **Deposits tab** (`/`) — the deposits list and its own totals, plus a **By owner** breakdown
