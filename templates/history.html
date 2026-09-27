@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Deposit History — FD Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('dashboard') }}" class="btn secondary">← Back to Dashboard</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:640px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Closed deposits</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      Matured deposits that were reinvested or withdrawn — kept here for the record, but out of
+      the Deposits tab and every current-holdings total (Dashboard, DICGC, Tags). Past interest
+      they earned still counts fully for TDS, the Tax estimate, and the Income & Expenditure
+      statement, for whichever financial year it falls in — closing a deposit doesn't erase
+      history, it just retires it.
+    </p>
+  </div>
+
+  <div class="card">
+    {% if history %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Holder</th>
+            <th>Bank</th>
+            <th>Type</th>
+            <th>Principal</th>
+            <th>Matured</th>
+            <th>Closed</th>
+            <th>Closure</th>
+            <th>Reinvested Into</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for h in history %}
+          <tr>
+            <td><strong>{{ h.holder_name }}</strong></td>
+            <td>{{ h.bank_name }}</td>
+            <td><span class="badge type type-{{ h.deposit_type }}">{{ h.deposit_type_label }}</span></td>
+            <td>{{ (h.principal)|money(h.currency) }}</td>
+            <td>{{ h.maturity_date }}</td>
+            <td>{{ h.closed_date }}</td>
+            <td>{{ h.closure_type_label }}</td>
+            <td>
+              {% if h.new_deposit %}
+                <a href="{{ url_for('edit_deposit', deposit_id=h.new_deposit_id) }}">
+                  {{ h.new_deposit.bank_name }} — {{ (h.new_deposit.principal)|money(h.new_deposit.currency) }}
+                </a>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('reopen_deposit', deposit_id=h.id) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Reopen?">Reopen</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No closed deposits yet — matured deposits show a Reinvest option on the Deposits tab.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}

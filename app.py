@@ -196,6 +196,19 @@ ACCOUNT_CATEGORIES = {
     "FCNR": "FCNR (Foreign Currency Non-Resident)",
 }
 
+# How a matured deposit was closed out. Reinvesting creates a new deposit
+# and links back via reinvested_into_id; "withdrawn" just closes it with no
+# successor. Past interest keeps counting for TDS/Tax/the Income &
+# Expenditure statement either way -- only current-holdings views
+# (Dashboard, DICGC, Tags) stop showing a closed deposit.
+CLOSURE_TYPES = {
+    "reinvested_full": "Reinvested — full maturity amount",
+    "reinvested_principal": "Reinvested — principal only",
+    "reinvested_interest": "Reinvested — interest only",
+    "reinvested_custom": "Reinvested — modified amount",
+    "withdrawn": "Withdrawn (not reinvested)",
+}
+
 # Currencies banks commonly actually open FCNR accounts in (RBI's permitted
 # list is wider than this).
 FCNR_CURRENCIES = ["USD", "GBP", "EUR", "AUD", "CAD", "SGD", "CHF", "JPY", "HKD"]
@@ -377,6 +390,10 @@ def init_db():
         "owner_id": "ALTER TABLE deposits ADD COLUMN owner_id INTEGER REFERENCES depositors(id)",
         "account_category": "ALTER TABLE deposits ADD COLUMN account_category TEXT NOT NULL DEFAULT 'Resident'",
         "currency": "ALTER TABLE deposits ADD COLUMN currency TEXT NOT NULL DEFAULT 'INR'",
+        "status": "ALTER TABLE deposits ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+        "closed_date": "ALTER TABLE deposits ADD COLUMN closed_date TEXT",
+        "closure_type": "ALTER TABLE deposits ADD COLUMN closure_type TEXT",
+        "reinvested_into_id": "ALTER TABLE deposits ADD COLUMN reinvested_into_id INTEGER REFERENCES deposits(id)",
     }
     for col, ddl in migrations.items():
         if col not in existing_cols:
@@ -924,7 +941,7 @@ def tag_allocation_summary(db):
             totals[key] = {"name": tag_names.get(tag_id, "Untagged"), "value": 0.0}
         totals[key]["value"] += amount
 
-    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR'").fetchall():
+    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR' AND deposits.status = 'active'").fetchall():
         add(d["tag_id"], summarise_deposit(d)["current_value"])
     for m in list_metals(db):
         add(m["tag_id"], m["value"])
@@ -1069,10 +1086,11 @@ def portfolio_summary(db):
     # rupees anywhere in this app (see format_money()) -- mixing them into
     # these INR totals would silently misstate them, so they're tallied
     # separately below instead, by currency.
+    # Closed (reinvested/withdrawn) deposits are excluded too -- see dashboard().
     dep_pair, dep_holder, dep_bank = {}, {}, {}
     dep_overall = _agg_blank()
     fcnr_by_currency = {}
-    for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
+    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.status = 'active'").fetchall():
         s = summarise_deposit(d)
         if s["currency"] != "INR":
             acc = fcnr_by_currency.setdefault(s["currency"], {
@@ -1521,8 +1539,14 @@ def calculator_page():
 @app.route("/")
 def dashboard():
     db = get_db()
+    # Closed deposits (reinvested or withdrawn after maturity) move to the
+    # History tab and out of every current-holdings view -- but stay in the
+    # database untouched, so past interest they earned still counts fully
+    # for TDS/Tax/the Income & Expenditure statement (those work from
+    # deposit_interest_in_period() over history, not from "is it still
+    # open"), and reopening one is just flipping status back.
     deposits = db.execute(
-        DEPOSITS_WITH_REFS + " ORDER BY deposits.start_date DESC"
+        DEPOSITS_WITH_REFS + " WHERE deposits.status = 'active' ORDER BY deposits.start_date DESC"
     ).fetchall()
 
     rows = [summarise_deposit(d) for d in deposits]
@@ -2058,6 +2082,148 @@ def delete_deposit(deposit_id):
     db.execute("DELETE FROM deposits WHERE id = ?", (deposit_id,))
     db.commit()
     return redirect(url_for("dashboard"))
+
+
+@app.route("/deposits/<int:deposit_id>/reinvest", methods=["GET", "POST"])
+def reinvest_deposit(deposit_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM deposits WHERE id = ?", (deposit_id,)).fetchone()
+    if row is None or row["status"] != "active":
+        return redirect(url_for("dashboard"))
+
+    old = summarise_deposit(row)
+    if not old["is_matured"]:
+        return redirect(url_for("dashboard"))
+
+    form_data = dict(BLANK_DEPOSIT_FORM)
+    form_data.update({
+        "depositor_id": str(row["depositor_id"] or ""),
+        "bank_ref_id": str(row["bank_ref_id"] or ""),
+        # A matured RD pays out as a lump sum, so it reinvests as a fresh FD,
+        # not a new RD -- everything else carries over as a starting point.
+        "deposit_type": row["deposit_type"] if row["deposit_type"] != "recurring" else "cumulative",
+        "interest_rate": _trim_number(row["interest_rate"]),
+        "tenure_value": str(row["tenure_days"] if (row["tenure_unit"] or "months") == "days" else row["tenure_months"]),
+        "tenure_unit": row["tenure_unit"] or "months",
+        "compounding_frequency": str(row["compounding_frequency"]),
+        "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
+        "owner_id": str(row["owner_id"]) if row["owner_id"] else "",
+        "account_category": row["account_category"] or "Resident",
+        "currency": row["currency"] or "INR",
+        "start_date": str(date.today()),
+    })
+    error = None
+    choice = "reinvested_full"
+    custom_amount = ""
+
+    if request.method == "POST":
+        choice = request.form.get("choice", "reinvested_full")
+        custom_amount = request.form.get("custom_amount", "")
+        for key in form_data:
+            form_data[key] = request.form.get(key, form_data[key])
+
+        if choice == "withdrawn":
+            db.execute(
+                "UPDATE deposits SET status = 'closed', closed_date = ?, closure_type = 'withdrawn' WHERE id = ?",
+                (date.today().isoformat(), deposit_id),
+            )
+            db.commit()
+            return redirect(url_for("dashboard"))
+
+        reinvest_amounts = {
+            "reinvested_full": old["maturity_amount"],
+            "reinvested_principal": old["principal"],
+            "reinvested_interest": old["interest_earned"],
+        }
+        if choice == "reinvested_custom":
+            try:
+                principal = float(custom_amount)
+                if principal <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                principal = None
+                error = "Enter a custom amount greater than 0."
+        elif choice in reinvest_amounts:
+            principal = reinvest_amounts[choice]
+            if principal <= 0:
+                error = f"{CLOSURE_TYPES[choice]} comes to 0 or less for this deposit — choose a different option."
+        else:
+            principal = None
+            error = "Choose a valid reinvestment option."
+
+        if error is None:
+            form_data["principal"] = str(principal)
+            try:
+                cols = parse_deposit_form(form_data, db)
+                cur = db.execute(
+                    """INSERT INTO deposits
+                       (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
+                        principal, interest_rate, tenure_months, tenure_days, tenure_unit,
+                        compounding_frequency, tag_id, owner_id, account_category, currency, start_date)
+                       VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
+                        :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
+                        :compounding_frequency, :tag_id, :owner_id, :account_category, :currency, :start_date)""",
+                    cols,
+                )
+                new_id = cur.lastrowid
+                db.execute(
+                    """UPDATE deposits SET status = 'closed', closed_date = ?, closure_type = ?,
+                       reinvested_into_id = ? WHERE id = ?""",
+                    (date.today().isoformat(), choice, new_id, deposit_id),
+                )
+                db.commit()
+                return redirect(url_for("dashboard"))
+            except ValueError as e:
+                error = str(e)
+
+    return render_template(
+        "reinvest.html", active_tab="dashboard",
+        old=old, deposit_id=deposit_id, error=error, form_data=form_data,
+        choice=choice, custom_amount=custom_amount, closure_types=CLOSURE_TYPES,
+        depositors=db.execute("SELECT id, holder_id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
+        banks=db.execute("SELECT id, bank_id, name FROM banks ORDER BY name COLLATE NOCASE").fetchall(),
+        tags=list_tags(db), deposit_types=DEPOSIT_TYPES, tenure_units=TENURE_UNITS,
+        account_categories=ACCOUNT_CATEGORIES, fcnr_currencies=FCNR_CURRENCIES,
+    )
+
+
+@app.route("/history")
+def deposit_history():
+    db = get_db()
+    closed = db.execute(
+        DEPOSITS_WITH_REFS + " WHERE deposits.status = 'closed' ORDER BY deposits.closed_date DESC, deposits.id DESC"
+    ).fetchall()
+    history = []
+    for d in closed:
+        s = summarise_deposit(d)
+        new_deposit = None
+        if d["reinvested_into_id"]:
+            new_row = db.execute("SELECT * FROM deposits WHERE id = ?", (d["reinvested_into_id"],)).fetchone()
+            if new_row is not None:
+                new_deposit = summarise_deposit(new_row)
+        history.append({
+            **s,
+            "closed_date": d["closed_date"],
+            "closure_type_label": CLOSURE_TYPES.get(d["closure_type"], d["closure_type"] or ""),
+            "new_deposit": new_deposit,
+            "new_deposit_id": d["reinvested_into_id"],
+        })
+    return render_template("history.html", active_tab="history", history=history)
+
+
+@app.route("/history/<int:deposit_id>/reopen", methods=["POST"])
+def reopen_deposit(deposit_id):
+    """Undo a closure -- puts the deposit back on the active Deposits tab.
+    Doesn't touch whatever it was reinvested into, if anything; that new
+    deposit stays put and can be removed separately if this was a mistake."""
+    db = get_db()
+    db.execute(
+        "UPDATE deposits SET status = 'active', closed_date = NULL, closure_type = NULL, "
+        "reinvested_into_id = NULL WHERE id = ?",
+        (deposit_id,),
+    )
+    db.commit()
+    return redirect(url_for("deposit_history"))
 
 
 # ---------- Maturity email notifications ----------
@@ -2917,7 +3083,9 @@ def export_deposits_xlsx():
     if not EXCEL_AVAILABLE:
         return "Excel export isn't available on this build.", 501
     db = get_db()
-    deposits = db.execute(DEPOSITS_WITH_REFS + " ORDER BY deposits.start_date DESC").fetchall()
+    deposits = db.execute(
+        DEPOSITS_WITH_REFS + " WHERE deposits.status = 'active' ORDER BY deposits.start_date DESC"
+    ).fetchall()
     rows = [summarise_deposit(d) for d in deposits]
 
     wb = Workbook()
@@ -3070,8 +3238,10 @@ def compute_dicgc_rows(db):
     # conversion anywhere -- so like the Dashboard totals, FCNR deposits are
     # left out of this INR figure rather than silently understating or
     # mis-converting it.
+    # Closed (reinvested/withdrawn) deposits no longer exist at the bank, so
+    # they're excluded too -- same reasoning as dashboard().
     groups = {}  # (depositor_id, bank_ref_id) -> {names, total}
-    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR'").fetchall():
+    for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR' AND deposits.status = 'active'").fetchall():
         s = summarise_deposit(d)
         key = (d["depositor_id"], d["bank_ref_id"])
         if key not in groups:
