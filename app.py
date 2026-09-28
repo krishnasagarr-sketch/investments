@@ -315,6 +315,23 @@ def init_db():
         )
     """)
 
+    # Realised (partial or full) sales against an investment holding, kept
+    # separate from the investments row itself rather than mutating it --
+    # the original row stays the immutable cost-basis record for whatever's
+    # still held (shares - SUM(shares_sold) here), and each sale is its own
+    # dated, priced event for the Capital Gains page to work out LTCG/STCG
+    # from. See compute_capital_gains_rows().
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS investment_sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            investment_id INTEGER NOT NULL REFERENCES investments(id),
+            sale_date TEXT NOT NULL,
+            shares_sold REAL NOT NULL,
+            sale_price REAL NOT NULL,
+            remarks TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
     # Precious-metal holdings. Prices are per gram.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS metals (
@@ -3312,6 +3329,34 @@ def export_deposits_xlsx():
 TDS_RATE_PCT = 10  # with PAN on file; 20% otherwise -- shown as a caveat in the UI
 DICGC_INSURED_LIMIT = 500000  # per depositor, per bank -- covers principal + accrued interest
 
+# Capital gains on liquidating an Investments-tab holding -- Section 111A
+# (STCG) / 112A (LTCG) for listed equity shares and equity-oriented mutual
+# funds with STT paid. Every holding here is assumed to be taxed this way:
+# this app has no reliable way to tell a debt mutual fund or an unlisted/
+# foreign share apart from a ticker string, and both follow different rules
+# entirely (a debt fund bought on or after 1 Apr 2023 gets no LTCG
+# treatment at all, taxed at slab rate regardless of holding period; a
+# foreign share's LTCG threshold is 24 months, not 12). Pre-31-Jan-2018
+# grandfathering isn't modelled either. Treat the Capital Gains tab as a
+# starting estimate for equity-only portfolios, not a filed return.
+#
+# Rates and the LTCG exemption both changed for transfers on/after 23 Jul
+# 2024 (Budget 2024). For FY2024-25, which straddles that date, each sale is
+# taxed under whichever regime its own sale_date falls in, and -- per the
+# method CBDT's own ITR utility uses -- the (single, full-year) exemption is
+# applied to LTCG up to 22 Jul 2024 first, with any of it left over applied
+# to LTCG from 23 Jul 2024 onwards. One known gap: a loss on one side of
+# that date isn't netted against a gain on the other side within the same
+# year -- a corner case only FY2024-25 sales can hit.
+CG_RATE_CHANGE_DATE = date(2024, 7, 23)
+CG_CESS_PCT = 4  # health & education cess, same convention as TDS/NRO elsewhere; surcharge not modelled
+STCG_RATE_OLD_PCT = 15
+STCG_RATE_NEW_PCT = 20
+LTCG_RATE_OLD_PCT = 10
+LTCG_RATE_NEW_PCT = 12.5
+LTCG_EXEMPTION_OLD = 100000
+LTCG_EXEMPTION_NEW = 125000
+
 
 def compute_tds_rows(db, fy_start_year: int, threshold: float):
     """Resident deposits only -- NRE/FCNR interest is exempt from TDS
@@ -3417,6 +3462,143 @@ def tds_page():
         total_nro_tds=round(sum(r["estimated_tds"] for r in nro_rows), 2),
         pdf_available=PDF_AVAILABLE,
     )
+
+
+def compute_capital_gains_rows(db, fy_start_year: int):
+    """Realised capital gains from Investments-tab sales within a financial
+    year, grouped by depositor -- see the CG_* constants above for the tax
+    rules and caveats this assumes."""
+    period_start, period_end = fy_bounds(fy_start_year)
+    today = date.today()
+    if period_end > today:
+        period_end = today
+
+    sales = db.execute(
+        """SELECT investment_sales.*, investments.ticker, investments.purchase_price,
+                  investments.purchase_date, investments.depositor_id,
+                  depositors.name AS depositor_name
+           FROM investment_sales
+           JOIN investments ON investment_sales.investment_id = investments.id
+           LEFT JOIN depositors ON investments.depositor_id = depositors.id
+           WHERE investment_sales.sale_date BETWEEN ? AND ?
+           ORDER BY investment_sales.sale_date, investment_sales.id""",
+        (period_start.isoformat(), period_end.isoformat()),
+    ).fetchall()
+
+    groups = {}  # depositor_id -> running totals split by term and rate-period
+    details = []
+    for s in sales:
+        purchase_date = date.fromisoformat(s["purchase_date"])
+        sale_date = date.fromisoformat(s["sale_date"])
+        gain = s["shares_sold"] * (s["sale_price"] - s["purchase_price"])
+        # "Held for more than 12 months" -- strictly more, so selling exactly
+        # on the 12-month anniversary is still short-term.
+        is_long_term = sale_date > add_months(purchase_date, 12)
+        is_pre_change = sale_date < CG_RATE_CHANGE_DATE
+        depositor_name = s["depositor_name"] or "(unlinked)"
+
+        key = s["depositor_id"]
+        if key not in groups:
+            groups[key] = {
+                "depositor_name": depositor_name,
+                "ltcg_pre": 0.0, "ltcg_post": 0.0,
+                "stcg_pre": 0.0, "stcg_post": 0.0,
+            }
+        bucket = ("ltcg" if is_long_term else "stcg") + ("_pre" if is_pre_change else "_post")
+        groups[key][bucket] += gain
+
+        details.append({
+            "id": s["id"],
+            "ticker": s["ticker"],
+            "depositor_name": depositor_name,
+            "shares_sold": s["shares_sold"],
+            "purchase_date": s["purchase_date"],
+            "sale_date": s["sale_date"],
+            "purchase_price": s["purchase_price"],
+            "sale_price": s["sale_price"],
+            "gain": round(gain, 2),
+            "is_long_term": is_long_term,
+            "remarks": s["remarks"],
+        })
+
+    # For FY2024-25 (the only one straddling the rate change), the exemption
+    # is the single, full-year ₹1,25,000 figure -- not split or pro-rated --
+    # per the CBDT ITR-utility method noted above.
+    exemption = LTCG_EXEMPTION_NEW if fy_start_year >= 2024 else LTCG_EXEMPTION_OLD
+
+    rows = []
+    for g in groups.values():
+        ltcg_pre_taxable = max(g["ltcg_pre"], 0.0)
+        ltcg_post_taxable = max(g["ltcg_post"], 0.0)
+        # Exemption is used up against pre-change LTCG first, any left over
+        # against post-change LTCG.
+        exemption_on_pre = min(exemption, ltcg_pre_taxable)
+        exemption_on_post = min(exemption - exemption_on_pre, ltcg_post_taxable)
+        ltcg_pre_after = ltcg_pre_taxable - exemption_on_pre
+        ltcg_post_after = ltcg_post_taxable - exemption_on_post
+        ltcg_tax = (
+            ltcg_pre_after * LTCG_RATE_OLD_PCT / 100 + ltcg_post_after * LTCG_RATE_NEW_PCT / 100
+        ) * (1 + CG_CESS_PCT / 100)
+
+        # STCG has no exemption -- taxed from the first rupee, at whichever
+        # rate applied on each sale's own date.
+        stcg_pre_taxable = max(g["stcg_pre"], 0.0)
+        stcg_post_taxable = max(g["stcg_post"], 0.0)
+        stcg_tax = (
+            stcg_pre_taxable * STCG_RATE_OLD_PCT / 100 + stcg_post_taxable * STCG_RATE_NEW_PCT / 100
+        ) * (1 + CG_CESS_PCT / 100)
+
+        rows.append({
+            "depositor_name": g["depositor_name"],
+            "net_ltcg": round(g["ltcg_pre"] + g["ltcg_post"], 2),
+            "ltcg_exemption_used": round(exemption_on_pre + exemption_on_post, 2),
+            "ltcg_taxable": round(ltcg_pre_after + ltcg_post_after, 2),
+            "ltcg_tax": round(ltcg_tax, 2),
+            "net_stcg": round(g["stcg_pre"] + g["stcg_post"], 2),
+            "stcg_taxable": round(stcg_pre_taxable + stcg_post_taxable, 2),
+            "stcg_tax": round(stcg_tax, 2),
+            "total_tax": round(ltcg_tax + stcg_tax, 2),
+        })
+    rows.sort(key=lambda r: r["depositor_name"])
+    return rows, details, period_start, period_end, exemption
+
+
+@app.route("/capital-gains")
+def capital_gains_page():
+    db = get_db()
+    current_fy = current_fy_start_year()
+    try:
+        fy_start_year = int(request.args.get("fy", current_fy))
+    except (TypeError, ValueError):
+        fy_start_year = current_fy
+
+    rows, details, period_start, period_end, exemption = compute_capital_gains_rows(db, fy_start_year)
+    return render_template(
+        "capital_gains.html", active_tab="capital_gains",
+        fy_options=list(range(current_fy, current_fy - 6, -1)),
+        fy_start_year=fy_start_year, period_start=period_start, period_end=period_end,
+        rows=rows, details=details, exemption=exemption,
+        cg_rate_change_date=CG_RATE_CHANGE_DATE,
+        stcg_rate_old=STCG_RATE_OLD_PCT, stcg_rate_new=STCG_RATE_NEW_PCT,
+        ltcg_rate_old=LTCG_RATE_OLD_PCT, ltcg_rate_new=LTCG_RATE_NEW_PCT,
+        cess_pct=CG_CESS_PCT,
+        total_ltcg_tax=round(sum(r["ltcg_tax"] for r in rows), 2),
+        total_stcg_tax=round(sum(r["stcg_tax"] for r in rows), 2),
+        total_tax=round(sum(r["total_tax"] for r in rows), 2),
+    )
+
+
+@app.route("/investments/sales/<int:sale_id>/delete", methods=["POST"])
+def delete_investment_sale(sale_id):
+    db = get_db()
+    row = db.execute("SELECT sale_date FROM investment_sales WHERE id = ?", (sale_id,)).fetchone()
+    db.execute("DELETE FROM investment_sales WHERE id = ?", (sale_id,))
+    db.commit()
+    fy = current_fy_start_year()
+    if row is not None:
+        sale_date = date.fromisoformat(row["sale_date"])
+        fy = sale_date.year if sale_date.month >= 4 else sale_date.year - 1
+    return redirect(url_for("capital_gains_page", fy=fy))
 
 
 def compute_dicgc_rows(db):
@@ -4668,16 +4850,35 @@ def list_investments(db):
     """Investment holdings with cost, current value (converted to rupees) and
     gain/loss. Prices are fetched live via yfinance on every call — a USD
     quote is converted with one shared USD->INR lookup per render; other
-    currencies are shown un-converted with a note rather than guessed at."""
+    currencies are shown un-converted with a note rather than guessed at.
+
+    A holding that's had shares sold (see investment_sales / the Capital
+    Gains tab) keeps its original row exactly as bought -- immutable cost
+    basis -- and only shows its *remaining* shares/cost/value here, the same
+    way a partially-withdrawn deposit shows its reduced balance. Once every
+    share is sold it drops off this list entirely (fully realised), though
+    it's still the cost-basis record the Capital Gains tab reads from."""
     usd_rate = None
     usd_rate_error = None
     rows = []
+
+    sold_by_investment = {
+        r["investment_id"]: r["total"]
+        for r in db.execute(
+            "SELECT investment_id, SUM(shares_sold) AS total FROM investment_sales GROUP BY investment_id"
+        ).fetchall()
+    }
 
     for h in db.execute("""
         SELECT investments.*, depositors.name AS depositor_name
         FROM investments LEFT JOIN depositors ON investments.depositor_id = depositors.id
         ORDER BY investments.ticker
     """).fetchall():
+        sold_shares = sold_by_investment.get(h["id"], 0.0)
+        remaining_shares = h["shares"] - sold_shares
+        if remaining_shares <= 1e-9:
+            continue  # fully liquidated -- see the Capital Gains tab instead
+
         quote = get_stock_quote(h["ticker"])
         currency = quote["currency"]
 
@@ -4693,8 +4894,8 @@ def list_investments(db):
             resolved = quote_to_inr(quote, usd_rate=usd_rate)
             current_price, price_note = resolved["price"], resolved["price_note"]
 
-        cost = h["shares"] * h["purchase_price"]
-        value = h["shares"] * current_price if current_price is not None else None
+        cost = remaining_shares * h["purchase_price"]
+        value = remaining_shares * current_price if current_price is not None else None
         gain = (value - cost) if value is not None else None
         gain_pct = (gain / cost * 100.0) if (gain is not None and cost) else None
         days_held = max((date.today() - date.fromisoformat(h["purchase_date"])).days, 0)
@@ -4708,7 +4909,8 @@ def list_investments(db):
             "depositor_name": h["depositor_name"],
             "tag_id": h["tag_id"],
             "remarks": _row_get(h, "remarks", ""),
-            "shares": h["shares"],
+            "shares": remaining_shares,
+            "sold_shares": sold_shares,
             "purchase_price": h["purchase_price"],
             "purchase_date": h["purchase_date"],
             "current_price": current_price,
@@ -4799,6 +5001,7 @@ def _render_investments(db, **kwargs):
         priced_count=len(priced),
         total_count=len(investments),
         yfinance_available=YFINANCE_AVAILABLE,
+        notice=session.pop("investment_notice", None),
         active_tab="investments",
         wide_page=True,
         **kwargs,
@@ -4845,6 +5048,15 @@ def edit_investment(investment_id):
             form_data[key] = request.form.get(key, form_data[key])
         try:
             cols = parse_investment_form(form_data, db)
+            sold_so_far = db.execute(
+                "SELECT COALESCE(SUM(shares_sold), 0) AS total FROM investment_sales WHERE investment_id = ?",
+                (investment_id,),
+            ).fetchone()["total"]
+            if cols["shares"] < sold_so_far - 1e-9:
+                raise ValueError(
+                    f"Can't reduce shares below the {_trim_number(sold_so_far)} already sold — "
+                    "delete the sale(s) on the Capital Gains tab first if this was a mistake."
+                )
             cols["id"] = investment_id
             db.execute(
                 """UPDATE investments SET
@@ -4862,9 +5074,79 @@ def edit_investment(investment_id):
     return _render_investments(db, error=error, form_data=form_data, editing=investment_id)
 
 
+@app.route("/investments/<int:investment_id>/sell", methods=["GET", "POST"])
+def sell_investment(investment_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM investments WHERE id = ?", (investment_id,)).fetchone()
+    if row is None:
+        return redirect(url_for("investments_page"))
+
+    sold_so_far = db.execute(
+        "SELECT COALESCE(SUM(shares_sold), 0) AS total FROM investment_sales WHERE investment_id = ?",
+        (investment_id,),
+    ).fetchone()["total"]
+    remaining = row["shares"] - sold_so_far
+    if remaining <= 1e-9:
+        return redirect(url_for("investments_page"))
+
+    live_price = quote_to_inr(get_stock_quote(row["ticker"]))["price"]
+
+    error = None
+    form_data = {
+        "shares_sold": _trim_number(remaining),
+        "sale_price": _trim_number(round(live_price, 2)) if live_price is not None else "",
+        "sale_date": str(date.today()),
+        "remarks": "",
+    }
+
+    if request.method == "POST":
+        for key in form_data:
+            form_data[key] = request.form.get(key, form_data[key])
+        try:
+            shares_sold = float(form_data["shares_sold"])
+            sale_price = float(form_data["sale_price"])
+            sale_date = date.fromisoformat(form_data["sale_date"])
+        except (TypeError, ValueError):
+            error = "Enter valid numbers for shares and sale price, and a valid date."
+        else:
+            purchase_date = date.fromisoformat(row["purchase_date"])
+            if shares_sold <= 0:
+                error = "Shares to sell must be greater than 0."
+            elif shares_sold > remaining + 1e-9:
+                error = f"Only {_trim_number(remaining)} shares are still held."
+            elif sale_price <= 0:
+                error = "Sale price must be greater than 0."
+            elif sale_date < purchase_date:
+                error = "Sale date can't be before the purchase date."
+            else:
+                db.execute(
+                    """INSERT INTO investment_sales (investment_id, sale_date, shares_sold, sale_price, remarks)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (investment_id, sale_date.isoformat(), shares_sold, sale_price, form_data["remarks"].strip()),
+                )
+                db.commit()
+                return redirect(url_for("investments_page"))
+
+    return render_template(
+        "sell_investment.html", active_tab="investments",
+        row=row, remaining=remaining, sold_so_far=sold_so_far, live_price=live_price,
+        display_name=get_ticker_display_name(row["ticker"]),
+        error=error, form_data=form_data,
+    )
+
+
 @app.route("/investments/<int:investment_id>/delete", methods=["POST"])
 def delete_investment(investment_id):
     db = get_db()
+    has_sales = db.execute(
+        "SELECT 1 FROM investment_sales WHERE investment_id = ? LIMIT 1", (investment_id,)
+    ).fetchone()
+    if has_sales:
+        session["investment_notice"] = (
+            "Can't remove this holding — it has recorded sale(s) on the Capital Gains tab, "
+            "and deleting it would erase that history. Delete the sale(s) first if you really need to."
+        )
+        return redirect(url_for("investments_page"))
     db.execute("DELETE FROM investments WHERE id = ?", (investment_id,))
     db.commit()
     return redirect(url_for("investments_page"))

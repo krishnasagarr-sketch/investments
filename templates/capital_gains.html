@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Capital Gains — Fixed Deposit Manager{% endblock %}
+
+{% macro gl(x) -%}
+  <span class="{{ 'positive' if x >= 0 else 'negative' }}">{{ "+" if x >= 0 else "−" }}{{ (x | abs)|money }}</span>
+{%- endmacro %}
+
+{% block content %}
+
+  <div class="card" style="max-width:640px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Capital gains from selling Investments-tab holdings</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      Assumes every holding here is a listed equity share or equity-oriented mutual fund taxed
+      under Sections 111A (short-term) / 112A (long-term) — long-term is more than 12 months,
+      taxed at {{ ltcg_rate_new }}% above ₹1,25,000 gains per person per year (10%/₹1,00,000 for
+      sales before {{ cg_rate_change_date.isoformat() }}); short-term is taxed flat at
+      {{ stcg_rate_new }}% ({{ stcg_rate_old }}% before that date) from the first rupee. A
+      {{ cess_pct }}% health & education cess is included; any surcharge above certain income
+      levels is not. <strong>Not modelled at all:</strong> debt mutual funds (no LTCG treatment
+      if bought on/after 1 Apr 2023, taxed at slab rate instead), foreign shares (24-month LTCG
+      threshold, different rates), and pre-31-Jan-2018 grandfathering. For FY2024-25, which
+      straddles the rate change, a loss on one side of {{ cg_rate_change_date.isoformat() }}
+      isn't netted against a gain on the other side. Treat this as a starting estimate, not a
+      filed return.
+    </p>
+  </div>
+
+  <div class="card" style="max-width:300px;">
+    <form method="GET">
+      <div class="form-group">
+        <label for="fy">Financial year</label>
+        <select id="fy" name="fy" onchange="this.form.submit()">
+          {% for y in fy_options %}
+            <option value="{{ y }}" {% if y == fy_start_year %}selected{% endif %}>FY {{ y }}-{{ (y + 1) % 100 }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">By depositor ({{ period_start.isoformat() }} to {{ period_end.isoformat() }})</h2>
+    {% if rows %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Depositor</th>
+            <th>Net LTCG</th>
+            <th>Exemption Used</th>
+            <th>LTCG Taxable</th>
+            <th>LTCG Tax</th>
+            <th>Net STCG</th>
+            <th>STCG Taxable</th>
+            <th>STCG Tax</th>
+            <th>Total Tax</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td><strong>{{ r.depositor_name }}</strong></td>
+            <td>{{ gl(r.net_ltcg) }}</td>
+            <td>{{ (r.ltcg_exemption_used)|money }}</td>
+            <td>{{ (r.ltcg_taxable)|money }}</td>
+            <td>{{ (r.ltcg_tax)|money }}</td>
+            <td>{{ gl(r.net_stcg) }}</td>
+            <td>{{ (r.stcg_taxable)|money }}</td>
+            <td>{{ (r.stcg_tax)|money }}</td>
+            <td><strong>{{ (r.total_tax)|money }}</strong></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="tb-total">
+            <td><strong>Total</strong></td>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td><strong>{{ (total_ltcg_tax)|money }}</strong></td>
+            <td></td>
+            <td></td>
+            <td><strong>{{ (total_stcg_tax)|money }}</strong></td>
+            <td><strong>{{ (total_tax)|money }}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No shares sold in this financial year.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Every sale this financial year</h2>
+    {% if details %}
+      <div class="table-scroll sticky-last compact">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Depositor</th>
+            <th>Shares Sold</th>
+            <th>Bought</th>
+            <th>Sold</th>
+            <th>Buy Price</th>
+            <th>Sale Price</th>
+            <th>Gain / Loss</th>
+            <th>Term</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in details %}
+          <tr>
+            <td><strong>{{ d.ticker }}</strong></td>
+            <td>{{ d.depositor_name }}</td>
+            <td>{{ "%.3f"|format(d.shares_sold) }}</td>
+            <td>{{ d.purchase_date }}</td>
+            <td>
+              {{ d.sale_date }}
+              {% if d.remarks %}<div class="muted" style="font-size:12px; font-style:italic;" title="{{ d.remarks }}">{{ d.remarks }}</div>{% endif %}
+            </td>
+            <td>{{ (d.purchase_price)|money }}</td>
+            <td>{{ (d.sale_price)|money }}</td>
+            <td>{{ gl(d.gain) }}</td>
+            <td>
+              {% if d.is_long_term %}
+                <span class="badge active">Long-term</span>
+              {% else %}
+                <span class="badge type">Short-term</span>
+              {% endif %}
+            </td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('delete_investment_sale', sale_id=d.id) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Delete this sale?">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>No shares sold in this financial year.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}

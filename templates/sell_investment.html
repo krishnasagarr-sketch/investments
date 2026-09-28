@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Sell {{ row.ticker }} — FD Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('investments_page') }}" class="btn secondary">← Back to Investments</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">{{ row.ticker }}{% if display_name %} — {{ display_name }}{% endif %}</h2>
+    <p class="field-hint" style="margin-bottom:14px;">
+      Bought {{ (row.purchase_price)|money }}/share on {{ row.purchase_date }}
+      {% if sold_so_far %} · {{ "%.3f"|format(sold_so_far) }} already sold{% endif %}
+    </p>
+    <div class="summary-grid">
+      <div class="summary-item">
+        <div class="label">Shares Still Held</div>
+        <div class="value">{{ "%.3f"|format(remaining) }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Cost Basis</div>
+        <div class="value">{{ (remaining * row.purchase_price)|money }}</div>
+      </div>
+      <div class="summary-item">
+        <div class="label">Current Price</div>
+        <div class="value">{% if live_price is not none %}{{ (live_price)|money }}{% else %}N/A{% endif %}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 16px;">Record the sale</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      This doesn't delete the holding — it logs a sale against it, so the original purchase stays
+      the cost-basis record. Sell all remaining shares to fully liquidate it (it then drops off
+      the Investments tab), or fewer to sell part of the position. The realised gain/loss and
+      long/short-term classification show up on the <a href="{{ url_for('capital_gains_page') }}">Capital Gains</a> tab.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST">
+      <div class="form-group">
+        <label for="shares_sold">Shares to sell (of {{ "%.3f"|format(remaining) }} held)</label>
+        <input type="number" step="any" id="shares_sold" name="shares_sold" value="{{ form_data.shares_sold }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="sale_price">Sale price (₹ / share)</label>
+        <input type="number" step="any" id="sale_price" name="sale_price" value="{{ form_data.sale_price }}" required>
+        {% if live_price is not none %}
+          <p class="field-hint">Prefilled with today's price — edit if you sold at a different price.</p>
+        {% endif %}
+      </div>
+
+      <div class="form-group">
+        <label for="sale_date">Sale date</label>
+        <input type="date" id="sale_date" name="sale_date" value="{{ form_data.sale_date }}" required>
+      </div>
+
+      <div class="form-group">
+        <label for="remarks">Remarks <span class="muted">(optional)</span></label>
+        <textarea id="remarks" name="remarks" rows="2">{{ form_data.remarks }}</textarea>
+      </div>
+
+      <button type="submit" class="btn" style="width:100%;">Record Sale</button>
+    </form>
+  </div>
+
+{% endblock %}

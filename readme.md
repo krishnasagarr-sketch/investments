@@ -247,6 +247,31 @@ depositor, optional tag, shares/units, purchase price, purchase date, and option
 - A ticker that can't be priced shows "N/A" with the reason and is left out of portfolio totals
   until it prices successfully.
 
+### Selling a holding, and Capital Gains
+
+Each holding has a **Sell** link alongside Edit and Remove — enter how many shares (up to what's
+still held) and at what price (prefilled from the live quote), and it's logged as a sale rather
+than deleting or editing the holding. The original purchase row never changes: it stays the cost
+basis for whatever's still held, and "Shares" on the Investments tab shows the *remaining*
+amount after any sales, with a small "X sold" note. Sell everything and the holding drops off the
+Investments tab entirely — it's fully realised, and its purchase record lives on as history for
+the **Capital Gains** tab (which reads it directly, so a holding with recorded sales can't be
+removed — the app refuses and says why, since deleting it would erase that history).
+
+The **Capital Gains** tab shows, financial-year by financial year and grouped by depositor, the
+realised long-term and short-term gains from every sale, an estimated tax, and a line-by-line
+detail table (each with a Delete action, which un-sells those shares back onto the Investments
+tab). It assumes every holding here is a listed equity share or equity-oriented mutual fund
+taxed under Sections 111A (short-term, more than 12 months holding period is long-term) / 112A
+(long-term) — 20% flat for short-term, 12.5% above a ₹1,25,000-per-person-per-year exemption for
+long-term (10%/₹1,00,000 for sales before 23 Jul 2024, when Budget 2024 changed both), plus a 4%
+cess; surcharge isn't modelled. **Not modelled at all:** debt mutual funds (no LTCG treatment if
+bought on/after 1 Apr 2023 — taxed at slab rate instead), foreign shares (24-month LTCG
+threshold, different rates), and pre-31-Jan-2018 grandfathering — this app can't reliably tell
+those apart from a ticker string, so treat the estimate as equity-only. Losses aren't carried
+forward to a later year, and (a narrow edge case specific to the transition year) a loss on one
+side of 23 Jul 2024 isn't netted against a gain on the other side within FY2024-25.
+
 ## Calculator
 
 A standalone interest calculator — pick a deposit type, enter principal/installment, rate, and
@@ -399,10 +424,12 @@ Both are built by GitHub Actions (`.github/workflows/build-android.yml`,
 Everything lives in one SQLite file (`fixed_deposits.db`, gitignored). Key tables: `depositors`,
 `banks`, `deposits` + `deposit_withdrawals` (partial withdrawals logged against a still-open
 deposit — see [Reinvesting, closing, and History](#reinvesting-closing-and-history)), `metals` +
-`metal_prices`, `investments`, `retirement_accounts` + `retirement_contributions`,
-`other_income`, `expenses`, `family_gifts`, `portfolio_tags`, `interest_statement_lines`
-(Interest Check), `notification_settings`, and `auth_user`. Schema migrations run automatically
-on startup, so upgrading from an older version is a normal `git pull` + restart, no manual steps.
+`metal_prices`, `investments` + `investment_sales` (realised sales logged against a holding —
+see [Selling a holding, and Capital Gains](#selling-a-holding-and-capital-gains)),
+`retirement_accounts` + `retirement_contributions`, `other_income`, `expenses`, `family_gifts`,
+`portfolio_tags`, `interest_statement_lines` (Interest Check), `notification_settings`, and
+`auth_user`. Schema migrations run automatically on startup, so upgrading from an older version
+is a normal `git pull` + restart, no manual steps.
 
 ## Notes & limitations
 

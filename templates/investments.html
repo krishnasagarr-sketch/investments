@@ -14,6 +14,12 @@
 
 {% block content %}
 
+  {% if notice %}
+    <div class="card" style="max-width:520px;">
+      <div class="error-box" style="background:#fff2e0; color:var(--amber); margin:0;">{{ notice }}</div>
+    </div>
+  {% endif %}
+
   <div class="card">
     <div class="summary-grid">
       <div class="summary-item">
@@ -156,7 +162,12 @@
               {% if h.remarks %}<div class="muted" style="font-size:12px; font-style:italic;" title="{{ h.remarks }}">{{ h.remarks }}</div>{% endif %}
             </td>
             <td>{{ h.depositor_name or "—" }}</td>
-            <td>{{ "%.3f"|format(h.shares) }}</td>
+            <td>
+              {{ "%.3f"|format(h.shares) }}
+              {% if h.sold_shares %}
+                <div class="muted" style="font-size:12px;">{{ "%.3f"|format(h.sold_shares) }} sold</div>
+              {% endif %}
+            </td>
             <td>
               Buy {{ (h.purchase_price)|money }}
               <div class="muted" style="font-size:12px;">
@@ -184,6 +195,7 @@
             <td>
               <div class="row-actions">
                 <a href="{{ url_for('edit_investment', investment_id=h.id) }}" class="btn link">Edit</a>
+                <a href="{{ url_for('sell_investment', investment_id=h.id) }}" class="btn link" style="color:var(--green);">Sell</a>
                 <form class="inline" method="POST" action="{{ url_for('delete_investment', investment_id=h.id) }}">
                   <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
                 </form>
