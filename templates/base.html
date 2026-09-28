@@ -217,7 +217,7 @@
     color:var(--text-dim);
     margin-bottom:6px;
   }
-  input[type="text"], input[type="number"], input[type="date"], select{
+  input[type="text"], input[type="number"], input[type="date"], select, textarea{
     width:100%;
     padding:11px 12px;
     border:1px solid var(--border);
@@ -226,7 +226,8 @@
     font-family:inherit;
     background:#fbfbfa;
   }
-  input:focus, select:focus{outline:none; border-color:var(--accent);}
+  textarea{resize:vertical;}
+  input:focus, select:focus, textarea:focus{outline:none; border-color:var(--accent);}
 
   .error-box{
     background:#fbeae8;

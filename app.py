@@ -578,8 +578,15 @@ def init_db():
         )
     """)
     for table in ("deposits", "metals", "investments", "retirement_accounts"):
-        if "tag_id" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+        table_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if "tag_id" not in table_cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN tag_id INTEGER REFERENCES portfolio_tags(id)")
+        # Free-text notes on any holding -- "kept in bank locker", "gift from
+        # mother", "for daughter's wedding", etc. Distinct from a deposit's
+        # deposit_number or a metal's description, which identify the thing;
+        # remarks are just commentary, so no validation on the content.
+        if "remarks" not in table_cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN remarks TEXT NOT NULL DEFAULT ''")
 
     conn.commit()
     conn.close()
@@ -920,6 +927,7 @@ def summarise_deposit(d, as_of: date = None, db=None) -> dict:
         "bank_name": bank_name,
         "bank_code": bank_code,
         "deposit_number": _row_get(d, "deposit_number", ""),
+        "remarks": _row_get(d, "remarks", ""),
         "owner_id": _row_get(d, "owner_id", None),
         "owner_name": _row_get(d, "owner_name", None),
         "account_category": _row_get(d, "account_category", "Resident"),
@@ -1803,6 +1811,7 @@ def parse_deposit_form(form_data, db) -> dict:
         "deposit_number": (form_data.get("deposit_number") or "").strip(),
         "owner_id": form_data.get("owner_id") or None,
         "start_date": form_data["start_date"],
+        "remarks": (form_data.get("remarks") or "").strip(),
     }
 
 
@@ -1824,6 +1833,7 @@ def _row_to_form_data(row) -> dict:
         "account_category": row["account_category"] or "Resident",
         "currency": row["currency"] or "INR",
         "start_date": row["start_date"],
+        "remarks": _row_get(row, "remarks", "") or "",
     }
 
 
@@ -1839,6 +1849,7 @@ BLANK_DEPOSIT_FORM = {
     "deposit_number": "", "owner_id": "",
     "account_category": "Resident", "currency": "INR",
     "start_date": None,  # filled with today's date at request time
+    "remarks": "",
 }
 
 
@@ -1878,11 +1889,11 @@ def add_deposit():
                    (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                     principal, interest_rate, tenure_months, tenure_days, tenure_unit,
                     compounding_frequency, tag_id, deposit_number, owner_id,
-                    account_category, currency, start_date)
+                    account_category, currency, start_date, remarks)
                    VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                     :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
                     :compounding_frequency, :tag_id, :deposit_number, :owner_id,
-                    :account_category, :currency, :start_date)""",
+                    :account_category, :currency, :start_date, :remarks)""",
                 cols,
             )
             db.commit()
@@ -1896,7 +1907,7 @@ def add_deposit():
 DEPOSIT_IMPORT_HEADERS = [
     "depositor_name", "bank_name", "deposit_type", "principal", "interest_rate",
     "tenure_value", "tenure_unit", "compounding_frequency", "deposit_number", "owner_name",
-    "account_category", "currency", "start_date",
+    "account_category", "currency", "start_date", "remarks",
 ]
 
 
@@ -1991,6 +2002,7 @@ def _parse_deposit_import_row(db, row: dict) -> dict:
         "account_category": account_category,
         "currency": currency,
         "start_date": start_date,
+        "remarks": (row.get("remarks") or "").strip(),
     }
 
 
@@ -2023,11 +2035,11 @@ def import_deposits():
                            (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                             principal, interest_rate, tenure_months, tenure_days, tenure_unit,
                             compounding_frequency, deposit_number, owner_id,
-                            account_category, currency, start_date)
+                            account_category, currency, start_date, remarks)
                            VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                             :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
                             :compounding_frequency, :deposit_number, :owner_id,
-                            :account_category, :currency, :start_date)""",
+                            :account_category, :currency, :start_date, :remarks)""",
                         values,
                     )
                     imported += 1
@@ -2040,10 +2052,10 @@ def import_deposits():
 @app.route("/deposits/import/template.csv")
 def deposits_import_template():
     template = ",".join(DEPOSIT_IMPORT_HEADERS) + "\n" + (
-        "Krishna,SBI,cumulative,100000,7.1,12,months,4,FD123456789,,Resident,INR,2026-01-15\n"
-        "Krishna,SBI,simple,50000,6.5,36,months,,FD987654321,Son,Resident,INR,2025-06-01\n"
-        "Bala,HDFC,recurring,5000,7,24,months,,RD555111222,,Resident,INR,2026-03-01\n"
-        "Krishna,HDFC,cumulative,20000,5.5,24,months,4,FCNR001,,FCNR,USD,2026-01-01\n"
+        "Krishna,SBI,cumulative,100000,7.1,12,months,4,FD123456789,,Resident,INR,2026-01-15,\n"
+        "Krishna,SBI,simple,50000,6.5,36,months,,FD987654321,Son,Resident,INR,2025-06-01,Kept in bank locker\n"
+        "Bala,HDFC,recurring,5000,7,24,months,,RD555111222,,Resident,INR,2026-03-01,\n"
+        "Krishna,HDFC,cumulative,20000,5.5,24,months,4,FCNR001,,FCNR,USD,2026-01-01,For daughter's education\n"
     )
     return send_file(
         io.BytesIO(template.encode()), as_attachment=True,
@@ -2077,7 +2089,8 @@ def edit_deposit(deposit_id):
                      tenure_unit = :tenure_unit,
                      compounding_frequency = :compounding_frequency, tag_id = :tag_id,
                      deposit_number = :deposit_number, owner_id = :owner_id,
-                     account_category = :account_category, currency = :currency, start_date = :start_date
+                     account_category = :account_category, currency = :currency, start_date = :start_date,
+                     remarks = :remarks
                    WHERE id = :id""",
                 cols,
             )
@@ -2232,6 +2245,7 @@ def reinvest_deposit(deposit_id):
         "account_category": row["account_category"] or "Resident",
         "currency": row["currency"] or "INR",
         "start_date": str(date.today()),
+        "remarks": _row_get(row, "remarks", "") or "",
     })
     error = None
     choice = "reinvested_full"
@@ -2318,10 +2332,10 @@ def reinvest_deposit(deposit_id):
                         """INSERT INTO deposits
                            (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
                             principal, interest_rate, tenure_months, tenure_days, tenure_unit,
-                            compounding_frequency, tag_id, owner_id, account_category, currency, start_date)
+                            compounding_frequency, tag_id, owner_id, account_category, currency, start_date, remarks)
                            VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
                             :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
-                            :compounding_frequency, :tag_id, :owner_id, :account_category, :currency, :start_date)""",
+                            :compounding_frequency, :tag_id, :owner_id, :account_category, :currency, :start_date, :remarks)""",
                         cols,
                     )
                     new_id = cur.lastrowid
@@ -3265,7 +3279,7 @@ def export_deposits_xlsx():
     ws.title = "Deposits"
     headers = ["Depositor", "Owned By", "Bank", "Deposit Number", "Category", "Currency", "Type",
                "Principal", "Rate %", "Tenure", "Start Date", "Maturity Date", "Current Value",
-               "Interest Earned", "Ann. Return %"]
+               "Interest Earned", "Ann. Return %", "Remarks"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -3276,6 +3290,7 @@ def export_deposits_xlsx():
             r["principal"], r["interest_rate"], r["tenure_label"], r["start_date"], r["maturity_date"],
             round(r["current_value"], 2), round(r["accrued_interest"], 2),
             round(r["annualised_return"], 2) if r["annualised_return"] is not None else None,
+            r["remarks"],
         ])
 
     for i, header in enumerate(headers, start=1):
@@ -3562,6 +3577,7 @@ def retirement_accounts_with_totals(db):
             "institution": a["institution"],
             "account_number": a["account_number"],
             "tag_id": a["tag_id"],
+            "remarks": _row_get(a, "remarks", ""),
             "opened_date": a["opened_date"],
             "current_balance": a["current_balance"],
             "balance_as_of": a["balance_as_of"],
@@ -3580,7 +3596,7 @@ def retirement_page():
     db = get_db()
     error = None
     form_data = {"depositor_id": "", "account_type": "PPF", "institution": "", "account_number": "",
-                 "tag_id": "", "opened_date": date.today().isoformat()}
+                 "tag_id": "", "opened_date": date.today().isoformat(), "remarks": ""}
 
     if request.method == "POST":
         form_data["depositor_id"] = request.form.get("depositor_id", "")
@@ -3589,6 +3605,7 @@ def retirement_page():
         form_data["account_number"] = request.form.get("account_number", "").strip()
         form_data["tag_id"] = request.form.get("tag_id", "")
         form_data["opened_date"] = request.form.get("opened_date", "").strip()
+        form_data["remarks"] = request.form.get("remarks", "").strip()
         try:
             if not form_data["depositor_id"]:
                 raise ValueError("Choose a depositor.")
@@ -3598,10 +3615,11 @@ def retirement_page():
                 raise ValueError("Opened date is required.")
             db.execute(
                 """INSERT INTO retirement_accounts
-                   (depositor_id, account_type, institution, account_number, tag_id, opened_date)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (depositor_id, account_type, institution, account_number, tag_id, opened_date, remarks)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (form_data["depositor_id"], form_data["account_type"], form_data["institution"],
-                 form_data["account_number"], form_data["tag_id"] or None, form_data["opened_date"]),
+                 form_data["account_number"], form_data["tag_id"] or None, form_data["opened_date"],
+                 form_data["remarks"]),
             )
             db.commit()
             return redirect(url_for("retirement_page"))
@@ -3630,6 +3648,20 @@ def update_retirement_balance(account_id):
     db.execute(
         "UPDATE retirement_accounts SET current_balance = ?, balance_as_of = ? WHERE id = ?",
         (balance, date.today().isoformat(), account_id),
+    )
+    db.commit()
+    return redirect(url_for("retirement_page"))
+
+
+@app.route("/retirement/<int:account_id>/remarks", methods=["POST"])
+def update_retirement_remarks(account_id):
+    db = get_db()
+    account = db.execute("SELECT id FROM retirement_accounts WHERE id = ?", (account_id,)).fetchone()
+    if account is None:
+        return redirect(url_for("retirement_page"))
+    db.execute(
+        "UPDATE retirement_accounts SET remarks = ? WHERE id = ?",
+        (request.form.get("remarks", "").strip(), account_id),
     )
     db.commit()
     return redirect(url_for("retirement_page"))
@@ -4189,6 +4221,7 @@ def list_metals(db):
             "depositor_name": m["depositor_name"],
             "tag_id": m["tag_id"],
             "description": m["description"],
+            "remarks": _row_get(m, "remarks", ""),
             "grams": m["grams"],
             "purchase_price": m["purchase_price"],
             "current_price": current_price,
@@ -4237,12 +4270,13 @@ def parse_metal_form(form_data, db) -> dict:
         "purchase_price": purchase_price,
         "tag_id": form_data.get("tag_id") or None,
         "purchase_date": form_data["purchase_date"] or str(date.today()),
+        "remarks": (form_data.get("remarks") or "").strip(),
     }
 
 
 BLANK_METAL_FORM = {
     "metal": "gold_24k", "depositor_id": "", "description": "", "grams": "",
-    "purchase_price": "", "tag_id": "", "purchase_date": None,
+    "purchase_price": "", "tag_id": "", "purchase_date": None, "remarks": "",
 }
 
 
@@ -4255,6 +4289,7 @@ def _metal_to_form_data(row) -> dict:
         "purchase_price": _trim_number(row["purchase_price"]),
         "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
         "purchase_date": row["purchase_date"],
+        "remarks": _row_get(row, "remarks", "") or "",
     }
 
 
@@ -4317,8 +4352,8 @@ def metals_page():
             cols["current_price"] = market["price"] if market else cols["purchase_price"]
             db.execute(
                 """INSERT INTO metals
-                   (metal, depositor_id, description, grams, purchase_price, current_price, tag_id, purchase_date)
-                   VALUES (:metal, :depositor_id, :description, :grams, :purchase_price, :current_price, :tag_id, :purchase_date)""",
+                   (metal, depositor_id, description, grams, purchase_price, current_price, tag_id, purchase_date, remarks)
+                   VALUES (:metal, :depositor_id, :description, :grams, :purchase_price, :current_price, :tag_id, :purchase_date, :remarks)""",
                 cols,
             )
             db.commit()
@@ -4399,7 +4434,8 @@ def edit_metal(metal_id):
             db.execute(
                 """UPDATE metals SET
                      metal = :metal, depositor_id = :depositor_id, description = :description,
-                     grams = :grams, purchase_price = :purchase_price, tag_id = :tag_id, purchase_date = :purchase_date
+                     grams = :grams, purchase_price = :purchase_price, tag_id = :tag_id, purchase_date = :purchase_date,
+                     remarks = :remarks
                    WHERE id = :id""",
                 cols,
             )
@@ -4671,6 +4707,7 @@ def list_investments(db):
             "depositor_id": h["depositor_id"],
             "depositor_name": h["depositor_name"],
             "tag_id": h["tag_id"],
+            "remarks": _row_get(h, "remarks", ""),
             "shares": h["shares"],
             "purchase_price": h["purchase_price"],
             "purchase_date": h["purchase_date"],
@@ -4719,11 +4756,13 @@ def parse_investment_form(form_data, db) -> dict:
         "purchase_price": purchase_price,
         "tag_id": form_data.get("tag_id") or None,
         "purchase_date": form_data["purchase_date"] or str(date.today()),
+        "remarks": (form_data.get("remarks") or "").strip(),
     }
 
 
 BLANK_INVESTMENT_FORM = {
     "ticker": "", "depositor_id": "", "shares": "", "purchase_price": "", "tag_id": "", "purchase_date": None,
+    "remarks": "",
 }
 
 
@@ -4735,6 +4774,7 @@ def _investment_to_form_data(row) -> dict:
         "purchase_price": _trim_number(row["purchase_price"]),
         "tag_id": str(row["tag_id"]) if row["tag_id"] else "",
         "purchase_date": row["purchase_date"],
+        "remarks": _row_get(row, "remarks", "") or "",
     }
 
 
@@ -4778,8 +4818,8 @@ def investments_page():
         try:
             cols = parse_investment_form(form_data, db)
             db.execute(
-                """INSERT INTO investments (ticker, depositor_id, shares, purchase_price, tag_id, purchase_date)
-                   VALUES (:ticker, :depositor_id, :shares, :purchase_price, :tag_id, :purchase_date)""",
+                """INSERT INTO investments (ticker, depositor_id, shares, purchase_price, tag_id, purchase_date, remarks)
+                   VALUES (:ticker, :depositor_id, :shares, :purchase_price, :tag_id, :purchase_date, :remarks)""",
                 cols,
             )
             db.commit()
@@ -4809,7 +4849,8 @@ def edit_investment(investment_id):
             db.execute(
                 """UPDATE investments SET
                      ticker = :ticker, depositor_id = :depositor_id, shares = :shares,
-                     purchase_price = :purchase_price, tag_id = :tag_id, purchase_date = :purchase_date
+                     purchase_price = :purchase_price, tag_id = :tag_id, purchase_date = :purchase_date,
+                     remarks = :remarks
                    WHERE id = :id""",
                 cols,
             )

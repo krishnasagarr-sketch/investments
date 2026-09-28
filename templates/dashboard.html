@@ -147,6 +147,9 @@
               {% if r.deposit_number %}
                 <div class="muted" style="font-size:12px;">FD No: {{ r.deposit_number }}</div>
               {% endif %}
+              {% if r.remarks %}
+                <div class="muted" style="font-size:12px; font-style:italic; max-width:160px;" title="{{ r.remarks }}">{{ r.remarks }}</div>
+              {% endif %}
             </td>
             <td>
               <span class="badge type type-{{ r.deposit_type }}">{{ r.deposit_type_label }}</span>

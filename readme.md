@@ -125,6 +125,9 @@ shows doesn't apply to non-residents.
 - **Deposit / Account Number** — optional, free text — the FD/RD number on the bank's own
   receipt.
 - **Tag** — optional, see [Tags](#tags) below.
+- **Remarks** — optional, free text for any note worth keeping alongside the deposit (e.g. "kept
+  in bank locker", "for daughter's wedding"). Shown on the Deposits tab, History, and the Excel
+  export. Every other holding type (Metals, Investments, Retirement accounts) has the same field.
 
 ### Bulk CSV import
 
@@ -215,9 +218,10 @@ the per-tab totals do on their own. This is separate from **Owned by** — a tag
 
 Record precious-metal holdings: metal (Gold 24K, Gold 22K, silver, platinum, palladium, or
 other — 24K and 22K tracked separately, each with its own market rate), an optional depositor
-and tag, weight in grams, and purchase price per gram. Current value comes from a shared
-**Market Prices** table (one live ₹/gram rate per metal), so setting the rate once revalues
-every holding of that metal everywhere.
+and tag, weight in grams, purchase price per gram, and optional free-text **description** (e.g.
+"22K coin, sovereign, bar") and **remarks** for any other note. Current value comes from a
+shared **Market Prices** table (one live ₹/gram rate per metal), so setting the rate once
+revalues every holding of that metal everywhere.
 
 - **Fetch Live Prices** — gold and silver use the **IBJA (India Bullion & Jewellers
   Association)** daily reference rate, the same benchmark Indian jewellers and banks price
@@ -234,7 +238,8 @@ every holding of that metal everywhere.
 
 Track stock and mutual fund holdings: ticker (searchable across NSE-listed stocks and
 AMFI-registered mutual fund schemes, or type a custom ticker like a US stock), a required
-depositor, optional tag, shares/units, purchase price, and purchase date.
+depositor, optional tag, shares/units, purchase price, purchase date, and optional **remarks**
+(e.g. "long-term hold", "tax-loss harvest candidate").
 
 - **Stocks** are priced live via `yfinance` on every page view, converted to rupees if quoted
   in USD.
@@ -352,7 +357,8 @@ balance dates, market-linked NPS returns) this app doesn't try to reproduce — 
 balance is entered by hand** from the account's own passbook or portal, the same pattern used
 for metals' market price. Contributions are logged individually (date, amount, note) to compute
 gain, and a PPF account flags when its contributions in the current financial year exceed the
-**₹1,50,000** annual limit.
+**₹1,50,000** annual limit. Each account also has a **remarks** field (e.g. "employer-matched",
+"nominee is spouse"), editable after creation via its own "Update remarks" box.
 
 ## Backup & Restore
 

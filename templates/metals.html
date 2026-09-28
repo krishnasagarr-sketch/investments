@@ -118,6 +118,11 @@
         <input type="date" id="purchase_date" name="purchase_date" value="{{ form_data.purchase_date }}" required>
       </div>
 
+      <div class="form-group">
+        <label for="remarks">Remarks <span class="muted">(optional)</span></label>
+        <textarea id="remarks" name="remarks" rows="2" placeholder="e.g. kept in bank locker, gift from mother">{{ form_data.remarks }}</textarea>
+      </div>
+
       <button type="submit" class="btn" style="width:100%;">{{ "Save Changes" if editing else "Add Holding" }}</button>
       {% if editing %}
         <a href="{{ url_for('metals_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center;">Cancel</a>
@@ -148,6 +153,7 @@
             <td>
               <strong>{{ m.metal_label }}</strong>
               {% if m.description %}<div class="muted" style="font-size:12px;">{{ m.description }}</div>{% endif %}
+              {% if m.remarks %}<div class="muted" style="font-size:12px; font-style:italic;" title="{{ m.remarks }}">{{ m.remarks }}</div>{% endif %}
             </td>
             <td>{{ m.depositor_name or "—" }}</td>
             <td>{{ "%.3f"|format(m.grams) }}</td>

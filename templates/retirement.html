@@ -60,6 +60,10 @@
         <label for="opened_date">Opened date</label>
         <input type="date" id="opened_date" name="opened_date" value="{{ form_data.opened_date }}" required>
       </div>
+      <div class="form-group">
+        <label for="remarks">Remarks <span class="muted">(optional)</span></label>
+        <textarea id="remarks" name="remarks" rows="2" placeholder="e.g. employer-matched, nominee is spouse">{{ form_data.remarks }}</textarea>
+      </div>
       <button type="submit" class="btn" style="width:100%;" {% if not depositors %}disabled{% endif %}>Add Account</button>
       {% if not depositors %}
         <p class="field-hint">Add a depositor first on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab.</p>
@@ -77,6 +81,7 @@
             {% if a.institution %}<span class="muted">· {{ a.institution }}</span>{% endif %}
             {% if a.account_number %}<span class="muted">· {{ a.account_number }}</span>{% endif %}
             <div class="muted" style="font-size:12px;">Opened {{ a.opened_date }}</div>
+            {% if a.remarks %}<div class="muted" style="font-size:12px; font-style:italic;">{{ a.remarks }}</div>{% endif %}
           </div>
           <form class="inline" method="POST" action="{{ url_for('delete_retirement_account', account_id=a.id) }}">
             <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
@@ -124,6 +129,14 @@
               <input type="date" name="contribution_date" required style="flex:1;">
               <input type="number" step="any" name="amount" placeholder="₹" required style="flex:1;">
               <button type="submit" class="btn secondary">Add</button>
+            </div>
+          </form>
+
+          <form method="POST" action="{{ url_for('update_retirement_remarks', account_id=a.id) }}" style="grid-column: 1 / -1;">
+            <label for="remarks-{{ a.id }}" style="font-size:12px;color:var(--muted);">Update remarks</label>
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="remarks-{{ a.id }}" name="remarks" value="{{ a.remarks }}" style="flex:1;">
+              <button type="submit" class="btn secondary">Update</button>
             </div>
           </form>
         </div>

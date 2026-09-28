@@ -51,6 +51,7 @@
             <td>
               {{ h.bank_name }}
               {% if h.deposit_number %}<div class="muted" style="font-size:12px;">FD No: {{ h.deposit_number }}</div>{% endif %}
+              {% if h.remarks %}<div class="muted" style="font-size:12px; font-style:italic;" title="{{ h.remarks }}">{{ h.remarks }}</div>{% endif %}
             </td>
             <td><span class="badge type type-{{ h.deposit_type }}">{{ h.deposit_type_label }}</span></td>
             <td>{{ h.interest_rate }}%</td>

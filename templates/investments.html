@@ -118,6 +118,11 @@
         <input type="date" id="purchase_date" name="purchase_date" value="{{ form_data.purchase_date }}" required>
       </div>
 
+      <div class="form-group">
+        <label for="remarks">Remarks <span class="muted">(optional)</span></label>
+        <textarea id="remarks" name="remarks" rows="2" placeholder="e.g. long-term hold, tax-loss harvest candidate">{{ form_data.remarks }}</textarea>
+      </div>
+
       <button type="submit" class="btn" style="width:100%;">{{ "Save Changes" if editing else "Add Investment" }}</button>
       {% if editing %}
         <a href="{{ url_for('investments_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center;">Cancel</a>
@@ -148,6 +153,7 @@
             <td>
               <strong>{{ h.ticker }}</strong>
               {% if h.display_name %}<div class="muted" style="font-size:12px;">{{ h.display_name }}</div>{% endif %}
+              {% if h.remarks %}<div class="muted" style="font-size:12px; font-style:italic;" title="{{ h.remarks }}">{{ h.remarks }}</div>{% endif %}
             </td>
             <td>{{ h.depositor_name or "—" }}</td>
             <td>{{ "%.3f"|format(h.shares) }}</td>
