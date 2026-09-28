@@ -145,26 +145,35 @@ and asking what to do next:
 - **Reinvest — full amount**, **principal only**, or **interest only**
 - **Reinvest — modified amount** — a custom figure you've already worked out, for topping up
   with fresh money or reinvesting a specific amount
-- **Partial closure** — the other way round: say how much to withdraw now, and whatever's left
-  is reinvested automatically as the new deposit below
 - **Withdraw everything** — close it out with no reinvestment
+- **Partial withdrawal** — a different kind of option, described below: it doesn't close
+  anything
 
 Closing before maturity shows a reminder that banks often pay a lower "penal" rate on premature
 withdrawal — the app has no bank-specific penalty terms, so the figure shown assumes the full
 contracted rate up to today.
 
-Choosing any reinvest/partial option opens a form for the new (continuing) deposit, prefilled
+Choosing any "Reinvest"/"Withdraw everything" option opens a form for the new deposit, prefilled
 from the old one's depositor, owner, bank, tag, account category, currency, rate, tenure, and
 compounding frequency — all editable before saving. A matured RD reinvests as a fresh FD, not a
-new RD, since it pays out as a lump sum.
+new RD, since it pays out as a lump sum. The old deposit is then **closed**, not deleted: it
+disappears from the Deposits tab, the Dashboard/Chart, DICGC, Tags, and the Excel export, but is
+kept on the **History** tab — with its original principal, rate, start date, a "Closed early"
+badge if it didn't run to term, its interest/value *as of the actual closure date* (not today, so
+an early closure doesn't look like it kept accruing after it stopped existing), its closure type,
+and (if reinvested) a link to the new deposit it became. A **Reopen** button on History undoes a
+closure if it was done by mistake.
 
-Either way, the old deposit is **closed**, not deleted: it disappears from the Deposits tab,
-the Dashboard/Chart, DICGC, Tags, and the Excel export, but is kept on the **History** tab —
-with its original principal, rate, start date, a "Closed early" badge if it didn't run to term,
-its interest/value *as of the actual closure date* (not today, so an early closure doesn't look
-like it kept accruing after it stopped existing), its closure type, and (if reinvested) a link
-to the new deposit it became. A **Reopen** button on History undoes a closure if it was done by
-mistake.
+**Partial withdrawal** is different in kind from every option above: it doesn't close the
+deposit or create a new one. Say how much to take out, and that exact deposit — same id, same
+start date, same rate/tenure/bank — just keeps running with a smaller balance from today onward;
+its maturity amount and current value both drop to match, and nothing shows up on History. Under
+the hood this only logs the withdrawal's date and amount, rather than editing the deposit's
+principal directly: interest already attributed to periods *before* the withdrawal (already
+reported on TDS, the Tax estimate, or the Income & Expenditure statement) isn't touched, only
+interest from that date forward is computed on the reduced balance. Not available for a
+recurring deposit, whose principal is a monthly installment rather than a lump sum. The Dashboard
+shows a "withdrawn" note under the deposit's principal whenever this has happened.
 
 Closing a deposit never erases its tax history: **TDS, the Tax estimate, and the Income &
 Expenditure statement** compute a deposit's interest from its own start/maturity dates for

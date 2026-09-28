@@ -41,6 +41,12 @@
         the full rate applied up to today. Check your bank's actual payout before relying on it.
       </p>
     {% endif %}
+    {% if old.total_withdrawn %}
+      <p class="field-hint" style="margin-top:12px; margin-bottom:0;">
+        Already partially withdrawn to date: {{ (old.total_withdrawn)|money(old.currency) }} — the
+        figures above already reflect that.
+      </p>
+    {% endif %}
   </div>
 
   <div class="card" style="max-width:520px;">
@@ -59,13 +65,17 @@
           <option value="reinvested_principal" {% if choice == "reinvested_principal" %}selected{% endif %}>Reinvest — principal only ({{ (old.principal)|money(old.currency) }})</option>
           <option value="reinvested_interest" {% if choice == "reinvested_interest" %}selected{% endif %}>Reinvest — interest only ({{ (interest_amount)|money(old.currency) }})</option>
           <option value="reinvested_custom" {% if choice == "reinvested_custom" %}selected{% endif %}>Reinvest — modified amount</option>
-          <option value="partial_withdrawal" {% if choice == "partial_withdrawal" %}selected{% endif %}>Partial closure — withdraw some, reinvest the rest</option>
+          {% if old.deposit_type != "recurring" %}
+            <option value="partial_withdrawal" {% if choice == "partial_withdrawal" %}selected{% endif %}>Partial withdrawal — keep this same deposit running</option>
+          {% endif %}
           <option value="withdrawn" {% if choice == "withdrawn" %}selected{% endif %}>Withdraw everything (no reinvestment)</option>
         </select>
         <p class="field-hint">
-          "Modified amount" is for topping up with fresh money, or reinvesting a figure you've
-          already worked out yourself. "Partial closure" is the other way round — say how much
-          you're taking out, and the remainder is reinvested automatically.
+          "Modified amount" closes this deposit and opens a new one for whatever figure you give.
+          "Partial withdrawal" is different — it does <strong>not</strong> close anything: this
+          exact deposit (same id, same start date, same rate/tenure/bank) keeps going, just with
+          the withdrawn amount taken off its value. Its maturity amount adjusts to match, and
+          nothing appears on the History tab.
         </p>
       </div>
 
@@ -79,7 +89,8 @@
         <input type="number" step="any" id="withdraw_amount" name="withdraw_amount" placeholder="e.g. 50000"
                value="{{ withdraw_amount }}" data-full-amount="{{ full_amount }}" data-currency="{{ old.currency }}">
         <p class="field-hint" id="remainder_hint">
-          Out of {{ (full_amount)|money(old.currency) }} available, the rest will be reinvested below.
+          Out of {{ (full_amount)|money(old.currency) }} available, the rest keeps earning interest
+          in this same deposit going forward.
         </p>
       </div>
 
@@ -222,11 +233,11 @@
         var fullAmount = parseFloat(withdrawInput.dataset.fullAmount || "0");
         var taken = parseFloat(withdrawInput.value);
         if (isNaN(taken) || taken <= 0) {
-          remainderHint.textContent = "Out of " + formatAmount(fullAmount) + " available, the rest will be reinvested below.";
+          remainderHint.textContent = "Out of " + formatAmount(fullAmount) + " available, the rest keeps earning interest in this same deposit going forward.";
         } else if (taken >= fullAmount) {
-          remainderHint.textContent = "That's the full amount available -- use \"Withdraw everything\" instead if nothing is being reinvested.";
+          remainderHint.textContent = "That's the full amount available -- use \"Withdraw everything\" instead if nothing is left invested.";
         } else {
-          remainderHint.textContent = formatAmount(fullAmount - taken) + " will be reinvested below.";
+          remainderHint.textContent = formatAmount(fullAmount - taken) + " keeps earning interest in this same deposit going forward.";
         }
       }
 
@@ -235,10 +246,10 @@
         var partial = choiceEl.value === "partial_withdrawal";
         customGroup.style.display = (choiceEl.value === "reinvested_custom") ? "" : "none";
         withdrawGroup.style.display = partial ? "" : "none";
-        newFields.style.display = withdrawing ? "none" : "";
+        newFields.style.display = (withdrawing || partial) ? "none" : "";
         currencyGroup.style.display = (categoryEl.value === "FCNR") ? "" : "none";
         compoundingGroup.style.display = (typeEl.value === "cumulative") ? "" : "none";
-        submitBtn.textContent = withdrawing ? "Close (Withdraw)" : "Reinvest";
+        submitBtn.textContent = withdrawing ? "Close (Withdraw)" : (partial ? "Withdraw" : "Reinvest");
         submitBtn.className = withdrawing ? "btn danger" : "btn";
         if (partial) updateRemainderHint();
       }

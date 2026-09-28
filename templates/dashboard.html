@@ -161,6 +161,9 @@
                   {{ (r.monthly_installment)|money(r.currency) }}/mo &middot; {{ r.installments_paid }}/{{ r.total_installments }} paid
                 </div>
               {% endif %}
+              {% if r.total_withdrawn %}
+                <div class="muted" style="font-size:12px;">−{{ (r.total_withdrawn)|money(r.currency) }} withdrawn</div>
+              {% endif %}
             </td>
             <td>{{ r.interest_rate }}%</td>
             <td>{{ r.tenure_label }}</td>

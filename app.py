@@ -206,9 +206,11 @@ CLOSURE_TYPES = {
     "reinvested_principal": "Reinvested — principal only",
     "reinvested_interest": "Reinvested — interest only",
     "reinvested_custom": "Reinvested — modified amount",
-    "partial_withdrawal": "Partial withdrawal — remainder reinvested",
     "withdrawn": "Withdrawn (not reinvested)",
 }
+# "partial_withdrawal" is deliberately NOT a closure type: it doesn't close
+# the deposit at all, so it never appears here or in History -- see
+# reinvest_deposit() and deposit_withdrawals.
 
 # Currencies banks commonly actually open FCNR accounts in (RBI's permitted
 # list is wider than this).
@@ -399,6 +401,22 @@ def init_db():
     for col, ddl in migrations.items():
         if col not in existing_cols:
             conn.execute(ddl)
+
+    # Partial withdrawals from an otherwise-still-open deposit -- the deposit
+    # itself keeps its id/start_date/principal unchanged; each withdrawal is
+    # logged here instead, so interest for periods *before* the withdrawal
+    # keeps being computed on the larger, pre-withdrawal balance (correct for
+    # past TDS/Tax/Income & Expenditure figures), while the balance actually
+    # sitting in the deposit -- and therefore its maturity amount -- drops by
+    # the withdrawn amount from that date onward. See deposit_balance_at().
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS deposit_withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            deposit_id INTEGER NOT NULL REFERENCES deposits(id),
+            withdrawal_date TEXT NOT NULL,
+            amount REAL NOT NULL
+        )
+    """)
 
     # Backfill: promote any legacy free-text holder on a deposit into a
     # depositor record and link it, so old rows show up in the new UI.
@@ -714,15 +732,87 @@ def _row_get(d, key, default):
     return d[key] if key in d.keys() else default
 
 
-def summarise_deposit(d, as_of: date = None) -> dict:
+def get_deposit_withdrawals(db, deposit_id: int) -> list:
+    """Chronological (date, amount) partial withdrawals against a deposit
+    that's still open -- see the deposit_withdrawals table comment. Empty for
+    the overwhelming majority of deposits that have never had one."""
+    if db is None:
+        return []
+    rows = db.execute(
+        "SELECT withdrawal_date, amount FROM deposit_withdrawals WHERE deposit_id = ? ORDER BY withdrawal_date, id",
+        (deposit_id,),
+    ).fetchall()
+    return [(date.fromisoformat(r["withdrawal_date"]), r["amount"]) for r in rows]
+
+
+def deposit_balance_at(d, events: list, target_date: date) -> tuple:
+    """Piecewise balance + cumulative interest earned as of `target_date`,
+    for a lump-sum (cumulative or simple) deposit that has had zero or more
+    partial withdrawals along the way.
+
+    Each withdrawal only reduces the balance actually earning interest from
+    its own date onward -- everything before it keeps growing on the larger,
+    pre-withdrawal balance, so a withdrawal today can't retroactively change
+    how much interest an earlier period (already reported for TDS/Tax/Income
+    & Expenditure) is credited with. With no withdrawals this returns exactly
+    what the plain calculate_cumulative()/calculate_simple() formulas would.
+    """
+    dtype = _row_get(d, "deposit_type", "cumulative")
+    start = date.fromisoformat(d["start_date"])
+    maturity_date = _deposit_maturity_date(d)
+    rate = d["interest_rate"] / 100
+    freq = d["compounding_frequency"] if dtype != "simple" else None
+
+    balance = d["principal"]
+    checkpoint = start
+    total_interest = 0.0
+
+    def grow(bal, from_date, to_date):
+        # Growth stops at maturity, same as everywhere else in the app --
+        # a deposit sitting un-renewed past its own maturity date doesn't
+        # keep compounding indefinitely.
+        from_date = min(from_date, maturity_date)
+        to_date = min(to_date, maturity_date)
+        years = max((to_date - from_date).days, 0) / DAYS_PER_YEAR
+        if dtype == "simple":
+            # Payout type: interest is disbursed as it accrues, not retained
+            # in the balance, so the balance itself never grows -- only the
+            # running interest total does.
+            return bal, bal * rate * years
+        grown = bal * (1 + rate / freq) ** (freq * years)
+        return grown, grown - bal
+
+    for wdate, amount in events:
+        if wdate > target_date:
+            break
+        balance, interest = grow(balance, checkpoint, wdate)
+        total_interest += interest
+        balance -= amount
+        checkpoint = wdate
+
+    balance, interest = grow(balance, checkpoint, target_date)
+    total_interest += interest
+    return balance, total_interest
+
+
+def summarise_deposit(d, as_of: date = None, db=None) -> dict:
     """Turn a raw deposits row into a display dict with computed figures, as
     of a given date (defaults to today) — an arbitrary `as_of` is what lets
     deposit_interest_in_period() work out interest earned within a specific
-    window (e.g. a financial year) rather than only "to date"."""
+    window (e.g. a financial year) rather than only "to date". `db`, when
+    given, looks up any partial withdrawals logged against this deposit so
+    the figures below correctly reflect them (see deposit_balance_at)."""
     dtype = _row_get(d, "deposit_type", "cumulative")
     if dtype not in DEPOSIT_TYPES:
         dtype = "cumulative"
     start = date.fromisoformat(d["start_date"])
+
+    # Any partial withdrawals logged against this (still-open) deposit --
+    # doesn't apply to an RD, whose "principal" is a monthly installment
+    # rather than a lump sum. See deposit_balance_at() for how these bend
+    # the maturity/current-value figures below without disturbing interest
+    # already attributed to periods before the withdrawal happened.
+    events = get_deposit_withdrawals(db, d["id"]) if dtype != "recurring" else []
 
     # Resolve the tenure into a length in years and a maturity date.
     unit = _row_get(d, "tenure_unit", "months")
@@ -738,9 +828,12 @@ def summarise_deposit(d, as_of: date = None) -> dict:
         tenure_label = f"{d['tenure_months']} mo"
 
     if dtype == "simple":
-        maturity_amount, interest_earned = calculate_simple(
-            d["principal"], d["interest_rate"], t_years
-        )
+        if events:
+            maturity_amount, interest_earned = deposit_balance_at(d, events, maturity_date)
+        else:
+            maturity_amount, interest_earned = calculate_simple(
+                d["principal"], d["interest_rate"], t_years
+            )
         invested = d["principal"]
     elif dtype == "recurring":
         maturity_amount, interest_earned = calculate_recurring(
@@ -748,9 +841,12 @@ def summarise_deposit(d, as_of: date = None) -> dict:
         )
         invested = 0.0  # set below to installments actually paid so far
     else:
-        maturity_amount, interest_earned = calculate_cumulative(
-            d["principal"], d["interest_rate"], t_years, d["compounding_frequency"]
-        )
+        if events:
+            maturity_amount, interest_earned = deposit_balance_at(d, events, maturity_date)
+        else:
+            maturity_amount, interest_earned = calculate_cumulative(
+                d["principal"], d["interest_rate"], t_years, d["compounding_frequency"]
+            )
         invested = d["principal"]
 
     # Prefer the linked master records; fall back to any legacy free text.
@@ -781,23 +877,32 @@ def summarise_deposit(d, as_of: date = None) -> dict:
                 d["principal"], d["interest_rate"], d["tenure_months"],
                 installments_paid, months_elapsed,
             )
+        accrued_interest = current_value - paid_in
     else:
         total_installments = None
         installments_paid = None
         paid_in = d["principal"]
-        if dtype == "simple":
+        if events:
+            # Piecewise, so a withdrawal doesn't retroactively change what an
+            # earlier period earned: current_value is the actual balance
+            # still sitting in the deposit; accrued_interest is the true
+            # running total earned so far, which the balance alone can't
+            # show once some of it has been withdrawn back out.
+            current_value, accrued_interest = deposit_balance_at(d, events, min(today, maturity_date))
+        elif dtype == "simple":
             # Payout type: interest is disbursed periodically, not retained
             # in the deposit, so its own value never grows past the
             # principal — before or after maturity.
             current_value = d["principal"]
+            accrued_interest = current_value - paid_in
         elif is_matured:
             current_value = maturity_amount
+            accrued_interest = current_value - paid_in
         else:  # cumulative, still accruing
             r = d["interest_rate"] / 100
             n = d["compounding_frequency"]
             current_value = d["principal"] * (1 + r / n) ** (n * elapsed_years)
-
-    accrued_interest = current_value - paid_in
+            accrued_interest = current_value - paid_in
     if dtype == "recurring":
         # Annualising an RD needs the average time each instalment was
         # actually invested, not calendar days since the first one (see
@@ -844,6 +949,7 @@ def summarise_deposit(d, as_of: date = None) -> dict:
         "accrued_interest": accrued_interest,
         "days_held": days_held,
         "annualised_return": annualised_return,
+        "total_withdrawn": sum(amount for _, amount in events),
     }
 
 
@@ -867,7 +973,7 @@ def _deposit_maturity_date(d) -> date:
     return add_months(start, d["tenure_months"])
 
 
-def deposit_interest_in_period(d, period_start: date, period_end: date) -> float:
+def deposit_interest_in_period(d, period_start: date, period_end: date, db=None) -> float:
     """Interest actually accrued on this deposit within [period_start,
     period_end] — used to work out a financial year's taxable interest for
     TDS, as distinct from accrued_interest's "since the deposit started".
@@ -875,7 +981,12 @@ def deposit_interest_in_period(d, period_start: date, period_end: date) -> float
     A payout ("simple") deposit's own current_value never moves (the
     interest is paid out, not retained — see summarise_deposit), so it can't
     be read off as a value delta the way cumulative/recurring can; simple
-    interest is linear by definition, so it's computed directly instead."""
+    interest is linear by definition, so it's computed directly instead --
+    unless it's had a partial withdrawal, in which case the principal wasn't
+    constant across the window and the closed-form shortcut no longer
+    applies, so it falls through to the same piecewise-aware path as
+    cumulative/recurring below. Pass `db` so a partial withdrawal logged
+    against this deposit is actually accounted for here."""
     dtype = _row_get(d, "deposit_type", "cumulative")
     start = date.fromisoformat(d["start_date"])
     maturity_date = _deposit_maturity_date(d)
@@ -885,13 +996,15 @@ def deposit_interest_in_period(d, period_start: date, period_end: date) -> float
     if window_end < window_start:
         return 0.0
 
-    if dtype == "simple":
+    events = get_deposit_withdrawals(db, d["id"]) if dtype != "recurring" else []
+
+    if dtype == "simple" and not events:
         days = (window_end - window_start).days + 1
         return d["principal"] * (d["interest_rate"] / 100) * (days / DAYS_PER_YEAR)
 
-    accrued_at_end = summarise_deposit(d, as_of=window_end)["accrued_interest"]
+    accrued_at_end = summarise_deposit(d, as_of=window_end, db=db)["accrued_interest"]
     day_before = window_start - timedelta(days=1)
-    accrued_before = summarise_deposit(d, as_of=day_before)["accrued_interest"] if day_before >= start else 0.0
+    accrued_before = summarise_deposit(d, as_of=day_before, db=db)["accrued_interest"] if day_before >= start else 0.0
     return max(accrued_at_end - accrued_before, 0.0)
 
 
@@ -943,7 +1056,7 @@ def tag_allocation_summary(db):
         totals[key]["value"] += amount
 
     for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR' AND deposits.status = 'active'").fetchall():
-        add(d["tag_id"], summarise_deposit(d)["current_value"])
+        add(d["tag_id"], summarise_deposit(d, db=db)["current_value"])
     for m in list_metals(db):
         add(m["tag_id"], m["value"])
     for iv in list_investments(db):
@@ -1019,7 +1132,7 @@ def depositors_with_totals(db):
     for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
         if d["depositor_id"] is None:
             continue
-        s = summarise_deposit(d)
+        s = summarise_deposit(d, db=db)
         acc = totals.setdefault(
             d["depositor_id"], {"invested": 0.0, "current": 0.0, "maturity": 0.0}
         )
@@ -1092,7 +1205,7 @@ def portfolio_summary(db):
     dep_overall = _agg_blank()
     fcnr_by_currency = {}
     for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.status = 'active'").fetchall():
-        s = summarise_deposit(d)
+        s = summarise_deposit(d, db=db)
         if s["currency"] != "INR":
             acc = fcnr_by_currency.setdefault(s["currency"], {
                 "currency": s["currency"], "count": 0, "invested": 0.0, "current": 0.0, "maturity": 0.0,
@@ -1550,7 +1663,7 @@ def dashboard():
         DEPOSITS_WITH_REFS + " WHERE deposits.status = 'active' ORDER BY deposits.start_date DESC"
     ).fetchall()
 
-    rows = [summarise_deposit(d) for d in deposits]
+    rows = [summarise_deposit(d, db=db) for d in deposits]
 
     # FCNR deposits are held in a foreign currency, never converted to
     # rupees here (see format_money()) -- mixing them into an INR total
@@ -2092,7 +2205,7 @@ def reinvest_deposit(deposit_id):
     if row is None or row["status"] != "active":
         return redirect(url_for("dashboard"))
 
-    old = summarise_deposit(row)
+    old = summarise_deposit(row, db=db)
     # Reinvesting/closing is offered both at and before maturity. Before
     # maturity there's no maturity_amount/interest_earned to hand out yet --
     # those are the deposit's terminal figures if left to run to term -- so
@@ -2140,72 +2253,87 @@ def reinvest_deposit(deposit_id):
             db.commit()
             return redirect(url_for("dashboard"))
 
-        reinvest_amounts = {
-            "reinvested_full": full_amount,
-            "reinvested_principal": old["principal"],
-            "reinvested_interest": interest_amount,
-        }
-        if choice == "reinvested_custom":
-            try:
-                principal = float(custom_amount)
-                if principal <= 0:
-                    raise ValueError
-            except (TypeError, ValueError):
-                principal = None
-                error = "Enter a custom amount greater than 0."
-        elif choice == "partial_withdrawal":
-            # The mirror image of "modified amount": here the person says how
-            # much they're taking OUT, and whatever's left of this deposit's
-            # current value keeps going as the new deposit below -- rather
-            # than having to work out and type the remainder themselves.
-            try:
-                taken_out = float(withdraw_amount)
-                if taken_out <= 0:
-                    raise ValueError
-            except (TypeError, ValueError):
-                principal = None
-                error = "Enter an amount greater than 0 to withdraw."
+        if choice == "partial_withdrawal":
+            # Unlike every other option here, this does NOT close the deposit
+            # or open a new one -- it's the exact same deposit: same id, same
+            # start_date, same rate/tenure/bank. The withdrawal is only
+            # logged (deposit_withdrawals), dated today, and deposit_balance_at()
+            # treats it as a checkpoint: the balance drops by the withdrawn
+            # amount from today onward, but every period *before* today --
+            # already reported for TDS/Tax/Income & Expenditure -- keeps the
+            # interest it actually earned on the larger, pre-withdrawal
+            # balance. The maturity amount and current value simply fall out
+            # of that piecewise calculation the next time either is read.
+            if old["deposit_type"] == "recurring":
+                error = "Partial withdrawal isn't available for a recurring deposit."
             else:
-                if taken_out >= full_amount:
-                    principal = None
-                    error = (
-                        f"That's the full {format_money(full_amount, old['currency'])} available — "
-                        'use "Withdraw everything" instead if nothing is being reinvested.'
-                    )
+                try:
+                    taken_out = float(withdraw_amount)
+                    if taken_out <= 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    error = "Enter an amount greater than 0 to withdraw."
                 else:
-                    principal = full_amount - taken_out
-        elif choice in reinvest_amounts:
-            principal = reinvest_amounts[choice]
-            if principal <= 0:
-                error = f"{CLOSURE_TYPES[choice]} comes to 0 or less for this deposit — choose a different option."
+                    if taken_out >= full_amount:
+                        error = (
+                            f"That's the full {format_money(full_amount, old['currency'])} available — "
+                            'use "Withdraw everything" instead if nothing is left invested.'
+                        )
+                    else:
+                        db.execute(
+                            "INSERT INTO deposit_withdrawals (deposit_id, withdrawal_date, amount) VALUES (?, ?, ?)",
+                            (deposit_id, date.today().isoformat(), taken_out),
+                        )
+                        db.commit()
+                        return redirect(url_for("dashboard"))
+            # Validation failed (error is set) -- skip the reinvest/new-
+            # deposit logic below entirely and fall through to re-render.
         else:
-            principal = None
-            error = "Choose a valid reinvestment option."
+            reinvest_amounts = {
+                "reinvested_full": full_amount,
+                "reinvested_principal": old["principal"],
+                "reinvested_interest": interest_amount,
+            }
+            if choice == "reinvested_custom":
+                try:
+                    principal = float(custom_amount)
+                    if principal <= 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    principal = None
+                    error = "Enter a custom amount greater than 0."
+            elif choice in reinvest_amounts:
+                principal = reinvest_amounts[choice]
+                if principal <= 0:
+                    error = f"{CLOSURE_TYPES[choice]} comes to 0 or less for this deposit — choose a different option."
+            else:
+                principal = None
+                error = "Choose a valid reinvestment option."
 
-        if error is None:
-            form_data["principal"] = str(principal)
-            try:
-                cols = parse_deposit_form(form_data, db)
-                cur = db.execute(
-                    """INSERT INTO deposits
-                       (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
-                        principal, interest_rate, tenure_months, tenure_days, tenure_unit,
-                        compounding_frequency, tag_id, owner_id, account_category, currency, start_date)
-                       VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
-                        :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
-                        :compounding_frequency, :tag_id, :owner_id, :account_category, :currency, :start_date)""",
-                    cols,
-                )
-                new_id = cur.lastrowid
-                db.execute(
-                    """UPDATE deposits SET status = 'closed', closed_date = ?, closure_type = ?,
-                       reinvested_into_id = ? WHERE id = ?""",
-                    (date.today().isoformat(), choice, new_id, deposit_id),
-                )
-                db.commit()
-                return redirect(url_for("dashboard"))
-            except ValueError as e:
-                error = str(e)
+            if error is None:
+                form_data["principal"] = str(principal)
+                try:
+                    cols = parse_deposit_form(form_data, db)
+                    cur = db.execute(
+                        """INSERT INTO deposits
+                           (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
+                            principal, interest_rate, tenure_months, tenure_days, tenure_unit,
+                            compounding_frequency, tag_id, owner_id, account_category, currency, start_date)
+                           VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
+                            :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
+                            :compounding_frequency, :tag_id, :owner_id, :account_category, :currency, :start_date)""",
+                        cols,
+                    )
+                    new_id = cur.lastrowid
+                    db.execute(
+                        """UPDATE deposits SET status = 'closed', closed_date = ?, closure_type = ?,
+                           reinvested_into_id = ? WHERE id = ?""",
+                        (date.today().isoformat(), choice, new_id, deposit_id),
+                    )
+                    db.commit()
+                    return redirect(url_for("dashboard"))
+                except ValueError as e:
+                    error = str(e)
 
     return render_template(
         "reinvest.html", active_tab="dashboard",
@@ -2235,13 +2363,13 @@ def deposit_history():
         # At-maturity closures are unaffected either way, since current_value
         # already freezes at maturity_amount once matured.
         closed_on = date.fromisoformat(d["closed_date"]) if d["closed_date"] else None
-        s = summarise_deposit(d, as_of=closed_on)
+        s = summarise_deposit(d, as_of=closed_on, db=db)
         closed_early = closed_on is not None and not s["is_matured"]
         new_deposit = None
         if d["reinvested_into_id"]:
             new_row = db.execute("SELECT * FROM deposits WHERE id = ?", (d["reinvested_into_id"],)).fetchone()
             if new_row is not None:
-                new_deposit = summarise_deposit(new_row)
+                new_deposit = summarise_deposit(new_row, db=db)
         history.append({
             **s,
             "closed_date": d["closed_date"],
@@ -2288,7 +2416,7 @@ def deposits_within_window(db, days_before: int):
     today = date.today()
     rows = []
     for d in db.execute(DEPOSITS_WITH_REFS).fetchall():
-        s = summarise_deposit(d)
+        s = summarise_deposit(d, db=db)
         if s["is_matured"] or s["days_remaining"] > days_before:
             continue
         last = d["last_notified_on"]
@@ -2796,7 +2924,7 @@ def compute_income_expenditure(db, fy_start_year: int, depositor_id=None) -> dic
     interest = {"Resident": 0.0, "NRO": 0.0, "NRE": 0.0}
     fcnr_by_currency = {}
     for d in db.execute(query, params).fetchall():
-        amount = deposit_interest_in_period(d, period_start, period_end)
+        amount = deposit_interest_in_period(d, period_start, period_end, db=db)
         if amount <= 0:
             continue
         if d["currency"] != "INR":
@@ -3023,7 +3151,7 @@ def tax_page():
         # so no currency-mixing issue), but taxed at NRI rates via TDS, not
         # this resident-slab estimate.
         interest_income = sum(
-            deposit_interest_in_period(d, period_start, period_end)
+            deposit_interest_in_period(d, period_start, period_end, db=db)
             for d in depositor_deposits if d["account_category"] not in ("NRE", "FCNR")
         )
         has_nri_accounts = any(d["account_category"] != "Resident" for d in depositor_deposits)
@@ -3130,7 +3258,7 @@ def export_deposits_xlsx():
     deposits = db.execute(
         DEPOSITS_WITH_REFS + " WHERE deposits.status = 'active' ORDER BY deposits.start_date DESC"
     ).fetchall()
-    rows = [summarise_deposit(d) for d in deposits]
+    rows = [summarise_deposit(d, db=db) for d in deposits]
 
     wb = Workbook()
     ws = wb.active
@@ -3182,7 +3310,7 @@ def compute_tds_rows(db, fy_start_year: int, threshold: float):
 
     groups = {}  # (depositor_id, bank_ref_id) -> {names, interest}
     for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.account_category = 'Resident'").fetchall():
-        interest = deposit_interest_in_period(d, period_start, period_end)
+        interest = deposit_interest_in_period(d, period_start, period_end, db=db)
         if interest <= 0:
             continue
         key = (d["depositor_id"], d["bank_ref_id"])
@@ -3220,7 +3348,7 @@ def compute_nro_tds_rows(db, fy_start_year: int):
 
     groups = {}
     for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.account_category = 'NRO'").fetchall():
-        interest = deposit_interest_in_period(d, period_start, period_end)
+        interest = deposit_interest_in_period(d, period_start, period_end, db=db)
         if interest <= 0:
             continue
         key = (d["depositor_id"], d["bank_ref_id"])
@@ -3286,7 +3414,7 @@ def compute_dicgc_rows(db):
     # they're excluded too -- same reasoning as dashboard().
     groups = {}  # (depositor_id, bank_ref_id) -> {names, total}
     for d in db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.currency = 'INR' AND deposits.status = 'active'").fetchall():
-        s = summarise_deposit(d)
+        s = summarise_deposit(d, db=db)
         key = (d["depositor_id"], d["bank_ref_id"])
         if key not in groups:
             groups[key] = {
@@ -3647,7 +3775,7 @@ def _payout_deposits_for_pair(db, depositor_id, bank_ref_id):
     today = date.today()
     result = []
     for d in deposits:
-        expected = deposit_interest_in_period(d, date.fromisoformat(d["start_date"]), today)
+        expected = deposit_interest_in_period(d, date.fromisoformat(d["start_date"]), today, db=db)
         received = db.execute(
             "SELECT COALESCE(SUM(amount), 0) AS total FROM interest_statement_lines WHERE matched_deposit_id = ?",
             (d["id"],),
