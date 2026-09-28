@@ -10,25 +10,31 @@
   <div class="card" style="max-width:640px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Closed deposits</h2>
     <p class="field-hint" style="margin-bottom:0;">
-      Matured deposits that were reinvested or withdrawn — kept here for the record, but out of
-      the Deposits tab and every current-holdings total (Dashboard, DICGC, Tags). Past interest
-      they earned still counts fully for TDS, the Tax estimate, and the Income & Expenditure
-      statement, for whichever financial year it falls in — closing a deposit doesn't erase
-      history, it just retires it.
+      Deposits that were reinvested or withdrawn — at maturity, or closed early — kept here for
+      the record, but out of the Deposits tab and every current-holdings total (Dashboard, DICGC,
+      Tags). Past interest they earned still counts fully for TDS, the Tax estimate, and the
+      Income & Expenditure statement, for whichever financial year it falls in — closing a
+      deposit doesn't erase history, it just retires it. "Interest/Value at Closure" is frozen as
+      of the actual closed date, not today, so an early closure doesn't look like it kept accruing
+      after it stopped existing.
     </p>
   </div>
 
   <div class="card">
     {% if history %}
-      <div class="table-scroll sticky-last">
+      <div class="table-scroll sticky-last compact">
       <table>
         <thead>
           <tr>
             <th>Holder</th>
             <th>Bank</th>
             <th>Type</th>
+            <th>Rate</th>
+            <th>Start</th>
             <th>Principal</th>
-            <th>Matured</th>
+            <th>Interest at Closure</th>
+            <th>Value at Closure</th>
+            <th>Scheduled Maturity</th>
             <th>Closed</th>
             <th>Closure</th>
             <th>Reinvested Into</th>
@@ -38,12 +44,25 @@
         <tbody>
           {% for h in history %}
           <tr>
-            <td><strong>{{ h.holder_name }}</strong></td>
-            <td>{{ h.bank_name }}</td>
+            <td>
+              <strong>{{ h.holder_name }}</strong>
+              {% if h.holder_id %}<div class="muted" style="font-size:12px;">ID: {{ h.holder_id }}</div>{% endif %}
+            </td>
+            <td>
+              {{ h.bank_name }}
+              {% if h.deposit_number %}<div class="muted" style="font-size:12px;">FD No: {{ h.deposit_number }}</div>{% endif %}
+            </td>
             <td><span class="badge type type-{{ h.deposit_type }}">{{ h.deposit_type_label }}</span></td>
+            <td>{{ h.interest_rate }}%</td>
+            <td>{{ h.start_date }}</td>
             <td>{{ (h.principal)|money(h.currency) }}</td>
+            <td class="positive">+{{ (h.interest_at_closure)|money(h.currency) }}</td>
+            <td>{{ (h.value_at_closure)|money(h.currency) }}</td>
             <td>{{ h.maturity_date }}</td>
-            <td>{{ h.closed_date }}</td>
+            <td>
+              {{ h.closed_date }}
+              {% if h.closed_early %}<div><span class="badge type" style="margin-top:2px;">Closed early</span></div>{% endif %}
+            </td>
             <td>{{ h.closure_type_label }}</td>
             <td>
               {% if h.new_deposit %}

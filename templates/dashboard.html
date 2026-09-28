@@ -187,6 +187,8 @@
                 <a href="{{ url_for('edit_deposit', deposit_id=r.id) }}" class="btn link">Edit</a>
                 {% if r.is_matured %}
                   <a href="{{ url_for('reinvest_deposit', deposit_id=r.id) }}" class="btn link" style="color:var(--green);">Reinvest</a>
+                {% else %}
+                  <a href="{{ url_for('reinvest_deposit', deposit_id=r.id) }}" class="btn link" style="color:var(--amber);">Close early</a>
                 {% endif %}
                 <form class="inline" method="POST" action="{{ url_for('delete_deposit', deposit_id=r.id) }}">
                   <button type="submit" class="btn danger" data-confirm

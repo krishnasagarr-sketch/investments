@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Reinvest Deposit — FD Manager{% endblock %}
+{% block title %}{% if old.is_matured %}Reinvest Deposit{% else %}Close Deposit Early{% endif %} — FD Manager{% endblock %}
 
 {% block header_action %}
   <a href="{{ url_for('dashboard') }}" class="btn secondary">← Back to Dashboard</a>
@@ -8,28 +8,45 @@
 {% block content %}
 
   <div class="card" style="max-width:520px;">
-    <h2 style="font-size:16px; margin:0 0 4px;">Matured deposit</h2>
-    <p class="field-hint" style="margin-bottom:14px;">
-      {{ old.holder_name }} · {{ old.bank_name }} · matured {{ old.maturity_date }}
-    </p>
+    {% if old.is_matured %}
+      <h2 style="font-size:16px; margin:0 0 4px;">Matured deposit</h2>
+      <p class="field-hint" style="margin-bottom:14px;">
+        {{ old.holder_name }} · {{ old.bank_name }} · matured {{ old.maturity_date }}
+      </p>
+    {% else %}
+      <h2 style="font-size:16px; margin:0 0 4px;">Close before maturity</h2>
+      <p class="field-hint" style="margin-bottom:14px;">
+        {{ old.holder_name }} · {{ old.bank_name }} · scheduled to mature {{ old.maturity_date }}
+        ({{ old.days_remaining }} day(s) early)
+      </p>
+    {% endif %}
     <div class="summary-grid">
       <div class="summary-item">
         <div class="label">Principal</div>
         <div class="value">{{ (old.principal)|money(old.currency) }}</div>
       </div>
       <div class="summary-item">
-        <div class="label">Interest Earned</div>
-        <div class="value positive">+{{ (old.interest_earned)|money(old.currency) }}</div>
+        <div class="label">{% if old.is_matured %}Interest Earned{% else %}Interest Accrued to Date{% endif %}</div>
+        <div class="value positive">+{{ (interest_amount)|money(old.currency) }}</div>
       </div>
       <div class="summary-item">
-        <div class="label">Maturity Amount</div>
-        <div class="value">{{ (old.maturity_amount)|money(old.currency) }}</div>
+        <div class="label">{% if old.is_matured %}Maturity Amount{% else %}Current Value{% endif %}</div>
+        <div class="value">{{ (full_amount)|money(old.currency) }}</div>
       </div>
     </div>
+    {% if not old.is_matured %}
+      <p class="field-hint" style="margin-top:12px; margin-bottom:0;">
+        Banks often pay a lower "penal" rate on premature closure rather than the full contracted
+        rate — this app doesn't model bank-specific penalty terms, so the figure above assumes
+        the full rate applied up to today. Check your bank's actual payout before relying on it.
+      </p>
+    {% endif %}
   </div>
 
   <div class="card" style="max-width:520px;">
-    <h2 style="font-size:16px; margin:0 0 16px;">Reinvest or close it out</h2>
+    <h2 style="font-size:16px; margin:0 0 16px;">
+      {% if old.is_matured %}Reinvest or close it out{% else %}Reinvest or withdraw now{% endif %}
+    </h2>
     {% if error %}
       <div class="error-box">{{ error }}</div>
     {% endif %}
@@ -38,21 +55,32 @@
       <div class="form-group">
         <label>What to do with it</label>
         <select id="choice" name="choice">
-          <option value="reinvested_full" {% if choice == "reinvested_full" %}selected{% endif %}>Reinvest — full maturity amount ({{ (old.maturity_amount)|money(old.currency) }})</option>
+          <option value="reinvested_full" {% if choice == "reinvested_full" %}selected{% endif %}>Reinvest — full amount ({{ (full_amount)|money(old.currency) }})</option>
           <option value="reinvested_principal" {% if choice == "reinvested_principal" %}selected{% endif %}>Reinvest — principal only ({{ (old.principal)|money(old.currency) }})</option>
-          <option value="reinvested_interest" {% if choice == "reinvested_interest" %}selected{% endif %}>Reinvest — interest only ({{ (old.interest_earned)|money(old.currency) }})</option>
+          <option value="reinvested_interest" {% if choice == "reinvested_interest" %}selected{% endif %}>Reinvest — interest only ({{ (interest_amount)|money(old.currency) }})</option>
           <option value="reinvested_custom" {% if choice == "reinvested_custom" %}selected{% endif %}>Reinvest — modified amount</option>
+          <option value="partial_withdrawal" {% if choice == "partial_withdrawal" %}selected{% endif %}>Partial closure — withdraw some, reinvest the rest</option>
           <option value="withdrawn" {% if choice == "withdrawn" %}selected{% endif %}>Withdraw everything (no reinvestment)</option>
         </select>
         <p class="field-hint">
-          "Modified amount" is for topping up with fresh money, or reinvesting less than the
-          full amount because part of it was withdrawn.
+          "Modified amount" is for topping up with fresh money, or reinvesting a figure you've
+          already worked out yourself. "Partial closure" is the other way round — say how much
+          you're taking out, and the remainder is reinvested automatically.
         </p>
       </div>
 
       <div class="form-group" id="custom_amount_group">
         <label for="custom_amount">Amount to reinvest ({{ old.currency }})</label>
         <input type="number" step="any" id="custom_amount" name="custom_amount" placeholder="e.g. 150000" value="{{ custom_amount }}">
+      </div>
+
+      <div class="form-group" id="withdraw_amount_group">
+        <label for="withdraw_amount">Amount to withdraw now ({{ old.currency }})</label>
+        <input type="number" step="any" id="withdraw_amount" name="withdraw_amount" placeholder="e.g. 50000"
+               value="{{ withdraw_amount }}" data-full-amount="{{ full_amount }}" data-currency="{{ old.currency }}">
+        <p class="field-hint" id="remainder_hint">
+          Out of {{ (full_amount)|money(old.currency) }} available, the rest will be reinvested below.
+        </p>
       </div>
 
       <div id="new_deposit_fields">
@@ -168,8 +196,15 @@
 
   <script>
     (function () {
+      var CURRENCY_SYMBOLS = {
+        INR: "₹", USD: "$", GBP: "£", EUR: "€", JPY: "¥",
+        AUD: "A$", CAD: "C$", SGD: "S$", CHF: "Fr ", HKD: "HK$"
+      };
       var choiceEl = document.getElementById("choice");
       var customGroup = document.getElementById("custom_amount_group");
+      var withdrawGroup = document.getElementById("withdraw_amount_group");
+      var withdrawInput = document.getElementById("withdraw_amount");
+      var remainderHint = document.getElementById("remainder_hint");
       var newFields = document.getElementById("new_deposit_fields");
       var categoryEl = document.getElementById("account_category");
       var currencyGroup = document.getElementById("currency_group");
@@ -177,19 +212,41 @@
       var compoundingGroup = document.getElementById("compounding_group");
       var submitBtn = document.getElementById("submit_btn");
 
+      function formatAmount(value) {
+        var currency = withdrawInput.dataset.currency || "INR";
+        var symbol = CURRENCY_SYMBOLS[currency] || (currency + " ");
+        return symbol + value.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+
+      function updateRemainderHint() {
+        var fullAmount = parseFloat(withdrawInput.dataset.fullAmount || "0");
+        var taken = parseFloat(withdrawInput.value);
+        if (isNaN(taken) || taken <= 0) {
+          remainderHint.textContent = "Out of " + formatAmount(fullAmount) + " available, the rest will be reinvested below.";
+        } else if (taken >= fullAmount) {
+          remainderHint.textContent = "That's the full amount available -- use \"Withdraw everything\" instead if nothing is being reinvested.";
+        } else {
+          remainderHint.textContent = formatAmount(fullAmount - taken) + " will be reinvested below.";
+        }
+      }
+
       function sync() {
         var withdrawing = choiceEl.value === "withdrawn";
+        var partial = choiceEl.value === "partial_withdrawal";
         customGroup.style.display = (choiceEl.value === "reinvested_custom") ? "" : "none";
+        withdrawGroup.style.display = partial ? "" : "none";
         newFields.style.display = withdrawing ? "none" : "";
         currencyGroup.style.display = (categoryEl.value === "FCNR") ? "" : "none";
         compoundingGroup.style.display = (typeEl.value === "cumulative") ? "" : "none";
         submitBtn.textContent = withdrawing ? "Close (Withdraw)" : "Reinvest";
         submitBtn.className = withdrawing ? "btn danger" : "btn";
+        if (partial) updateRemainderHint();
       }
 
       choiceEl.addEventListener("change", sync);
       categoryEl.addEventListener("change", sync);
       typeEl.addEventListener("change", sync);
+      withdrawInput.addEventListener("input", updateRemainderHint);
       sync();
     })();
   </script>

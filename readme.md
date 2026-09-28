@@ -136,29 +136,41 @@ whole import.
 
 ### Reinvesting, closing, and History
 
-Once a deposit matures, its row on the Deposits tab shows a **Reinvest** link alongside Edit and
-Remove. It opens a page summarising the maturity (principal, interest earned, maturity amount)
-and asks what to do next:
+Every active deposit's row on the Deposits tab shows a closure link alongside Edit and
+Remove — **Reinvest** (green) once it's matured, or **Close early** (amber) before maturity, for
+a premature withdrawal. Both open the same page, summarising what the deposit is worth right now
+(principal, interest, and either the maturity amount or, before maturity, today's current value)
+and asking what to do next:
 
-- **Reinvest — full maturity amount**, **principal only**, or **interest only**
-- **Reinvest — modified amount** — a custom figure, for topping up with fresh money or
-  reinvesting less than the full amount because part of it was withdrawn
+- **Reinvest — full amount**, **principal only**, or **interest only**
+- **Reinvest — modified amount** — a custom figure you've already worked out, for topping up
+  with fresh money or reinvesting a specific amount
+- **Partial closure** — the other way round: say how much to withdraw now, and whatever's left
+  is reinvested automatically as the new deposit below
 - **Withdraw everything** — close it out with no reinvestment
 
-Choosing any "Reinvest" option opens a form for the new deposit, prefilled from the old one's
-depositor, owner, bank, tag, account category, currency, rate, tenure, and compounding
-frequency — all editable before saving. A matured RD reinvests as a fresh FD, not a new RD,
-since it pays out as a lump sum.
+Closing before maturity shows a reminder that banks often pay a lower "penal" rate on premature
+withdrawal — the app has no bank-specific penalty terms, so the figure shown assumes the full
+contracted rate up to today.
+
+Choosing any reinvest/partial option opens a form for the new (continuing) deposit, prefilled
+from the old one's depositor, owner, bank, tag, account category, currency, rate, tenure, and
+compounding frequency — all editable before saving. A matured RD reinvests as a fresh FD, not a
+new RD, since it pays out as a lump sum.
 
 Either way, the old deposit is **closed**, not deleted: it disappears from the Deposits tab,
-the Dashboard/Chart, DICGC, Tags, and the Excel export, but is kept on the **History** tab with
-its closure type, closed date, and (if reinvested) a link to the new deposit it became. A
-**Reopen** button on History undoes a closure if it was done by mistake.
+the Dashboard/Chart, DICGC, Tags, and the Excel export, but is kept on the **History** tab —
+with its original principal, rate, start date, a "Closed early" badge if it didn't run to term,
+its interest/value *as of the actual closure date* (not today, so an early closure doesn't look
+like it kept accruing after it stopped existing), its closure type, and (if reinvested) a link
+to the new deposit it became. A **Reopen** button on History undoes a closure if it was done by
+mistake.
 
 Closing a deposit never erases its tax history: **TDS, the Tax estimate, and the Income &
 Expenditure statement** compute a deposit's interest from its own start/maturity dates for
 whichever financial year they fall in, regardless of whether it's currently open or closed — so
-a deposit that matured and was closed partway through a year still counts fully for that year.
+a deposit that was closed (at maturity or early) partway through a year still counts fully for
+that year.
 
 ## Dashboard & Chart
 

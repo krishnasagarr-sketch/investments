@@ -202,10 +202,11 @@ ACCOUNT_CATEGORIES = {
 # Expenditure statement either way -- only current-holdings views
 # (Dashboard, DICGC, Tags) stop showing a closed deposit.
 CLOSURE_TYPES = {
-    "reinvested_full": "Reinvested — full maturity amount",
+    "reinvested_full": "Reinvested — full amount",
     "reinvested_principal": "Reinvested — principal only",
     "reinvested_interest": "Reinvested — interest only",
     "reinvested_custom": "Reinvested — modified amount",
+    "partial_withdrawal": "Partial withdrawal — remainder reinvested",
     "withdrawn": "Withdrawn (not reinvested)",
 }
 
@@ -2092,8 +2093,15 @@ def reinvest_deposit(deposit_id):
         return redirect(url_for("dashboard"))
 
     old = summarise_deposit(row)
-    if not old["is_matured"]:
-        return redirect(url_for("dashboard"))
+    # Reinvesting/closing is offered both at and before maturity. Before
+    # maturity there's no maturity_amount/interest_earned to hand out yet --
+    # those are the deposit's terminal figures if left to run to term -- so
+    # the amount on offer is what it's actually worth today: current_value /
+    # accrued_interest. At maturity those two pairs are numerically the same
+    # (current_value freezes at maturity_amount once matured), so one set of
+    # variable names below covers both cases without branching everywhere.
+    full_amount = old["maturity_amount"] if old["is_matured"] else old["current_value"]
+    interest_amount = old["interest_earned"] if old["is_matured"] else old["accrued_interest"]
 
     form_data = dict(BLANK_DEPOSIT_FORM)
     form_data.update({
@@ -2115,10 +2123,12 @@ def reinvest_deposit(deposit_id):
     error = None
     choice = "reinvested_full"
     custom_amount = ""
+    withdraw_amount = ""
 
     if request.method == "POST":
         choice = request.form.get("choice", "reinvested_full")
         custom_amount = request.form.get("custom_amount", "")
+        withdraw_amount = request.form.get("withdraw_amount", "")
         for key in form_data:
             form_data[key] = request.form.get(key, form_data[key])
 
@@ -2131,9 +2141,9 @@ def reinvest_deposit(deposit_id):
             return redirect(url_for("dashboard"))
 
         reinvest_amounts = {
-            "reinvested_full": old["maturity_amount"],
+            "reinvested_full": full_amount,
             "reinvested_principal": old["principal"],
-            "reinvested_interest": old["interest_earned"],
+            "reinvested_interest": interest_amount,
         }
         if choice == "reinvested_custom":
             try:
@@ -2143,6 +2153,27 @@ def reinvest_deposit(deposit_id):
             except (TypeError, ValueError):
                 principal = None
                 error = "Enter a custom amount greater than 0."
+        elif choice == "partial_withdrawal":
+            # The mirror image of "modified amount": here the person says how
+            # much they're taking OUT, and whatever's left of this deposit's
+            # current value keeps going as the new deposit below -- rather
+            # than having to work out and type the remainder themselves.
+            try:
+                taken_out = float(withdraw_amount)
+                if taken_out <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                principal = None
+                error = "Enter an amount greater than 0 to withdraw."
+            else:
+                if taken_out >= full_amount:
+                    principal = None
+                    error = (
+                        f"That's the full {format_money(full_amount, old['currency'])} available — "
+                        'use "Withdraw everything" instead if nothing is being reinvested.'
+                    )
+                else:
+                    principal = full_amount - taken_out
         elif choice in reinvest_amounts:
             principal = reinvest_amounts[choice]
             if principal <= 0:
@@ -2179,7 +2210,9 @@ def reinvest_deposit(deposit_id):
     return render_template(
         "reinvest.html", active_tab="dashboard",
         old=old, deposit_id=deposit_id, error=error, form_data=form_data,
-        choice=choice, custom_amount=custom_amount, closure_types=CLOSURE_TYPES,
+        full_amount=full_amount, interest_amount=interest_amount,
+        choice=choice, custom_amount=custom_amount, withdraw_amount=withdraw_amount,
+        closure_types=CLOSURE_TYPES,
         depositors=db.execute("SELECT id, holder_id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
         banks=db.execute("SELECT id, bank_id, name FROM banks ORDER BY name COLLATE NOCASE").fetchall(),
         tags=list_tags(db), deposit_types=DEPOSIT_TYPES, tenure_units=TENURE_UNITS,
@@ -2195,7 +2228,15 @@ def deposit_history():
     ).fetchall()
     history = []
     for d in closed:
-        s = summarise_deposit(d)
+        # Freeze the snapshot as of the day it was actually closed, not
+        # today -- a deposit closed early keeps a start_date/tenure in the
+        # row that would otherwise make summarise_deposit() look like it's
+        # still quietly accruing interest long after it stopped existing.
+        # At-maturity closures are unaffected either way, since current_value
+        # already freezes at maturity_amount once matured.
+        closed_on = date.fromisoformat(d["closed_date"]) if d["closed_date"] else None
+        s = summarise_deposit(d, as_of=closed_on)
+        closed_early = closed_on is not None and not s["is_matured"]
         new_deposit = None
         if d["reinvested_into_id"]:
             new_row = db.execute("SELECT * FROM deposits WHERE id = ?", (d["reinvested_into_id"],)).fetchone()
@@ -2204,6 +2245,9 @@ def deposit_history():
         history.append({
             **s,
             "closed_date": d["closed_date"],
+            "closed_early": closed_early,
+            "value_at_closure": s["maturity_amount"] if s["is_matured"] else s["current_value"],
+            "interest_at_closure": s["interest_earned"] if s["is_matured"] else s["accrued_interest"],
             "closure_type_label": CLOSURE_TYPES.get(d["closure_type"], d["closure_type"] or ""),
             "new_deposit": new_deposit,
             "new_deposit_id": d["reinvested_into_id"],
