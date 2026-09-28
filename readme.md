@@ -4,9 +4,9 @@ A personal finance web app for an Indian household — built with Flask and SQLi
 as a fixed/recurring deposit tracker and has grown into a broader tool: deposits (including
 NRI accounts), metals, stock/mutual fund investments, retirement savings, income and expense
 logging, and India-specific tax/compliance estimates (TDS, DICGC insurance, an income tax
-estimate, an Income & Expenditure statement). Runs as a local web app, a desktop executable
-(Windows/Mac), or embedded in native Android/iOS shells — same code, same database format,
-everywhere.
+estimate, capital gains on sold investments, an Income & Expenditure statement). Runs as a
+local web app, a desktop executable (Windows/Mac), or embedded in native Android/iOS shells —
+same code, same database format, everywhere.
 
 All rupee amounts use Indian digit grouping (`₹12,34,567.89`). Foreign-currency (FCNR) amounts
 are shown in their own currency and are **never converted to rupees** — see [FCNR / NRE / NRO
@@ -439,10 +439,12 @@ is a normal `git pull` + restart, no manual steps.
   rounding.
 - This app does no live currency conversion — FCNR amounts are never turned into rupees, by
   design (see [FCNR / NRE / NRO deposits](#fcnr--nre--nro-deposits)).
-- TDS, DICGC, and Tax figures are estimates from what's tracked here, not a substitute for your
-  bank's TDS certificate (Form 16A), DICGC's own records, or a CA/filing software — in
-  particular, NRO's 31.2% TDS estimate doesn't model surcharge, and the Tax estimate assumes
-  resident rules (the Section 87A rebate doesn't apply to NRIs).
+- TDS, DICGC, Tax, and Capital Gains figures are estimates from what's tracked here, not a
+  substitute for your bank's TDS certificate (Form 16A), DICGC's own records, or a CA/filing
+  software — in particular, NRO's 31.2% TDS estimate doesn't model surcharge, the Tax estimate
+  assumes resident rules (the Section 87A rebate doesn't apply to NRIs), and Capital Gains
+  assumes every Investments-tab holding is equity (see [Selling a holding, and Capital
+  Gains](#selling-a-holding-and-capital-gains) for what that leaves out).
 - Premature-withdrawal penalties and auto-renewal aren't modelled — every deposit is assumed to
   run to its full tenure as entered.
 - All figures are for personal tracking only; confirm exact values with your bank/CA.
