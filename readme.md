@@ -391,11 +391,12 @@ Both are built by GitHub Actions (`.github/workflows/build-android.yml`,
 ## Data model
 
 Everything lives in one SQLite file (`fixed_deposits.db`, gitignored). Key tables: `depositors`,
-`banks`, `deposits`, `metals` + `metal_prices`, `investments`, `retirement_accounts` +
-`retirement_contributions`, `other_income`, `expenses`, `family_gifts`, `portfolio_tags`,
-`interest_statement_lines` (Interest Check), `notification_settings`, and `auth_user`. Schema
-migrations run automatically on startup, so upgrading from an older version is a normal
-`git pull` + restart, no manual steps.
+`banks`, `deposits` + `deposit_withdrawals` (partial withdrawals logged against a still-open
+deposit — see [Reinvesting, closing, and History](#reinvesting-closing-and-history)), `metals` +
+`metal_prices`, `investments`, `retirement_accounts` + `retirement_contributions`,
+`other_income`, `expenses`, `family_gifts`, `portfolio_tags`, `interest_statement_lines`
+(Interest Check), `notification_settings`, and `auth_user`. Schema migrations run automatically
+on startup, so upgrading from an older version is a normal `git pull` + restart, no manual steps.
 
 ## Notes & limitations
 
