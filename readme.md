@@ -375,6 +375,33 @@ been received against the linear interest the deposit should have accrued to dat
 deposit running short. Statement lines are scoped to a depositor+bank pair, since several FDs
 at the same bank pay into the same account.
 
+## Mail Scan & Draft Deposits
+
+Scans the Gmail inbox already set up on the Notifications tab (same App Password, read over
+IMAP instead of used to send) for bank-transaction-looking emails, so interest credits and new
+FD bookings don't have to be typed in by hand. This is a generic keyword/regex heuristic, not a
+per-bank parser — bank alert wording varies a lot and isn't standardised the way a statement
+file is, so expect it to occasionally miss a real email or flag something irrelevant. **Only the
+email's own text is scanned, not attachments** (e.g. PDF e-statements) — that needs real sample
+statements to build and trust, and isn't included yet.
+
+Nothing found is ever written straight to a real record:
+
+- An email that looks like **money credited** (interest, etc.) becomes a row on the **Mail
+  Scan** tab's review queue — pick a depositor and bank and **Accept** it onto the Interest
+  Check tab as a statement line, same as a manually imported one, or **Dismiss** it.
+- An email that looks like a **new FD/RD being booked** immediately becomes an editable row on
+  the **Draft Deposits** tab — never a real deposit. The amount and date usually come through
+  correctly; the interest rate, tenure and compounding almost never appear in a bank's alert
+  email, so those are left for you to fill in. **Approve** runs it through the same validation
+  as the Add Deposit form and creates the real deposit; **Reject** just discards the draft, since
+  nothing was ever saved. A "Draft Deposits (N)" badge in the nav shows how many are waiting.
+
+**No duplicate transactions**: every email is remembered by its own globally-unique Message-ID
+(`processed_emails`), so re-running a scan never looks at the same mail twice, and a transaction
+already queued or accepted — even if it shows up again in a different email, like a resend — is
+recognised by its date/amount/kind and not queued a second time.
+
 ## Retirement (PPF / EPF / NPS)
 
 PPF, EPF, and NPS rates are government-notified and change over time, with rules (minimum
@@ -427,9 +454,10 @@ deposit — see [Reinvesting, closing, and History](#reinvesting-closing-and-his
 `metal_prices`, `investments` + `investment_sales` (realised sales logged against a holding —
 see [Selling a holding, and Capital Gains](#selling-a-holding-and-capital-gains)),
 `retirement_accounts` + `retirement_contributions`, `other_income`, `expenses`, `family_gifts`,
-`portfolio_tags`, `interest_statement_lines` (Interest Check), `notification_settings`, and
-`auth_user`. Schema migrations run automatically on startup, so upgrading from an older version
-is a normal `git pull` + restart, no manual steps.
+`portfolio_tags`, `interest_statement_lines` (Interest Check), `processed_emails` +
+`scanned_transactions` + `deposit_drafts` (Mail Scan & Draft Deposits — see above),
+`notification_settings`, and `auth_user`. Schema migrations run automatically on startup, so
+upgrading from an older version is a normal `git pull` + restart, no manual steps.
 
 ## Notes & limitations
 
@@ -447,4 +475,9 @@ is a normal `git pull` + restart, no manual steps.
   Gains](#selling-a-holding-and-capital-gains) for what that leaves out).
 - Premature-withdrawal penalties and auto-renewal aren't modelled — every deposit is assumed to
   run to its full tenure as entered.
+- Mail Scan is a best-effort keyword scan, not a per-bank parser, and only reads an email's own
+  text — not attachments like PDF e-statements. It will miss some real transaction emails and
+  occasionally flag something irrelevant; nothing it finds becomes a real record without being
+  reviewed and accepted/approved first (see [Mail Scan & Draft
+  Deposits](#mail-scan--draft-deposits)).
 - All figures are for personal tracking only; confirm exact values with your bank/CA.

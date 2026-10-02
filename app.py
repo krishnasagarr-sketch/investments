@@ -1,4 +1,7 @@
 import csv
+import email
+import html
+import imaplib
 import io
 import math
 import re
@@ -12,7 +15,9 @@ import sys
 import threading
 import time
 from datetime import date, datetime, timedelta
+from email.header import decode_header as _decode_email_header
 from email.mime.text import MIMEText
+from email.utils import parseaddr, parsedate_to_datetime
 from pathlib import Path
 
 from flask import Flask, render_template, request, redirect, url_for, g, session, send_file, jsonify
@@ -280,6 +285,22 @@ def _require_login():
     return None
 
 
+@app.context_processor
+def _inject_pending_draft_count():
+    """Lets base.html show a "Draft Deposits (N)" badge without every route
+    having to compute and pass it through -- it's cheap (one COUNT query)
+    and only matters once a login has already succeeded above."""
+    if not session.get("logged_in"):
+        return {}
+    try:
+        count = get_db().execute(
+            "SELECT COUNT(*) AS c FROM deposit_drafts WHERE status = 'pending'"
+        ).fetchone()["c"]
+    except sqlite3.OperationalError:
+        count = 0  # table not migrated in yet (e.g. mid-upgrade) -- don't break every page over it
+    return {"pending_draft_count": count}
+
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -539,6 +560,73 @@ def init_db():
             amount REAL NOT NULL,
             matched_deposit_id INTEGER REFERENCES deposits(id),
             imported_at TEXT NOT NULL
+        )
+    """)
+
+    # Mail Scan: every email the scanner has ever looked at, keyed by its
+    # globally-unique Message-ID header, so re-running a scan never
+    # reprocesses the same mail twice -- see scan_mailbox_for_transactions().
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS processed_emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id TEXT NOT NULL UNIQUE,
+            mailbox TEXT NOT NULL DEFAULT 'INBOX',
+            subject TEXT NOT NULL DEFAULT '',
+            from_addr TEXT NOT NULL DEFAULT '',
+            received_date TEXT,
+            processed_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'no_match'
+        )
+    """)
+
+    # Candidate transactions extracted from an email's text -- a triage
+    # queue a person reviews, not something auto-written to real financial
+    # records. "credit" (money in -- interest, etc.) is accepted onto the
+    # Interest Check tab once a depositor/bank is chosen; "fd_booked" (looks
+    # like a new FD being opened) immediately gets a linked, editable row in
+    # deposit_drafts instead, which is its own separate approval step.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scanned_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id TEXT NOT NULL REFERENCES processed_emails(message_id),
+            kind TEXT NOT NULL CHECK(kind IN ('credit', 'fd_booked')),
+            bank_guess TEXT NOT NULL DEFAULT '',
+            bank_ref_id INTEGER REFERENCES banks(id),
+            depositor_id INTEGER REFERENCES depositors(id),
+            amount REAL NOT NULL,
+            txn_date TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            raw_snippet TEXT NOT NULL DEFAULT '',
+            dedupe_key TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'dismissed')),
+            found_at TEXT NOT NULL,
+            resulting_statement_line_id INTEGER REFERENCES interest_statement_lines(id)
+        )
+    """)
+
+    # A "fd_booked"-looking email drafts straight into here rather than the
+    # real deposits table -- it sits here, editable, until a person
+    # approves it (Draft Deposits tab). Rejecting one just deletes it; it
+    # never became a real record, so there's nothing to keep history for.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS deposit_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scanned_transaction_id INTEGER REFERENCES scanned_transactions(id),
+            depositor_id INTEGER REFERENCES depositors(id),
+            bank_ref_id INTEGER REFERENCES banks(id),
+            deposit_type TEXT NOT NULL DEFAULT 'cumulative',
+            principal REAL,
+            interest_rate REAL,
+            tenure_value TEXT NOT NULL DEFAULT '',
+            tenure_unit TEXT NOT NULL DEFAULT 'months',
+            compounding_frequency INTEGER NOT NULL DEFAULT 4,
+            account_category TEXT NOT NULL DEFAULT 'Resident',
+            currency TEXT NOT NULL DEFAULT 'INR',
+            start_date TEXT,
+            deposit_number TEXT NOT NULL DEFAULT '',
+            source_snippet TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved'))
         )
     """)
 
@@ -3972,6 +4060,516 @@ def _parse_bank_csv_rows(text: str) -> list:
             rows.append({"date": stmt_date.isoformat(), "description": description, "amount": amount})
     return rows
 
+
+# ---------- Mail Scan: find bank-transaction emails, queue them for review ----------
+# Best-effort and deliberately conservative: bank alert-email wording varies
+# a lot and isn't standardised the way a statement file is (contrast
+# _parse_bank_csv_rows above, which has real column headers to key off).
+# This is a generic keyword/regex heuristic, not a per-bank parser -- expect
+# it to miss some real alerts and occasionally flag something irrelevant.
+# Nothing it finds is written to a real record without a person reviewing it
+# first: a "credit" needs a depositor+bank chosen before it becomes an
+# Interest Check line, and an "fd_booked" guess lands in Draft Deposits for
+# approval, never straight into the deposits table. Attachments (e.g. PDF
+# e-statements) aren't scanned -- only the email's own text -- since
+# building and trusting a PDF-parsing path needs real sample statements
+# this app has never seen.
+MAIL_SCAN_DAYS_BACK_DEFAULT = 30
+MAIL_SCAN_MAX_EMAILS = 300
+
+# Sender domain -> bank name, so a scanned transaction can often be
+# pre-linked to an existing bank record. An unrecognised sender still gets
+# scanned by keyword alone; the bank is just left for the person to pick
+# during review instead of being guessed.
+MAIL_SCAN_BANK_DOMAINS = {
+    "sbi.co.in": "State Bank of India", "onlinesbi.com": "State Bank of India",
+    "onlinesbi.sbi": "State Bank of India",
+    "hdfcbank.net": "HDFC Bank", "hdfcbank.com": "HDFC Bank",
+    "icicibank.com": "ICICI Bank",
+    "axisbank.com": "Axis Bank",
+    "kotak.com": "Kotak Mahindra Bank",
+    "pnbindia.in": "Punjab National Bank", "netpnb.com": "Punjab National Bank",
+    "bankofbaroda.com": "Bank of Baroda", "bobibanking.com": "Bank of Baroda",
+    "canarabank.com": "Canara Bank",
+    "unionbankofindia.co.in": "Union Bank of India",
+    "indianbank.in": "Indian Bank",
+    "idbibank.co.in": "IDBI Bank",
+    "idfcfirstbank.com": "IDFC FIRST Bank",
+    "indusind.com": "IndusInd Bank",
+    "yesbank.in": "Yes Bank",
+    "karurvysyabank.com": "Karur Vysya Bank", "kvb.co.in": "Karur Vysya Bank",
+    "janabank.com": "Jana Small Finance Bank", "janabank.in": "Jana Small Finance Bank",
+    "equitasbank.com": "Equitas Small Finance Bank",
+    "ujjivansfb.in": "Ujjivan Small Finance Bank",
+}
+
+MAIL_SCAN_FD_NOUNS = re.compile(
+    r"\b(fixed deposit|fd a/?c|fd account|term deposit|recurring deposit|rd account|deposit receipt)\b",
+    re.IGNORECASE,
+)
+MAIL_SCAN_FD_VERBS = re.compile(
+    r"\b(booked|opened|created|confirmed|confirmation|placed|initiated)\b", re.IGNORECASE
+)
+MAIL_SCAN_CREDIT_RE = re.compile(
+    r"\b(credited|credit of|interest paid|interest credited|interest earned|has been credited)\b",
+    re.IGNORECASE,
+)
+MAIL_SCAN_IGNORE_RE = re.compile(
+    r"\b(debited|debit of|withdrawn|has been debited|otp|one time password|e-?statement attached|"
+    r"failed|declined|unsuccessful)\b",
+    re.IGNORECASE,
+)
+MAIL_SCAN_AMOUNT_RE = re.compile(r"(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
+MAIL_SCAN_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+MAIL_SCAN_DATE_RE = re.compile(
+    r"\b(\d{1,2})[-\s](jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[-\s,]*(\d{2,4})\b",
+    re.IGNORECASE,
+)
+MAIL_SCAN_ACCOUNT_RE = re.compile(
+    r"(?:a/?c|account|fd)\s*(?:no\.?|number)?\s*[:\-]?\s*([Xx*]{2,}\d{2,}|\d{6,})", re.IGNORECASE
+)
+
+
+def _html_to_text(raw_html: str) -> str:
+    """Crude but dependency-free HTML-to-text: drops script/style blocks,
+    turns tags into whitespace, and unescapes entities. Good enough to find
+    keywords/amounts in an HTML bank-alert email without adding a parser."""
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw_html)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return re.sub(r"[ \t]+", " ", text)
+
+
+def _extract_email_text(msg) -> str:
+    """Prefers the plain-text body; falls back to the HTML part (stripped)
+    if that's all the email has. Concatenates all parts of whichever type
+    it finds, since some emails split the message across several."""
+    plain_parts, html_parts = [], []
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_maintype() == "multipart" or part.get_filename():
+                continue  # a filename means it's an attachment, not body text
+            try:
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    continue
+                charset = part.get_content_charset() or "utf-8"
+                text = payload.decode(charset, errors="replace")
+            except (LookupError, TypeError, ValueError):
+                continue
+            if part.get_content_type() == "text/plain":
+                plain_parts.append(text)
+            elif part.get_content_type() == "text/html":
+                html_parts.append(text)
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            charset = msg.get_content_charset() or "utf-8"
+            text = payload.decode(charset, errors="replace") if payload is not None else ""
+        except (LookupError, TypeError, ValueError):
+            text = ""
+        if msg.get_content_type() == "text/html":
+            html_parts.append(text)
+        else:
+            plain_parts.append(text)
+
+    if plain_parts:
+        return "\n".join(plain_parts)
+    return "\n".join(_html_to_text(t) for t in html_parts)
+
+
+def _decode_mime_header(raw: str) -> str:
+    """Decodes a MIME-encoded header (Subject, From display name) into plain
+    text, tolerating malformed/partial encoding rather than raising."""
+    if not raw:
+        return ""
+    try:
+        parts = _decode_email_header(raw)
+    except Exception:
+        return raw
+    out = []
+    for text, enc in parts:
+        if isinstance(text, bytes):
+            try:
+                out.append(text.decode(enc or "utf-8", errors="replace"))
+            except (LookupError, TypeError):
+                out.append(text.decode("utf-8", errors="replace"))
+        else:
+            out.append(text)
+    return "".join(out)
+
+
+def _extract_date_from_text(text: str, fallback: date) -> date:
+    """Looks for a 'DD Mon YYYY'-style date (the common bank-alert form);
+    falls back to whatever date the email itself arrived on if none is
+    found or it doesn't parse."""
+    m = MAIL_SCAN_DATE_RE.search(text)
+    if m:
+        day, mon, year = int(m.group(1)), m.group(2).lower()[:3], m.group(3)
+        month = MAIL_SCAN_MONTHS.get(mon)
+        year = int(year) if len(year) == 4 else (2000 + int(year) if int(year) < 70 else 1900 + int(year))
+        if month:
+            try:
+                return date(year, month, day)
+            except ValueError:
+                pass
+    return fallback
+
+
+def _guess_bank_from_sender(from_addr: str, db) -> tuple:
+    """Returns (bank_name_guess, bank_ref_id or None) from the sender's
+    email domain -- matched against both the built-in guess list and
+    whatever bank names already exist in this database."""
+    domain = from_addr.rsplit("@", 1)[-1].lower() if "@" in from_addr else ""
+    name = None
+    for known_domain, bank_name in MAIL_SCAN_BANK_DOMAINS.items():
+        if domain == known_domain or domain.endswith("." + known_domain):
+            name = bank_name
+            break
+    bank_ref_id = None
+    if name:
+        row = db.execute("SELECT id FROM banks WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+        if row:
+            bank_ref_id = row["id"]
+    return name or domain, bank_ref_id
+
+
+def _guess_deposit_number_match(text: str, db):
+    """If the email mentions an account/FD number that matches an existing
+    deposit's own recorded number exactly, confidently return that
+    deposit's depositor_id/bank_ref_id -- otherwise None, None."""
+    for m in MAIL_SCAN_ACCOUNT_RE.finditer(text):
+        number = m.group(1)
+        if "x" in number.lower() or "*" in number:
+            continue  # masked ("XX1234") -- not a reliable match on its own
+        row = db.execute(
+            "SELECT depositor_id, bank_ref_id FROM deposits WHERE deposit_number = ? AND TRIM(deposit_number) != ''",
+            (number,),
+        ).fetchone()
+        if row:
+            return row["depositor_id"], row["bank_ref_id"]
+    return None, None
+
+
+def _transaction_dedupe_key(kind: str, bank_guess: str, txn_date: str, amount: float) -> str:
+    return f"{kind}|{(bank_guess or '').strip().lower()}|{txn_date}|{round(amount, 2)}"
+
+
+def _extract_transactions_from_text(db, subject: str, from_addr: str, body: str, received_on: date) -> list:
+    """Classifies one email's text into zero or more candidate transactions.
+    Ignores anything that looks like a debit/OTP/failure notice, and
+    requires at least one currency amount to consider it a transaction at
+    all -- a bank's marketing email mentioning "fixed deposit" without an
+    amount is noise, not a transaction."""
+    full_text = f"{subject}\n{body}"
+    if MAIL_SCAN_IGNORE_RE.search(full_text):
+        return []
+
+    amounts = [
+        _normalize_bank_amount(m.group(1)) for m in MAIL_SCAN_AMOUNT_RE.finditer(full_text)
+    ]
+    amounts = [a for a in amounts if a and a > 0]
+    if not amounts:
+        return []
+    amount = max(amounts)  # the alert's headline figure is usually the largest one mentioned
+
+    is_fd_booked = bool(MAIL_SCAN_FD_NOUNS.search(full_text) and MAIL_SCAN_FD_VERBS.search(full_text))
+    is_credit = bool(MAIL_SCAN_CREDIT_RE.search(full_text))
+    if not is_fd_booked and not is_credit:
+        return []
+    kind = "fd_booked" if is_fd_booked else "credit"
+
+    txn_date = _extract_date_from_text(full_text, received_on)
+    bank_guess, bank_ref_id = _guess_bank_from_sender(from_addr, db)
+    depositor_id, matched_bank_ref_id = _guess_deposit_number_match(full_text, db)
+    if matched_bank_ref_id:
+        bank_ref_id = matched_bank_ref_id
+
+    snippet = re.sub(r"\s+", " ", full_text).strip()[:300]
+    return [{
+        "kind": kind,
+        "amount": amount,
+        "txn_date": txn_date.isoformat(),
+        "description": _decode_mime_header(subject)[:200] or snippet[:200],
+        "bank_guess": bank_guess,
+        "bank_ref_id": bank_ref_id,
+        "depositor_id": depositor_id,
+        "snippet": snippet,
+        "dedupe_key": _transaction_dedupe_key(kind, bank_guess, txn_date.isoformat(), amount),
+    }]
+
+
+def _imap_connect(sender_email: str, app_password: str):
+    """Connects to Gmail IMAP with the same App Password already used for
+    SMTP sending (Notifications tab). Raises RuntimeError with a
+    user-facing message on any failure."""
+    if not sender_email or not app_password:
+        raise RuntimeError(
+            "Set up the Gmail sender address and App Password on the Notifications tab first."
+        )
+    try:
+        conn = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=20)
+        conn.login(sender_email, app_password)
+        return conn
+    except imaplib.IMAP4.error:
+        raise RuntimeError(
+            "Gmail rejected the sender email / app password for IMAP login. Make sure IMAP is "
+            "enabled on the account (Gmail settings → Forwarding and POP/IMAP) and the App "
+            "Password on the Notifications tab is current."
+        )
+    except socket.gaierror:
+        raise RuntimeError(
+            "Could not look up imap.gmail.com — check this machine's internet/DNS connection."
+        )
+    except OSError as e:
+        raise RuntimeError(f"Could not reach imap.gmail.com ({e}).")
+
+
+def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
+    """Scans INBOX for emails since `days_back` days ago not already in
+    processed_emails, extracts candidate transactions from each, and queues
+    anything new (by dedupe_key) into scanned_transactions -- auto-creating
+    a linked deposit_drafts row for an "fd_booked" one. Returns a summary
+    dict for the Mail Scan page to show. Every email looked at is recorded
+    in processed_emails regardless of outcome, so it's never re-scanned."""
+    settings = get_notification_settings(db)
+    conn = _imap_connect(settings.get("sender_email", ""), settings.get("sender_app_password", ""))
+    scanned = 0
+    queued = 0
+    drafted = 0
+    try:
+        conn.select("INBOX", readonly=True)
+        since = (date.today() - timedelta(days=days_back)).strftime("%d-%b-%Y")
+        status, data = conn.search(None, f'(SINCE "{since}")')
+        if status != "OK":
+            raise RuntimeError("Gmail's IMAP search didn't succeed.")
+        uids = data[0].split()
+        if len(uids) > MAIL_SCAN_MAX_EMAILS:
+            uids = uids[-MAIL_SCAN_MAX_EMAILS:]  # newest N within the window, not oldest
+
+        already_known = {
+            r["dedupe_key"] for r in db.execute("SELECT dedupe_key FROM scanned_transactions").fetchall()
+        }
+
+        for uid in uids:
+            status, msg_data = conn.fetch(uid, "(RFC822)")
+            if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+                continue
+            msg = email.message_from_bytes(msg_data[0][1])
+            message_id = (msg.get("Message-ID") or "").strip()
+            if not message_id or db.execute(
+                "SELECT 1 FROM processed_emails WHERE message_id = ?", (message_id,)
+            ).fetchone():
+                continue  # no stable id to dedupe on, or already scanned before
+            scanned += 1
+
+            subject = _decode_mime_header(msg.get("Subject", ""))
+            from_addr = parseaddr(msg.get("From", ""))[1].lower()
+            try:
+                received_on = parsedate_to_datetime(msg.get("Date", "")).date()
+            except (TypeError, ValueError):
+                received_on = date.today()
+
+            body = _extract_email_text(msg)
+            candidates = _extract_transactions_from_text(db, subject, from_addr, body, received_on)
+
+            email_status = "no_match"
+            for cand in candidates:
+                if cand["dedupe_key"] in already_known:
+                    email_status = "duplicate"
+                    continue
+                already_known.add(cand["dedupe_key"])
+                cur = db.execute(
+                    """INSERT INTO scanned_transactions
+                       (message_id, kind, bank_guess, bank_ref_id, depositor_id, amount, txn_date,
+                        description, raw_snippet, dedupe_key, status, found_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                    (message_id, cand["kind"], cand["bank_guess"], cand["bank_ref_id"], cand["depositor_id"],
+                     cand["amount"], cand["txn_date"], cand["description"], cand["snippet"],
+                     cand["dedupe_key"], date.today().isoformat()),
+                )
+                scanned_id = cur.lastrowid
+                queued += 1
+                email_status = "queued"
+
+                if cand["kind"] == "fd_booked":
+                    db.execute(
+                        """INSERT INTO deposit_drafts
+                           (scanned_transaction_id, depositor_id, bank_ref_id, principal, start_date,
+                            source_snippet, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (scanned_id, cand["depositor_id"], cand["bank_ref_id"], cand["amount"],
+                         cand["txn_date"], cand["snippet"], date.today().isoformat()),
+                    )
+                    drafted += 1
+
+            db.execute(
+                """INSERT INTO processed_emails (message_id, mailbox, subject, from_addr, received_date, processed_at, status)
+                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?)""",
+                (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status),
+            )
+            db.commit()
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+    return {"scanned": scanned, "queued": queued, "drafted": drafted}
+
+
+@app.route("/mail-scan")
+def mail_scan_page():
+    db = get_db()
+    settings = get_notification_settings(db)
+    pending = db.execute(
+        """SELECT scanned_transactions.*, banks.name AS bank_name, depositors.name AS depositor_name
+           FROM scanned_transactions
+           LEFT JOIN banks ON scanned_transactions.bank_ref_id = banks.id
+           LEFT JOIN depositors ON scanned_transactions.depositor_id = depositors.id
+           WHERE scanned_transactions.kind = 'credit' AND scanned_transactions.status = 'pending'
+           ORDER BY scanned_transactions.txn_date DESC"""
+    ).fetchall()
+    return render_template(
+        "mail_scan.html", active_tab="mail_scan",
+        mail_configured=bool(settings.get("sender_email") and settings.get("sender_app_password")),
+        sender_email=settings.get("sender_email", ""),
+        pending=pending,
+        depositors=list_depositors(db), banks=list_banks(db),
+        scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
+        result=session.pop("mail_scan_result", None),
+        error=session.pop("mail_scan_error", None),
+    )
+
+
+@app.route("/mail-scan/run", methods=["POST"])
+def run_mail_scan():
+    db = get_db()
+    try:
+        days_back = int(request.form.get("days_back", MAIL_SCAN_DAYS_BACK_DEFAULT))
+    except (TypeError, ValueError):
+        days_back = MAIL_SCAN_DAYS_BACK_DEFAULT
+    try:
+        result = scan_mailbox_for_transactions(db, days_back=days_back)
+        session["mail_scan_result"] = (
+            f"Scanned {result['scanned']} new email(s): {result['queued']} transaction(s) queued for review"
+            + (f" ({result['drafted']} of those as new deposit drafts)." if result["drafted"] else ".")
+        )
+    except RuntimeError as e:
+        session["mail_scan_error"] = str(e)
+    return redirect(url_for("mail_scan_page"))
+
+
+@app.route("/mail-scan/<int:scanned_id>/accept", methods=["POST"])
+def accept_scanned_transaction(scanned_id):
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM scanned_transactions WHERE id = ? AND kind = 'credit' AND status = 'pending'",
+        (scanned_id,),
+    ).fetchone()
+    if row is None:
+        return redirect(url_for("mail_scan_page"))
+    depositor_id = request.form.get("depositor_id")
+    bank_ref_id = request.form.get("bank_ref_id")
+    if not depositor_id or not bank_ref_id:
+        session["mail_scan_error"] = "Choose a depositor and bank before accepting a transaction."
+        return redirect(url_for("mail_scan_page"))
+    cur = db.execute(
+        """INSERT INTO interest_statement_lines (depositor_id, bank_ref_id, stmt_date, description, amount, imported_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (depositor_id, bank_ref_id, row["txn_date"], row["description"] or row["raw_snippet"][:200],
+         row["amount"], date.today().isoformat()),
+    )
+    db.execute(
+        "UPDATE scanned_transactions SET status = 'accepted', depositor_id = ?, bank_ref_id = ?, "
+        "resulting_statement_line_id = ? WHERE id = ?",
+        (depositor_id, bank_ref_id, cur.lastrowid, scanned_id),
+    )
+    db.commit()
+    return redirect(url_for("mail_scan_page"))
+
+
+@app.route("/mail-scan/<int:scanned_id>/dismiss", methods=["POST"])
+def dismiss_scanned_transaction(scanned_id):
+    db = get_db()
+    db.execute(
+        "UPDATE scanned_transactions SET status = 'dismissed' WHERE id = ? AND kind = 'credit'",
+        (scanned_id,),
+    )
+    db.commit()
+    return redirect(url_for("mail_scan_page"))
+
+
+@app.route("/draft-deposits")
+def draft_deposits_page():
+    db = get_db()
+    drafts = db.execute(
+        "SELECT * FROM deposit_drafts WHERE status = 'pending' ORDER BY created_at DESC, id DESC"
+    ).fetchall()
+    return render_template(
+        "draft_deposits.html", active_tab="draft_deposits",
+        drafts=drafts,
+        depositors=db.execute("SELECT id, holder_id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
+        banks=db.execute("SELECT id, bank_id, name FROM banks ORDER BY name COLLATE NOCASE").fetchall(),
+        tags=list_tags(db), deposit_types=DEPOSIT_TYPES, tenure_units=TENURE_UNITS,
+        account_categories=ACCOUNT_CATEGORIES, fcnr_currencies=FCNR_CURRENCIES,
+        error=session.pop("draft_deposit_error", None),
+    )
+
+
+@app.route("/draft-deposits/<int:draft_id>/approve", methods=["POST"])
+def approve_deposit_draft(draft_id):
+    db = get_db()
+    draft = db.execute("SELECT * FROM deposit_drafts WHERE id = ? AND status = 'pending'", (draft_id,)).fetchone()
+    if draft is None:
+        return redirect(url_for("draft_deposits_page"))
+
+    form_data = dict(BLANK_DEPOSIT_FORM)
+    for key in form_data:
+        form_data[key] = request.form.get(key, form_data[key])
+    try:
+        cols = parse_deposit_form(form_data, db)
+        cur = db.execute(
+            """INSERT INTO deposits
+               (depositor_id, bank_ref_id, holder_id, holder_name, bank_name, deposit_type,
+                principal, interest_rate, tenure_months, tenure_days, tenure_unit,
+                compounding_frequency, tag_id, deposit_number, owner_id,
+                account_category, currency, start_date, remarks)
+               VALUES (:depositor_id, :bank_ref_id, :holder_id, :holder_name, :bank_name, :deposit_type,
+                :principal, :interest_rate, :tenure_months, :tenure_days, :tenure_unit,
+                :compounding_frequency, :tag_id, :deposit_number, :owner_id,
+                :account_category, :currency, :start_date, :remarks)""",
+            cols,
+        )
+        new_deposit_id = cur.lastrowid
+        db.execute("UPDATE deposit_drafts SET status = 'approved' WHERE id = ?", (draft_id,))
+        if draft["scanned_transaction_id"]:
+            db.execute(
+                "UPDATE scanned_transactions SET status = 'accepted' WHERE id = ?",
+                (draft["scanned_transaction_id"],),
+            )
+        db.commit()
+        return redirect(url_for("dashboard"))
+    except ValueError as e:
+        session["draft_deposit_error"] = f"Draft #{draft_id}: {e}"
+        return redirect(url_for("draft_deposits_page"))
+
+
+@app.route("/draft-deposits/<int:draft_id>/reject", methods=["POST"])
+def reject_deposit_draft(draft_id):
+    db = get_db()
+    draft = db.execute("SELECT * FROM deposit_drafts WHERE id = ?", (draft_id,)).fetchone()
+    if draft is not None:
+        db.execute("DELETE FROM deposit_drafts WHERE id = ?", (draft_id,))
+        if draft["scanned_transaction_id"]:
+            db.execute(
+                "UPDATE scanned_transactions SET status = 'dismissed' WHERE id = ?",
+                (draft["scanned_transaction_id"],),
+            )
+        db.commit()
+    return redirect(url_for("draft_deposits_page"))
 
 
 def _payout_deposits_for_pair(db, depositor_id, bank_ref_id):

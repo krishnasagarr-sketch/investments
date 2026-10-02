@@ -344,6 +344,8 @@
     <a href="{{ url_for('tds_page') }}" class="{% if active_tab == 'tds' %}active{% endif %}">TDS</a>
     <a href="{{ url_for('dicgc_page') }}" class="{% if active_tab == 'dicgc' %}active{% endif %}">DICGC</a>
     <a href="{{ url_for('reconcile_interest_page') }}" class="{% if active_tab == 'reconcile_interest' %}active{% endif %}">Interest Check</a>
+    <a href="{{ url_for('mail_scan_page') }}" class="{% if active_tab == 'mail_scan' %}active{% endif %}">Mail Scan</a>
+    <a href="{{ url_for('draft_deposits_page') }}" class="{% if active_tab == 'draft_deposits' %}active{% endif %}">Draft Deposits{% if pending_draft_count %} ({{ pending_draft_count }}){% endif %}</a>
     <a href="{{ url_for('retirement_page') }}" class="{% if active_tab == 'retirement' %}active{% endif %}">Retirement</a>
     <a href="{{ url_for('backup_page') }}" class="{% if active_tab == 'backup' %}active{% endif %}">Backup</a>
   </nav>

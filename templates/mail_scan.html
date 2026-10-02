@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Mail Scan — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:640px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Scan your inbox for bank transactions</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      Reads the Gmail inbox already set up on the <a href="{{ url_for('notifications_page') }}">Notifications</a>
+      tab over IMAP (same App Password, used to read instead of send) and looks for transaction-looking
+      emails — interest credits and FD-booking confirmations. This is a best-effort keyword scan, not a
+      per-bank parser: bank alert wording varies a lot, so expect it to miss some real emails and
+      occasionally flag something irrelevant. <strong>Only the email's own text is scanned, not
+      attachments</strong> (e.g. PDF e-statements) — that's not built yet. Nothing found here is written
+      to a real record automatically: an interest credit needs a depositor and bank chosen below before
+      it becomes an Interest Check line, and an FD-booking guess lands on the
+      <a href="{{ url_for('draft_deposits_page') }}">Draft Deposits</a> tab for you to review, edit, and
+      approve — or reject — before it's ever a real deposit. Every email looked at is remembered (by its
+      own unique Message-ID) so re-scanning never processes the same mail twice, and the same
+      transaction is never queued here more than once even if it showed up in more than one email.
+    </p>
+  </div>
+
+  {% if error %}
+    <div class="card" style="max-width:640px;">
+      <div class="error-box" style="margin:0;">{{ error }}</div>
+    </div>
+  {% endif %}
+  {% if result %}
+    <div class="card" style="max-width:640px;">
+      <div class="error-box" style="background:#eaf6ec; color:var(--green); margin:0;">{{ result }}</div>
+    </div>
+  {% endif %}
+
+  <div class="card" style="max-width:360px;">
+    {% if not mail_configured %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber); margin-bottom:16px;">
+        No Gmail sender / App Password set yet — add one on the
+        <a href="{{ url_for('notifications_page') }}">Notifications</a> tab first.
+      </div>
+    {% else %}
+      <p class="field-hint" style="margin-bottom:16px;">Scanning <strong>{{ sender_email }}</strong>.</p>
+    {% endif %}
+    <form method="POST" action="{{ url_for('run_mail_scan') }}">
+      <div class="form-group">
+        <label for="days_back">Days back to scan</label>
+        <input type="number" id="days_back" name="days_back" value="30" min="1" max="365">
+      </div>
+      <button type="submit" class="btn" style="width:100%;" {% if not mail_configured %}disabled{% endif %}>Scan Now</button>
+    </form>
+    <p class="field-hint" style="margin-top:12px; margin-bottom:0;">{{ scanned_count }} email(s) looked at so far, in total.</p>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 14px;">Interest credits awaiting review</h2>
+    {% if pending %}
+      <div class="table-scroll sticky-last compact">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Amount</th>
+            <th>From / Snippet</th>
+            <th>Depositor + Bank</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in pending %}
+          <tr>
+            <td>{{ t.txn_date }}</td>
+            <td>{{ (t.amount)|money }}</td>
+            <td>
+              {{ t.description }}
+              <div class="muted" style="font-size:12px;" title="{{ t.raw_snippet }}">{{ t.bank_guess }}</div>
+            </td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('accept_scanned_transaction', scanned_id=t.id) }}" style="display:flex; gap:6px; flex-wrap:wrap;">
+                <select name="depositor_id" required style="min-width:120px;">
+                  <option value="" disabled {% if not t.depositor_id %}selected{% endif %}>Depositor…</option>
+                  {% for dep in depositors %}
+                    <option value="{{ dep.id }}" {% if t.depositor_id == dep.id %}selected{% endif %}>{{ dep.name }}</option>
+                  {% endfor %}
+                </select>
+                <select name="bank_ref_id" required style="min-width:120px;">
+                  <option value="" disabled {% if not t.bank_ref_id %}selected{% endif %}>Bank…</option>
+                  {% for b in banks %}
+                    <option value="{{ b.id }}" {% if t.bank_ref_id == b.id %}selected{% endif %}>{{ b.name }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn secondary">Accept</button>
+              </form>
+            </td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('dismiss_scanned_transaction', scanned_id=t.id) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Dismiss?">Dismiss</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><p>Nothing awaiting review. Run a scan above to look for more.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}

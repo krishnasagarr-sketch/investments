@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}Draft Deposits — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('mail_scan_page') }}" class="btn secondary">← Back to Mail Scan</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:640px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Deposits drafted from scanned mail</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      Each of these came from an email on <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> that looked
+      like a new FD/RD being booked. Nothing here is a real deposit yet — the amount and date are usually
+      right, but the interest rate, tenure and compounding almost never appear in a bank's alert email, so
+      fill those in yourself. <strong>Approve</strong> validates and creates the real deposit (same checks
+      as the Add Deposit form); <strong>Reject</strong> just discards the draft — nothing was ever saved, so
+      there's nothing to keep a record of.
+    </p>
+  </div>
+
+  {% if error %}
+    <div class="card" style="max-width:640px;">
+      <div class="error-box" style="margin:0;">{{ error }}</div>
+    </div>
+  {% endif %}
+
+  {% if drafts %}
+    {% for d in drafts %}
+    <div class="card" style="max-width:460px;">
+      <h2 style="font-size:16px; margin:0 0 4px;">Draft #{{ d.id }}</h2>
+      <p class="field-hint" style="margin-bottom:16px;" title="{{ d.source_snippet }}">
+        From the scanned email: “{{ d.source_snippet[:140] }}{% if d.source_snippet|length > 140 %}…{% endif %}”
+      </p>
+
+      <form method="POST" action="{{ url_for('approve_deposit_draft', draft_id=d.id) }}">
+        <div class="form-group">
+          <label for="depositor_id_{{ d.id }}">Depositor</label>
+          <select id="depositor_id_{{ d.id }}" name="depositor_id" required {% if not depositors %}disabled{% endif %}>
+            <option value="" disabled {% if not d.depositor_id %}selected{% endif %}>Select a depositor…</option>
+            {% for dep in depositors %}
+              <option value="{{ dep.id }}" {% if d.depositor_id == dep.id %}selected{% endif %}>{{ dep.name }} ({{ dep.holder_id }})</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="account_category_{{ d.id }}">Account Category</label>
+          <select id="account_category_{{ d.id }}" name="account_category" onchange="fdDraftSync('{{ d.id }}')">
+            {% for key, label in account_categories.items() %}
+              <option value="{{ key }}" {% if key == "Resident" %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group" id="currency_group_{{ d.id }}" style="display:none;">
+          <label for="currency_{{ d.id }}">Currency</label>
+          <select id="currency_{{ d.id }}" name="currency">
+            {% for c in fcnr_currencies %}
+              <option value="{{ c }}">{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="bank_ref_id_{{ d.id }}">Bank</label>
+          <select id="bank_ref_id_{{ d.id }}" name="bank_ref_id" required {% if not banks %}disabled{% endif %}>
+            <option value="" disabled {% if not d.bank_ref_id %}selected{% endif %}>Select a bank…</option>
+            {% for bank in banks %}
+              <option value="{{ bank.id }}" {% if d.bank_ref_id == bank.id %}selected{% endif %}>{{ bank.name }} ({{ bank.bank_id }})</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="tag_id_{{ d.id }}">Tag <span class="muted">(optional)</span></label>
+          <select id="tag_id_{{ d.id }}" name="tag_id">
+            <option value="" selected>— untagged —</option>
+            {% for t in tags %}
+              <option value="{{ t.id }}">{{ t.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="deposit_type_{{ d.id }}">Deposit Type</label>
+          <select id="deposit_type_{{ d.id }}" name="deposit_type" onchange="fdDraftSync('{{ d.id }}')">
+            {% for key, label in deposit_types.items() %}
+              <option value="{{ key }}" {% if key == "cumulative" %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="principal_{{ d.id }}">Principal Amount</label>
+          <input type="number" step="any" id="principal_{{ d.id }}" name="principal" value="{{ d.principal }}" required>
+          <p class="field-hint">Taken from the scanned amount — check it against the email before approving.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="interest_rate_{{ d.id }}">Annual Interest Rate (%)</label>
+          <input type="number" step="any" id="interest_rate_{{ d.id }}" name="interest_rate" placeholder="e.g. 6.5" required>
+          <p class="field-hint">Not in the email — fill in the rate you were offered.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="tenure_value_{{ d.id }}">Tenure</label>
+          <div style="display:flex; gap:8px;">
+            <input type="number" id="tenure_value_{{ d.id }}" name="tenure_value" placeholder="e.g. 12" required style="flex:1;">
+            <select id="tenure_unit_{{ d.id }}" name="tenure_unit" style="width:auto;">
+              {% for key, label in tenure_units.items() %}
+                <option value="{{ key }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group" id="compounding_group_{{ d.id }}">
+          <label for="compounding_frequency_{{ d.id }}">Compounding Frequency</label>
+          <select id="compounding_frequency_{{ d.id }}" name="compounding_frequency">
+            <option value="1">Annually</option>
+            <option value="2">Semi-annually</option>
+            <option value="4" selected>Quarterly</option>
+            <option value="12">Monthly</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="start_date_{{ d.id }}">Start Date</label>
+          <input type="date" id="start_date_{{ d.id }}" name="start_date" value="{{ d.start_date }}" required>
+        </div>
+
+        <div class="form-group">
+          <label for="deposit_number_{{ d.id }}">Deposit / Account Number <span class="muted">(optional)</span></label>
+          <input type="text" id="deposit_number_{{ d.id }}" name="deposit_number" value="{{ d.deposit_number }}">
+        </div>
+
+        <div class="form-group">
+          <label for="remarks_{{ d.id }}">Remarks <span class="muted">(optional)</span></label>
+          <textarea id="remarks_{{ d.id }}" name="remarks" rows="2">Drafted from scanned mail</textarea>
+        </div>
+
+        <button type="submit" class="btn" style="width:100%;">Approve &amp; Create Deposit</button>
+      </form>
+      <form method="POST" action="{{ url_for('reject_deposit_draft', draft_id=d.id) }}" style="margin-top:8px;">
+        <button type="submit" class="btn danger" style="width:100%;" data-confirm data-confirm-label="Reject this draft?">Reject</button>
+      </form>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="card">
+      <div class="empty-state"><p>No pending drafts. Run a scan on the <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> tab to look for more.</p></div>
+    </div>
+  {% endif %}
+
+  <script>
+    function fdDraftSync(id) {
+      var type = document.getElementById("deposit_type_" + id).value;
+      var category = document.getElementById("account_category_" + id).value;
+      document.getElementById("compounding_group_" + id).style.display = (type === "cumulative") ? "" : "none";
+      document.getElementById("currency_group_" + id).style.display = (category === "FCNR") ? "" : "none";
+    }
+  </script>
+
+{% endblock %}
