@@ -226,6 +226,13 @@ per holding, under `deposit_attachments/`, `metal_attachments/`, `investment_att
 `retirement_attachments/` next to the database — all four gitignored, since these are real
 personal financial documents.
 
+Many bank-issued PDFs are password-protected (a PAN number, a date of birth, an account number),
+so each attachment has its own optional **password field** — set it at upload time or edit it
+later independently of the file itself. It's a plain note, not an actual unlock mechanism (the
+app never opens the file itself, your PDF viewer does), so either the real password or just the
+scheme works equally well, e.g. "PAN in capitals" or "DOB as DDMMYYYY" — whatever's enough to
+jog your memory next time.
+
 ## Metals & Market Prices
 
 Record precious-metal holdings: metal (Gold 24K, Gold 22K, silver, platinum, palladium, or

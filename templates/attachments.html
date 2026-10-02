@@ -27,6 +27,14 @@
         <label for="attachment">File</label>
         <input type="file" id="attachment" name="attachment" accept="{{ extensions|join(',') }}" required>
       </div>
+      <div class="form-group">
+        <label for="password_hint">Password to open it <span class="muted">(optional)</span></label>
+        <input type="text" id="password_hint" name="password_hint" placeholder="e.g. PAN number, or DOB as DDMMYYYY">
+        <p class="field-hint">
+          Many bank-issued PDFs are password-protected — note the actual password, or just the
+          scheme (e.g. "PAN in caps"), so it's not forgotten by the time you need to open this again.
+        </p>
+      </div>
       <button type="submit" class="btn" style="width:100%;">Attach</button>
     </form>
   </div>
@@ -40,16 +48,24 @@
         read (e.g. <code>contract_note.pdf</code> shows the contract note itself in the tab), while
         a Word document downloads instead, since a browser can't display one directly — find it in
         your Downloads folder afterward and open it with Word, Google Docs, or similar (e.g.
-        <code>allotment_advice.docx</code> downloads, then double-click it to open).
+        <code>allotment_advice.docx</code> downloads, then double-click it to open). If it's
+        password-protected, use whatever's noted under "Password" below to unlock it.
       </p>
-      <div style="display:flex; flex-direction:column; gap:8px;">
+      <div style="display:flex; flex-direction:column; gap:12px;">
         {% for f in attachments %}
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-            <a href="{{ view_url(f.name) }}" target="_blank">
-              {{ f.name }} <span class="muted">({{ f.size }})</span>
-            </a>
-            <form class="inline" method="POST" action="{{ delete_url(f.name) }}">
-              <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+          <div style="padding-bottom:12px; {% if not loop.last %}border-bottom:1px solid var(--border);{% endif %}">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+              <a href="{{ view_url(f.name) }}" target="_blank">
+                {{ f.name }} <span class="muted">({{ f.size }})</span>
+              </a>
+              <form class="inline" method="POST" action="{{ delete_url(f.name) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+              </form>
+            </div>
+            <form method="POST" action="{{ password_url(f.name) }}" style="display:flex; gap:6px; margin-top:6px;">
+              <input type="text" name="password_hint" value="{{ f.password_hint }}"
+                     placeholder="No password noted — add one" style="flex:1; font-size:13px; padding:7px 10px;">
+              <button type="submit" class="btn secondary" style="font-size:13px; padding:7px 12px;">Save</button>
             </form>
           </div>
         {% endfor %}

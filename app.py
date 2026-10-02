@@ -705,6 +705,24 @@ def init_db():
         if "remarks" not in table_cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN remarks TEXT NOT NULL DEFAULT ''")
 
+    # The password/PIN (or a hint like "PAN number" or "DOB as DDMMYYYY") a
+    # saved attachment needs to actually be opened -- many bank-issued PDFs
+    # (FD receipts, certificates, statements) are password-protected, and
+    # without this it's easy to save one and have no way to recall how to
+    # unlock it again later. One row per (kind, holding, filename); plain
+    # text, same as the Gmail App Password already stored for Notifications
+    # -- this is a single-user local app, not a secrets vault.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS attachment_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            item_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            password_hint TEXT NOT NULL DEFAULT '',
+            UNIQUE(kind, item_id, filename)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -5727,21 +5745,45 @@ def _attachments_page_url(kind: str, item_id: int) -> str:
     return url_for(route, **{param: item_id})
 
 
-def list_attachments(kind: str, item_id: int) -> list:
+def get_attachment_password(db, kind: str, item_id: int, filename: str) -> str:
+    row = db.execute(
+        "SELECT password_hint FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
+        (kind, item_id, filename),
+    ).fetchone()
+    return row["password_hint"] if row else ""
+
+
+def set_attachment_password(db, kind: str, item_id: int, filename: str, password_hint: str) -> None:
+    db.execute(
+        """INSERT INTO attachment_notes (kind, item_id, filename, password_hint) VALUES (?, ?, ?, ?)
+           ON CONFLICT(kind, item_id, filename) DO UPDATE SET password_hint = excluded.password_hint""",
+        (kind, item_id, filename, password_hint.strip()),
+    )
+    db.commit()
+
+
+def list_attachments(db, kind: str, item_id: int) -> list:
     folder = ATTACHMENT_DIRS[kind] / str(item_id)
     if not folder.exists():
         return []
     return [
-        {"name": f.name, "size": _human_file_size(f.stat().st_size)}
+        {
+            "name": f.name,
+            "size": _human_file_size(f.stat().st_size),
+            "password_hint": get_attachment_password(db, kind, item_id, f.name),
+        }
         for f in sorted(folder.iterdir())
         if f.is_file()
     ]
 
 
-def save_attachment(kind: str, item_id: int, file) -> str:
-    """Validates and saves an uploaded file against this holding. Returns
-    None on success, or a user-facing error string on failure -- never
-    raises, so a route can just check the return value."""
+def save_attachment(db, kind: str, item_id: int, file, password_hint: str = "") -> str:
+    """Validates and saves an uploaded file against this holding, along
+    with the password/PIN (or a hint, like "PAN number") needed to open it,
+    if one was given -- many bank-issued PDFs are password-protected, and
+    without this it's easy to save one and have no way to recall how to
+    unlock it later. Returns None on success, or a user-facing error string
+    on failure -- never raises, so a route can just check the return value."""
     if file is None or file.filename == "":
         return "Choose a file to attach."
     ext = Path(file.filename).suffix.lower()
@@ -5759,6 +5801,8 @@ def save_attachment(kind: str, item_id: int, file) -> str:
     if dest.exists():
         dest = folder / f"{dest.stem}_{secrets.token_hex(3)}{dest.suffix}"  # don't clobber a same-named file
     file.save(dest)
+    if password_hint.strip():
+        set_attachment_password(db, kind, item_id, dest.name, password_hint)
     return None
 
 
@@ -5773,11 +5817,29 @@ def _serve_attachment(kind: str, item_id: int, filename: str):
     return send_file(target, as_attachment=False)
 
 
-def _delete_attachment(kind: str, item_id: int, filename: str):
+def _delete_attachment(db, kind: str, item_id: int, filename: str):
     base = (ATTACHMENT_DIRS[kind] / str(item_id)).resolve()
     target = (base / filename).resolve()
     if target.is_relative_to(base) and target.is_file():
         target.unlink()
+        db.execute(
+            "DELETE FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
+            (kind, item_id, filename),
+        )
+        db.commit()
+    return redirect(_attachments_page_url(kind, item_id))
+
+
+@app.route("/attachments/<kind>/<int:item_id>/<filename>/password", methods=["POST"])
+def update_attachment_password(kind, item_id, filename):
+    """One shared route for all four holding kinds -- this only ever touches
+    attachment_notes (plain metadata), never a file on disk, so there's no
+    path-traversal concern in accepting `kind` directly; an unknown kind
+    just bounces back to the Dashboard."""
+    if kind not in ATTACHMENT_DIRS:
+        return redirect(url_for("dashboard"))
+    db = get_db()
+    set_attachment_password(db, kind, item_id, filename, request.form.get("password_hint", ""))
     return redirect(_attachments_page_url(kind, item_id))
 
 
@@ -5786,7 +5848,7 @@ def attachment_count(kind: str, item_id: int) -> int:
     """For a row template to show "Attachments (N)" without its own
     list-building code (summarise_deposit, list_metals, ...) needing to
     plumb this through -- it's just a cheap directory listing."""
-    return len(list_attachments(kind, item_id))
+    return len(list_attachments(get_db(), kind, item_id))
 
 
 @app.template_global()
@@ -5857,7 +5919,7 @@ def list_investments(db):
             "depositor_name": h["depositor_name"],
             "tag_id": h["tag_id"],
             "remarks": _row_get(h, "remarks", ""),
-            "attachment_count": len(list_attachments("investments", h["id"])),
+            "attachment_count": len(list_attachments(db, "investments", h["id"])),
             "shares": remaining_shares,
             "sold_shares": sold_shares,
             "purchase_price": h["purchase_price"],
@@ -6098,7 +6160,7 @@ def investment_attachments_page(investment_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment("investments", investment_id, request.files.get("attachment"))
+        error = save_attachment(db, "investments", investment_id, request.files.get("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("investment_attachments_page", investment_id=investment_id))
 
@@ -6110,7 +6172,8 @@ def investment_attachments_page(investment_id):
         back_url=url_for("investments_page"),
         view_url=lambda name: url_for("view_investment_attachment", investment_id=investment_id, filename=name),
         delete_url=lambda name: url_for("delete_investment_attachment", investment_id=investment_id, filename=name),
-        attachments=list_attachments("investments", investment_id),
+        password_url=lambda name: url_for("update_attachment_password", kind="investments", item_id=investment_id, filename=name),
+        attachments=list_attachments(db, "investments", investment_id),
         extensions=sorted(ATTACHMENT_EXTENSIONS),
         error=error,
     )
@@ -6123,7 +6186,7 @@ def view_investment_attachment(investment_id, filename):
 
 @app.route("/investments/<int:investment_id>/attachments/<filename>/delete", methods=["POST"])
 def delete_investment_attachment(investment_id, filename):
-    return _delete_attachment("investments", investment_id, filename)
+    return _delete_attachment(get_db(), "investments", investment_id, filename)
 
 
 @app.route("/deposits/<int:deposit_id>/attachments", methods=["GET", "POST"])
@@ -6136,7 +6199,7 @@ def deposit_attachments_page(deposit_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment("deposits", deposit_id, request.files.get("attachment"))
+        error = save_attachment(db, "deposits", deposit_id, request.files.get("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("deposit_attachments_page", deposit_id=deposit_id))
 
@@ -6147,7 +6210,8 @@ def deposit_attachments_page(deposit_id):
         back_url=url_for("dashboard"),
         view_url=lambda name: url_for("view_deposit_attachment", deposit_id=deposit_id, filename=name),
         delete_url=lambda name: url_for("delete_deposit_attachment", deposit_id=deposit_id, filename=name),
-        attachments=list_attachments("deposits", deposit_id),
+        password_url=lambda name: url_for("update_attachment_password", kind="deposits", item_id=deposit_id, filename=name),
+        attachments=list_attachments(db, "deposits", deposit_id),
         extensions=sorted(ATTACHMENT_EXTENSIONS),
         error=error,
     )
@@ -6160,7 +6224,7 @@ def view_deposit_attachment(deposit_id, filename):
 
 @app.route("/deposits/<int:deposit_id>/attachments/<filename>/delete", methods=["POST"])
 def delete_deposit_attachment(deposit_id, filename):
-    return _delete_attachment("deposits", deposit_id, filename)
+    return _delete_attachment(get_db(), "deposits", deposit_id, filename)
 
 
 @app.route("/metals/<int:metal_id>/attachments", methods=["GET", "POST"])
@@ -6177,7 +6241,7 @@ def metal_attachments_page(metal_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment("metals", metal_id, request.files.get("attachment"))
+        error = save_attachment(db, "metals", metal_id, request.files.get("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("metal_attachments_page", metal_id=metal_id))
 
@@ -6189,7 +6253,8 @@ def metal_attachments_page(metal_id):
         back_url=url_for("metals_page"),
         view_url=lambda name: url_for("view_metal_attachment", metal_id=metal_id, filename=name),
         delete_url=lambda name: url_for("delete_metal_attachment", metal_id=metal_id, filename=name),
-        attachments=list_attachments("metals", metal_id),
+        password_url=lambda name: url_for("update_attachment_password", kind="metals", item_id=metal_id, filename=name),
+        attachments=list_attachments(db, "metals", metal_id),
         extensions=sorted(ATTACHMENT_EXTENSIONS),
         error=error,
     )
@@ -6202,7 +6267,7 @@ def view_metal_attachment(metal_id, filename):
 
 @app.route("/metals/<int:metal_id>/attachments/<filename>/delete", methods=["POST"])
 def delete_metal_attachment(metal_id, filename):
-    return _delete_attachment("metals", metal_id, filename)
+    return _delete_attachment(get_db(), "metals", metal_id, filename)
 
 
 @app.route("/retirement/<int:account_id>/attachments", methods=["GET", "POST"])
@@ -6219,7 +6284,7 @@ def retirement_attachments_page(account_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment("retirement", account_id, request.files.get("attachment"))
+        error = save_attachment(db, "retirement", account_id, request.files.get("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("retirement_attachments_page", account_id=account_id))
 
@@ -6230,7 +6295,8 @@ def retirement_attachments_page(account_id):
         back_url=url_for("retirement_page"),
         view_url=lambda name: url_for("view_retirement_attachment", account_id=account_id, filename=name),
         delete_url=lambda name: url_for("delete_retirement_attachment", account_id=account_id, filename=name),
-        attachments=list_attachments("retirement", account_id),
+        password_url=lambda name: url_for("update_attachment_password", kind="retirement", item_id=account_id, filename=name),
+        attachments=list_attachments(db, "retirement", account_id),
         extensions=sorted(ATTACHMENT_EXTENSIONS),
         error=error,
     )
@@ -6243,7 +6309,7 @@ def view_retirement_attachment(account_id, filename):
 
 @app.route("/retirement/<int:account_id>/attachments/<filename>/delete", methods=["POST"])
 def delete_retirement_attachment(account_id, filename):
-    return _delete_attachment("retirement", account_id, filename)
+    return _delete_attachment(get_db(), "retirement", account_id, filename)
 
 
 @app.route("/investments/<int:investment_id>/delete", methods=["POST"])
