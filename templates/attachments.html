@@ -32,8 +32,16 @@
   </div>
 
   <div class="card" style="max-width:520px;">
-    <h2 style="font-size:16px; margin:0 0 14px;">Attached documents</h2>
+    <h2 style="font-size:16px; margin:0 0 4px;">Attached documents</h2>
     {% if attachments %}
+      <p class="field-hint" style="margin-bottom:16px;">
+        Click a file's name to open it in a new tab — what happens next depends on the file type,
+        the same as clicking any file link on the web: a PDF or image opens right there for you to
+        read (e.g. <code>contract_note.pdf</code> shows the contract note itself in the tab), while
+        a Word document downloads instead, since a browser can't display one directly — find it in
+        your Downloads folder afterward and open it with Word, Google Docs, or similar (e.g.
+        <code>allotment_advice.docx</code> downloads, then double-click it to open).
+      </p>
       <div style="display:flex; flex-direction:column; gap:8px;">
         {% for f in attachments %}
           <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
