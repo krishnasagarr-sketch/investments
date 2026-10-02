@@ -4212,6 +4212,21 @@ MAIL_SCAN_DATE_RE = re.compile(
 MAIL_SCAN_ACCOUNT_RE = re.compile(
     r"(?:a/?c|account|fd)\s*(?:no\.?|number)?\s*[:\-]?\s*([Xx*]{2,}\d{2,}|\d{6,})", re.IGNORECASE
 )
+MAIL_SCAN_PASSWORD_RE = re.compile(r"\b(password|passcode|pin code)\b", re.IGNORECASE)
+
+
+def _extract_password_hint_from_text(text: str) -> str:
+    """Looks for a sentence mentioning a password/passcode/PIN and returns
+    it verbatim -- banks routinely spell out right in the email how to open
+    an attached, protected statement (e.g. "the password is your PAN in
+    capital letters"), so this just grabs that sentence rather than trying
+    to parse out a literal code, since the wording varies too much to rely
+    on anything more specific. Returns "" if nothing found."""
+    normalized = re.sub(r"\s+", " ", text).strip()
+    for sentence in re.split(r"(?<=[.!?])\s+", normalized):
+        if MAIL_SCAN_PASSWORD_RE.search(sentence):
+            return sentence.strip()[:300]
+    return ""
 
 
 def _html_to_text(raw_html: str) -> str:
@@ -4530,6 +4545,13 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
                         "attachments_dir = ?, attachments_checked = 1 WHERE message_id = ?",
                         (len(saved_files), _safe_message_id_folder(message_id), message_id),
                     )
+                    hint = _extract_password_hint_from_text(
+                        f"{existing['subject']}\n{_extract_email_text(msg)}"
+                    )
+                    if hint:
+                        for fname in saved_files:
+                            if not get_attachment_password(db, "mail_scan", existing["id"], fname):
+                                set_attachment_password(db, "mail_scan", existing["id"], fname, hint)
                 else:
                     db.execute(
                         "UPDATE processed_emails SET attachments_checked = 1 WHERE message_id = ?",
@@ -4582,7 +4604,7 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
                     )
                     drafted += 1
 
-            db.execute(
+            cur = db.execute(
                 """INSERT INTO processed_emails
                    (message_id, mailbox, subject, from_addr, received_date, processed_at, status,
                     attachments_saved, attachments_dir, attachments_checked)
@@ -4590,6 +4612,12 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
                 (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status,
                  len(saved_files), _safe_message_id_folder(message_id) if saved_files else ""),
             )
+            if saved_files:
+                hint = _extract_password_hint_from_text(f"{subject}\n{body}")
+                if hint:
+                    email_row_id = cur.lastrowid
+                    for fname in saved_files:
+                        set_attachment_password(db, "mail_scan", email_row_id, fname, hint)
             db.commit()
     finally:
         try:
@@ -4633,13 +4661,22 @@ def list_saved_attachments(db) -> list:
         if not files:
             continue
         email_row = emails_by_dir.get(folder.name)
+        email_id = email_row["id"] if email_row else None
         groups.append({
             "folder": folder.name,
+            "email_id": email_id,
             "subject": email_row["subject"] if email_row else "(email no longer on record)",
             "from_addr": email_row["from_addr"] if email_row else "",
             "received_date": email_row["received_date"] if email_row else "",
             "mtime": max(f.stat().st_mtime for f in files),
-            "files": [{"name": f.name, "size": _human_file_size(f.stat().st_size)} for f in files],
+            "files": [
+                {
+                    "name": f.name,
+                    "size": _human_file_size(f.stat().st_size),
+                    "password_hint": get_attachment_password(db, "mail_scan", email_id, f.name) if email_id else "",
+                }
+                for f in files
+            ],
         })
     groups.sort(key=lambda g: g["mtime"], reverse=True)
     return groups
@@ -4657,6 +4694,16 @@ def view_mail_attachment(folder, filename):
     if not target.is_relative_to(base) or not target.is_file():
         return "Attachment not found.", 404
     return send_file(target, as_attachment=False)
+
+
+@app.route("/mail-scan/attachments/<int:email_id>/<filename>/password", methods=["POST"])
+def update_mail_attachment_password(email_id, filename):
+    """Edits the password hint on a Mail Scan attachment -- auto-extracted
+    from the email's own text at scan time (see
+    _extract_password_hint_from_text), but editable here in case that
+    guess was wrong or incomplete."""
+    set_attachment_password(get_db(), "mail_scan", email_id, filename, request.form.get("password_hint", ""))
+    return redirect(url_for("mail_scan_page"))
 
 
 @app.route("/mail-scan")

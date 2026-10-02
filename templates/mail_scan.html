@@ -133,7 +133,9 @@
       Not parsed — just kept, one email per group, so nothing is lost before a future version can
       read them. <strong>View</strong> opens a file in a new tab (a PDF renders inline; a CSV/Excel
       file downloads, same as it would from any other site). Stored on disk at
-      <code style="font-size:12px;">{{ attachments_dir }}</code>.
+      <code style="font-size:12px;">{{ attachments_dir }}</code>. If the email itself mentioned a
+      password or PIN to open the attachment, that sentence is picked up automatically and shown
+      below each file — edit it if the guess was wrong or incomplete.
     </p>
     {% if attachment_groups %}
       {% for g in attachment_groups %}
@@ -142,14 +144,22 @@
           <div class="muted" style="font-size:12px; margin-bottom:8px;">
             {{ g.from_addr }}{% if g.received_date %} · {{ g.received_date }}{% endif %}
           </div>
-          <div style="display:flex; flex-wrap:wrap; gap:8px;">
-            {% for f in g.files %}
+          {% for f in g.files %}
+            <div style="margin-bottom:8px;">
               <a class="btn secondary" style="font-size:13px;"
                  href="{{ url_for('view_mail_attachment', folder=g.folder, filename=f.name) }}" target="_blank">
                 {{ f.name }} <span class="muted">({{ f.size }})</span>
               </a>
-            {% endfor %}
-          </div>
+              {% if g.email_id %}
+                <form method="POST" action="{{ url_for('update_mail_attachment_password', email_id=g.email_id, filename=f.name) }}"
+                      style="display:flex; gap:6px; margin-top:4px;">
+                  <input type="text" name="password_hint" value="{{ f.password_hint }}"
+                         placeholder="No password noted — add one" style="flex:1; font-size:13px; padding:7px 10px;">
+                  <button type="submit" class="btn secondary" style="font-size:13px; padding:7px 12px;">Save</button>
+                </form>
+              {% endif %}
+            </div>
+          {% endfor %}
         </div>
       {% endfor %}
     {% else %}

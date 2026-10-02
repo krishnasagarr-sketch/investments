@@ -415,6 +415,13 @@ and exactly where, plus a **Saved attachments** list grouped by the email each o
 (subject, sender, date) with a **View** link per file — a PDF opens inline in a new tab, a
 CSV/Excel file downloads, the same as either would from any other site.
 
+If the email itself says how to open a password-protected attachment — banks routinely spell
+this out ("the password is your PAN in capital letters") — that sentence is picked up
+automatically and shown under the file, using the same password field every holding's own
+Attachments page has (see [Attachments](#attachments) below); edit it if the automatic guess was
+wrong or incomplete. It's only ever set automatically when nothing's noted yet, so a manual edit
+is never overwritten by a later scan.
+
 An email is normally only ever looked at once, tracked by its Message-ID — but if it was scanned
 before attachment-saving existed at all, the very next scan gives it exactly one further check
 for an attachment it never got the chance to be considered for, with no need to do anything by
