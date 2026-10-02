@@ -388,7 +388,9 @@ seen. A PDF/CSV/Excel attachment on a bank-looking email (recognised sender doma
 email's own text already matched a transaction) is still saved — one subfolder per email, named
 after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost before
 that parsing exists; an irrelevant email's attachment is never saved. The Mail Scan tab shows how
-many have been saved in total and exactly where.
+many have been saved in total and exactly where, plus a **Saved attachments** list grouped by the
+email each one came from (subject, sender, date) with a **View** link per file — a PDF opens
+inline in a new tab, a CSV/Excel file downloads, the same as either would from any other site.
 
 Nothing found is ever written straight to a real record:
 

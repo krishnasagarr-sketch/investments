@@ -4488,6 +4488,63 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
     return {"scanned": scanned, "queued": queued, "drafted": drafted, "attachments_saved": attachments_saved}
 
 
+def _human_file_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def list_saved_attachments(db) -> list:
+    """Every attachment Mail Scan has saved, grouped by the email it came
+    from, newest first. The filesystem is authoritative for what's actually
+    there; processed_emails is only consulted for context (subject, sender,
+    date) by matching its attachments_dir column -- a folder with no
+    matching row (shouldn't normally happen) still shows up, just without
+    that context, rather than being silently hidden."""
+    if not MAIL_ATTACHMENTS_DIR.exists():
+        return []
+    emails_by_dir = {
+        r["attachments_dir"]: r
+        for r in db.execute(
+            "SELECT * FROM processed_emails WHERE attachments_dir != ''"
+        ).fetchall()
+    }
+    groups = []
+    for folder in MAIL_ATTACHMENTS_DIR.iterdir():
+        if not folder.is_dir():
+            continue
+        files = sorted((f for f in folder.iterdir() if f.is_file()), key=lambda f: f.name)
+        if not files:
+            continue
+        email_row = emails_by_dir.get(folder.name)
+        groups.append({
+            "folder": folder.name,
+            "subject": email_row["subject"] if email_row else "(email no longer on record)",
+            "from_addr": email_row["from_addr"] if email_row else "",
+            "received_date": email_row["received_date"] if email_row else "",
+            "mtime": max(f.stat().st_mtime for f in files),
+            "files": [{"name": f.name, "size": _human_file_size(f.stat().st_size)} for f in files],
+        })
+    groups.sort(key=lambda g: g["mtime"], reverse=True)
+    return groups
+
+
+@app.route("/mail-scan/attachments/<folder>/<filename>")
+def view_mail_attachment(folder, filename):
+    """Serves a saved attachment for viewing/downloading. <folder> and
+    <filename> are single path segments (Werkzeug's default converter
+    rejects '/' in either), and the resolved path is additionally checked
+    against MAIL_ATTACHMENTS_DIR itself before anything is served, so a
+    '..' segment can't escape that directory."""
+    base = MAIL_ATTACHMENTS_DIR.resolve()
+    target = (base / folder / filename).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        return "Attachment not found.", 404
+    return send_file(target, as_attachment=False)
+
+
 @app.route("/mail-scan")
 def mail_scan_page():
     db = get_db()
@@ -4512,6 +4569,7 @@ def mail_scan_page():
         scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
         total_attachments=total_attachments,
         attachments_dir=str(MAIL_ATTACHMENTS_DIR),
+        attachment_groups=list_saved_attachments(db),
         result=session.pop("mail_scan_result", None),
         error=session.pop("mail_scan_error", None),
     )

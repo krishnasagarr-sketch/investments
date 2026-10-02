@@ -114,4 +114,34 @@
     {% endif %}
   </div>
 
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 4px;">Saved attachments</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Not parsed — just kept, one email per group, so nothing is lost before a future version can
+      read them. <strong>View</strong> opens a file in a new tab (a PDF renders inline; a CSV/Excel
+      file downloads, same as it would from any other site). Stored on disk at
+      <code style="font-size:12px;">{{ attachments_dir }}</code>.
+    </p>
+    {% if attachment_groups %}
+      {% for g in attachment_groups %}
+        <div style="padding:12px 0; {% if not loop.last %}border-bottom:1px solid var(--border);{% endif %}">
+          <div><strong>{{ g.subject }}</strong></div>
+          <div class="muted" style="font-size:12px; margin-bottom:8px;">
+            {{ g.from_addr }}{% if g.received_date %} · {{ g.received_date }}{% endif %}
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:8px;">
+            {% for f in g.files %}
+              <a class="btn secondary" style="font-size:13px;"
+                 href="{{ url_for('view_mail_attachment', folder=g.folder, filename=f.name) }}" target="_blank">
+                {{ f.name }} <span class="muted">({{ f.size }})</span>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty-state"><p>No attachments saved yet.</p></div>
+    {% endif %}
+  </div>
+
 {% endblock %}
