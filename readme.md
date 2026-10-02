@@ -410,11 +410,15 @@ Nothing found is ever written straight to a real record:
 - An email that looks like **money credited** (interest, etc.) becomes a row on the **Mail
   Scan** tab's review queue — pick a depositor and bank and **Accept** it onto the Interest
   Check tab as a statement line, same as a manually imported one, or **Dismiss** it.
-- An email that looks like a **new FD/RD being booked** immediately becomes an editable row on
-  the **Draft Deposits** tab — never a real deposit. The amount and date usually come through
-  correctly; the interest rate, tenure and compounding almost never appear in a bank's alert
-  email, so those are left for you to fill in. **Approve** runs it through the same validation
-  as the Add Deposit form and creates the real deposit; **Reject** just discards the draft, since
+- An email that looks like a **new FD/RD being opened** (not just any credit — a plain
+  account-credit email with a bank's routine "open a Fixed Deposit today!" cross-sell footer is
+  deliberately not enough; the FD/RD wording and an opening-ish verb have to sit close together
+  in the actual text, not just appear somewhere in the same email) immediately becomes an
+  editable row on the **Draft Deposits** tab — never a real deposit. The amount and date usually
+  come through correctly; the interest rate, tenure and compounding almost never appear in a
+  bank's alert email, so those are left for you to fill in. **Approve** runs it through the same
+  validation as the Add Deposit form and creates the real deposit; **Reject** just discards the
+  draft, since
   nothing was ever saved. A "Draft Deposits (N)" badge in the nav shows how many are waiting.
 
 **No duplicate transactions**: every email is remembered by its own globally-unique Message-ID

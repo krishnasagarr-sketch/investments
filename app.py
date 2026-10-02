@@ -4135,9 +4135,43 @@ MAIL_SCAN_FD_NOUNS = re.compile(
     r"\b(fixed deposit|fd a/?c|fd account|term deposit|recurring deposit|rd account|deposit receipt)\b",
     re.IGNORECASE,
 )
+# Deliberately NOT "confirmed"/"confirmation" -- those are near-universal
+# boilerplate in any bank transaction email ("this confirms your payment of
+# Rs. 500..."), not something specific to a deposit being opened, so they'd
+# match a plain account-credit email too readily.
 MAIL_SCAN_FD_VERBS = re.compile(
-    r"\b(booked|opened|created|confirmed|confirmation|placed|initiated)\b", re.IGNORECASE
+    r"\b(booked|opened|created|placed|initiated)\b", re.IGNORECASE
 )
+# A noun+verb match sitting anywhere at all in the same email isn't enough
+# evidence on its own -- a routine credit-alert email commonly carries a
+# cross-sell footer ("Grow your savings — open a Fixed Deposit today!")
+# nowhere near the actual transaction being reported, and that footer alone
+# would otherwise satisfy both regexes above. Require them within this many
+# characters of each other (same sentence/line, not a different part of the
+# email), and require that stretch of text not itself read like an ad.
+MAIL_SCAN_FD_PROXIMITY_WINDOW = 80
+MAIL_SCAN_FD_PROMO_RE = re.compile(
+    r"\b(apply now|click here|explore|learn more|would you like|starting (?:at|from)|"
+    r"t&c apply|terms and conditions apply|grow your|why not|open (?:a |an )?(?:new )?"
+    r"(?:fixed|term|recurring) deposit)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_fd_booking_signal(text: str) -> bool:
+    """True only if an FD/RD noun and a booking-ish verb appear close
+    together -- not just anywhere in the same email -- and that stretch of
+    text doesn't itself read like a cross-sell banner rather than a report
+    of an actual transaction. See the comment above MAIL_SCAN_FD_VERBS for
+    why this matters: a plain credit-alert email with an FD advertisement
+    in its footer must not be mistaken for an FD actually being opened."""
+    for noun_match in MAIL_SCAN_FD_NOUNS.finditer(text):
+        start = max(0, noun_match.start() - MAIL_SCAN_FD_PROXIMITY_WINDOW)
+        end = noun_match.end() + MAIL_SCAN_FD_PROXIMITY_WINDOW
+        window = text[start:end]
+        if MAIL_SCAN_FD_VERBS.search(window) and not MAIL_SCAN_FD_PROMO_RE.search(window):
+            return True
+    return False
 MAIL_SCAN_CREDIT_RE = re.compile(
     r"\b(credited|credit of|interest paid|interest credited|interest earned|has been credited)\b",
     re.IGNORECASE,
@@ -4348,7 +4382,7 @@ def _extract_transactions_from_text(db, subject: str, from_addr: str, body: str,
         return []
     amount = max(amounts)  # the alert's headline figure is usually the largest one mentioned
 
-    is_fd_booked = bool(MAIL_SCAN_FD_NOUNS.search(full_text) and MAIL_SCAN_FD_VERBS.search(full_text))
+    is_fd_booked = _has_fd_booking_signal(full_text)
     is_credit = bool(MAIL_SCAN_CREDIT_RE.search(full_text))
     if not is_fd_booked and not is_credit:
         return []
