@@ -582,6 +582,13 @@ def init_db():
         conn.execute("ALTER TABLE processed_emails ADD COLUMN attachments_saved INTEGER NOT NULL DEFAULT 0")
     if "attachments_dir" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
         conn.execute("ALTER TABLE processed_emails ADD COLUMN attachments_dir TEXT NOT NULL DEFAULT ''")
+    if "attachments_checked" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
+        # Defaults to 0 for every row that already exists -- i.e. every email
+        # scanned before attachment-saving existed at all -- so the very next
+        # scan gives each of them exactly one chance to be rechecked for an
+        # attachment, instead of staying permanently skipped just because
+        # they were already "processed" under the old meaning of that word.
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN attachments_checked INTEGER NOT NULL DEFAULT 0")
 
     # Candidate transactions extracted from an email's text -- a triage
     # queue a person reviews, not something auto-written to real financial
@@ -4093,26 +4100,35 @@ MAIL_SCAN_ATTACHMENT_EXTENSIONS = {".pdf", ".csv", ".xls", ".xlsx"}
 # pre-linked to an existing bank record. An unrecognised sender still gets
 # scanned by keyword alone; the bank is just left for the person to pick
 # during review instead of being guessed.
+#   bounce-zem.equitas.bank.in, mailer.jana.bank.in, alerts.sbi.bank.in,
+#   communications.sbi.co.in, ncdelivery.equitas.bank.in -- real sending
+# domains seen in an actual inbox, none of which match the bank's own
+# website domain an exact/suffix check would guess. Transactional bank mail
+# is routinely sent from a dedicated ESP/sub-brand domain instead, so this
+# matches by keyword -- any dot-separated label of the sender's domain
+# equal to one of these -- rather than an exact domain or domain suffix,
+# which a first version of this got wrong for essentially every bank here.
+# Keywords are deliberately specific (e.g. "hdfcbank", not "hdfc") to avoid
+# matching an unrelated same-group domain, like HDFC Life's hdfclife.com.
 MAIL_SCAN_BANK_DOMAINS = {
-    "sbi.co.in": "State Bank of India", "onlinesbi.com": "State Bank of India",
-    "onlinesbi.sbi": "State Bank of India",
-    "hdfcbank.net": "HDFC Bank", "hdfcbank.com": "HDFC Bank",
-    "icicibank.com": "ICICI Bank",
-    "axisbank.com": "Axis Bank",
-    "kotak.com": "Kotak Mahindra Bank",
-    "pnbindia.in": "Punjab National Bank", "netpnb.com": "Punjab National Bank",
-    "bankofbaroda.com": "Bank of Baroda", "bobibanking.com": "Bank of Baroda",
-    "canarabank.com": "Canara Bank",
-    "unionbankofindia.co.in": "Union Bank of India",
-    "indianbank.in": "Indian Bank",
-    "idbibank.co.in": "IDBI Bank",
-    "idfcfirstbank.com": "IDFC FIRST Bank",
-    "indusind.com": "IndusInd Bank",
-    "yesbank.in": "Yes Bank",
-    "karurvysyabank.com": "Karur Vysya Bank", "kvb.co.in": "Karur Vysya Bank",
-    "janabank.com": "Jana Small Finance Bank", "janabank.in": "Jana Small Finance Bank",
-    "equitasbank.com": "Equitas Small Finance Bank",
-    "ujjivansfb.in": "Ujjivan Small Finance Bank",
+    "sbi": "State Bank of India", "onlinesbi": "State Bank of India",
+    "hdfcbank": "HDFC Bank",
+    "icicibank": "ICICI Bank",
+    "axisbank": "Axis Bank",
+    "kotak": "Kotak Mahindra Bank",
+    "pnbindia": "Punjab National Bank", "netpnb": "Punjab National Bank",
+    "bankofbaroda": "Bank of Baroda", "bobibanking": "Bank of Baroda",
+    "canarabank": "Canara Bank",
+    "unionbankofindia": "Union Bank of India",
+    "indianbank": "Indian Bank",
+    "idbibank": "IDBI Bank",
+    "idfcfirstbank": "IDFC FIRST Bank",
+    "indusind": "IndusInd Bank",
+    "yesbank": "Yes Bank",
+    "karurvysyabank": "Karur Vysya Bank", "kvb": "Karur Vysya Bank",
+    "janabank": "Jana Small Finance Bank", "jana": "Jana Small Finance Bank",
+    "equitasbank": "Equitas Small Finance Bank", "equitas": "Equitas Small Finance Bank",
+    "ujjivansfb": "Ujjivan Small Finance Bank",
 }
 
 MAIL_SCAN_FD_NOUNS = re.compile(
@@ -4274,12 +4290,15 @@ def _extract_date_from_text(text: str, fallback: date) -> date:
 
 def _guess_bank_from_sender(from_addr: str, db) -> tuple:
     """Returns (bank_name_guess, bank_ref_id or None) from the sender's
-    email domain -- matched against both the built-in guess list and
-    whatever bank names already exist in this database."""
+    email domain -- matched by keyword (see MAIL_SCAN_BANK_DOMAINS) against
+    any dot-separated label of that domain, not the domain as a whole, since
+    real bank transactional mail is routinely sent from an ESP/sub-brand
+    domain that doesn't look anything like the bank's own website."""
     domain = from_addr.rsplit("@", 1)[-1].lower() if "@" in from_addr else ""
+    labels = domain.split(".")
     name = None
-    for known_domain, bank_name in MAIL_SCAN_BANK_DOMAINS.items():
-        if domain == known_domain or domain.endswith("." + known_domain):
+    for keyword, bank_name in MAIL_SCAN_BANK_DOMAINS.items():
+        if keyword in labels:
             name = bank_name
             break
     bank_ref_id = None
@@ -4382,20 +4401,28 @@ def _imap_connect(sender_email: str, app_password: str):
 
 
 def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
-    """Scans INBOX for emails since `days_back` days ago not already in
-    processed_emails, extracts candidate transactions from each, and queues
-    anything new (by dedupe_key) into scanned_transactions -- auto-creating
-    a linked deposit_drafts row for an "fd_booked" one. Also saves any PDF/
-    CSV/Excel attachment to MAIL_ATTACHMENTS_DIR for a bank-sender email or
-    one that matched a transaction, even if the body text alone wouldn't
-    have (a plain "your e-statement is attached" email, say) -- those are
-    exactly the ones worth keeping for a later attachment-parsing feature.
-    Returns a summary dict for the Mail Scan page to show. Every email
-    looked at is recorded in processed_emails regardless of outcome, so
-    it's never re-scanned."""
+    """Scans INBOX for emails since `days_back` days ago, extracts candidate
+    transactions from each new one, and queues anything new (by dedupe_key)
+    into scanned_transactions -- auto-creating a linked deposit_drafts row
+    for an "fd_booked" one. Also saves any PDF/CSV/Excel attachment to
+    MAIL_ATTACHMENTS_DIR for a bank-sender email or one that matched a
+    transaction, even if the body text alone wouldn't have (a plain "your
+    e-statement is attached" email, say) -- those are exactly the ones
+    worth keeping for a later attachment-parsing feature.
+
+    An email already in processed_emails is normally skipped outright --
+    but if its own attachments_checked flag is still 0 (every row from
+    before attachment-saving existed at all defaults to this), it gets
+    re-fetched _just_ to check for an attachment it never got a chance to
+    be considered for, without re-running or re-queuing its transaction
+    classification (dedupe_key already protects against that regardless).
+    This is what makes a backlog scanned before this feature shipped still
+    get its attachments picked up on the very next scan, with no need to
+    reset anything. Returns a summary dict for the Mail Scan page to show."""
     settings = get_notification_settings(db)
     conn = _imap_connect(settings.get("sender_email", ""), settings.get("sender_app_password", ""))
     scanned = 0
+    rechecked = 0
     queued = 0
     drafted = 0
     attachments_saved = 0
@@ -4419,14 +4446,47 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
                 continue
             msg = email.message_from_bytes(msg_data[0][1])
             message_id = (msg.get("Message-ID") or "").strip()
-            if not message_id or db.execute(
-                "SELECT 1 FROM processed_emails WHERE message_id = ?", (message_id,)
-            ).fetchone():
-                continue  # no stable id to dedupe on, or already scanned before
-            scanned += 1
+            if not message_id:
+                continue
 
-            subject = _decode_mime_header(msg.get("Subject", ""))
+            existing = db.execute(
+                "SELECT * FROM processed_emails WHERE message_id = ?", (message_id,)
+            ).fetchone()
+            if existing and existing["attachments_checked"]:
+                continue  # fully handled in an earlier scan -- nothing left to do
+
             from_addr = parseaddr(msg.get("From", ""))[1].lower()
+            bank_guess, _ = _guess_bank_from_sender(from_addr, db)
+            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values()
+
+            if existing:
+                # A backfill pass: this email's transaction classification
+                # already happened (and settled) in an earlier scan -- only
+                # redo the attachment check, using its recorded outcome
+                # ("queued"/"duplicate" means the body text matched a
+                # transaction back then) rather than recomputing it.
+                rechecked += 1
+                was_previously_matched = existing["status"] in ("queued", "duplicate")
+                saved_files = (
+                    _save_email_attachments(msg, message_id) if (is_bank_sender or was_previously_matched) else []
+                )
+                if saved_files:
+                    attachments_saved += len(saved_files)
+                    db.execute(
+                        "UPDATE processed_emails SET attachments_saved = attachments_saved + ?, "
+                        "attachments_dir = ?, attachments_checked = 1 WHERE message_id = ?",
+                        (len(saved_files), _safe_message_id_folder(message_id), message_id),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE processed_emails SET attachments_checked = 1 WHERE message_id = ?",
+                        (message_id,),
+                    )
+                db.commit()
+                continue
+
+            scanned += 1
+            subject = _decode_mime_header(msg.get("Subject", ""))
             try:
                 received_on = parsedate_to_datetime(msg.get("Date", "")).date()
             except (TypeError, ValueError):
@@ -4435,8 +4495,6 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             body = _extract_email_text(msg)
             candidates = _extract_transactions_from_text(db, subject, from_addr, body, received_on)
 
-            bank_guess, _ = _guess_bank_from_sender(from_addr, db)
-            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values()
             saved_files = _save_email_attachments(msg, message_id) if (is_bank_sender or candidates) else []
             if saved_files:
                 attachments_saved += len(saved_files)
@@ -4474,8 +4532,8 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             db.execute(
                 """INSERT INTO processed_emails
                    (message_id, mailbox, subject, from_addr, received_date, processed_at, status,
-                    attachments_saved, attachments_dir)
-                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?)""",
+                    attachments_saved, attachments_dir, attachments_checked)
+                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, 1)""",
                 (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status,
                  len(saved_files), _safe_message_id_folder(message_id) if saved_files else ""),
             )
@@ -4485,7 +4543,10 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             conn.logout()
         except Exception:
             pass
-    return {"scanned": scanned, "queued": queued, "drafted": drafted, "attachments_saved": attachments_saved}
+    return {
+        "scanned": scanned, "rechecked": rechecked, "queued": queued, "drafted": drafted,
+        "attachments_saved": attachments_saved,
+    }
 
 
 def _human_file_size(num_bytes: int) -> str:
@@ -4588,11 +4649,31 @@ def run_mail_scan():
             f"Scanned {result['scanned']} new email(s): {result['queued']} transaction(s) queued for review"
             + (f" ({result['drafted']} of those as new deposit drafts)." if result["drafted"] else ".")
         )
+        if result["rechecked"]:
+            message += f" Rechecked {result['rechecked']} older email(s) for attachments for the first time."
         if result["attachments_saved"]:
             message += f" Saved {result['attachments_saved']} attachment(s) for later processing."
         session["mail_scan_result"] = message
     except RuntimeError as e:
         session["mail_scan_error"] = str(e)
+    return redirect(url_for("mail_scan_page"))
+
+
+@app.route("/mail-scan/reset", methods=["POST"])
+def reset_mail_scan_history():
+    """Clears the "already looked at" record so the next scan re-examines
+    every email in the window from scratch -- a manual escape hatch
+    alongside the automatic one (attachments_checked) for the same
+    situation: a backlog scanned before some piece of Mail Scan existed or
+    worked correctly. Safe to use anytime -- scanned_transactions rows
+    (and anything already accepted/approved from them) aren't touched, and
+    dedupe_key still stops anything already queued from being queued
+    again, so this can't double up a deposit draft or Interest Check line
+    that's already been created."""
+    db = get_db()
+    db.execute("DELETE FROM processed_emails")
+    db.commit()
+    session["mail_scan_result"] = "Scan history cleared — the next scan will look at every email in the window again."
     return redirect(url_for("mail_scan_page"))
 
 

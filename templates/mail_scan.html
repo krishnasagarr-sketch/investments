@@ -57,6 +57,19 @@
         <code style="font-size:12px;">{{ attachments_dir }}</code>.
       </p>
     {% endif %}
+    {% if scanned_count %}
+      <form method="POST" action="{{ url_for('reset_mail_scan_history') }}" style="margin-top:12px;">
+        <button type="submit" class="btn link" data-confirm data-confirm-label="Reset — re-scan everything?">
+          Reset scan history
+        </button>
+        <p class="field-hint" style="margin-top:4px; margin-bottom:0;">
+          Forgets every email this has looked at, so the next scan re-examines all of them from
+          scratch — safe to use anytime, since already-accepted transactions and approved deposits
+          won't be queued again. Useful right after upgrading, so a backlog scanned before a fix
+          gets rechecked immediately instead of only its attachments being backfilled.
+        </p>
+      </form>
+    {% endif %}
   </div>
 
   <div class="card">

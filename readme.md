@@ -387,10 +387,23 @@ PDF/CSV/Excel statement and trusting the result needs real sample statements thi
 seen. A PDF/CSV/Excel attachment on a bank-looking email (recognised sender domain, or the
 email's own text already matched a transaction) is still saved — one subfolder per email, named
 after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost before
-that parsing exists; an irrelevant email's attachment is never saved. The Mail Scan tab shows how
-many have been saved in total and exactly where, plus a **Saved attachments** list grouped by the
-email each one came from (subject, sender, date) with a **View** link per file — a PDF opens
-inline in a new tab, a CSV/Excel file downloads, the same as either would from any other site.
+that parsing exists; an irrelevant email's attachment is never saved. A sender is "recognised" by
+a keyword (e.g. `sbi`, `hdfcbank`, `equitas`) matched against each dot-separated label of its
+domain, not the domain as a whole — real bank transactional mail routinely comes from a
+dedicated ESP/sub-brand domain (`bounce-zem.equitas.bank.in`, `alerts.sbi.bank.in`) that looks
+nothing like the bank's own website. The Mail Scan tab shows how many have been saved in total
+and exactly where, plus a **Saved attachments** list grouped by the email each one came from
+(subject, sender, date) with a **View** link per file — a PDF opens inline in a new tab, a
+CSV/Excel file downloads, the same as either would from any other site.
+
+An email is normally only ever looked at once, tracked by its Message-ID — but if it was scanned
+before attachment-saving existed at all, the very next scan gives it exactly one further check
+for an attachment it never got the chance to be considered for, with no need to do anything by
+hand. A **Reset scan history** button on the tab is also there for a clean slate anytime — it
+clears what's been "looked at", so the next scan re-examines everything in the window again;
+already-accepted transactions and approved deposits are never re-created or duplicated, since
+that's tracked independently by each transaction's own fingerprint, not by the email it came
+from.
 
 Nothing found is ever written straight to a real record:
 
