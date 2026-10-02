@@ -10,9 +10,13 @@ cache/
 # real personal financial documents, never committed
 mail_attachments/
 
-# Investment instrument documents (contract notes, certificates, etc.) —
-# real personal financial documents, never committed
+# Holding documents (contract notes, certificates, deposit receipts, etc.)
+# attached to a deposit, metal, investment, or retirement account — real
+# personal financial documents, never committed
+deposit_attachments/
+metal_attachments/
 investment_attachments/
+retirement_attachments/
 
 # Flask session signing key — generated on first run, must not be shared/committed
 .flask_secret_key

@@ -5697,15 +5697,38 @@ def api_ticker_quote():
 # Documents kept against a holding for future reference -- a contract note,
 # allotment advice, demat statement, physical certificate scan, etc. Purely
 # storage: nothing here is read or parsed, same spirit as Mail Scan's saved
-# attachments. One subfolder per investment id, so two holdings can never
-# collide on a filename.
-INVESTMENT_ATTACHMENTS_DIR = data_path("investment_attachments")
-INVESTMENT_ATTACHMENT_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx"}
-INVESTMENT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+# attachments. One subfolder per holding id within its own kind's directory,
+# so two holdings (even of different kinds) can never collide on a
+# filename. Shared across every holding type -- deposits, metals,
+# investments, retirement accounts -- rather than one copy of this logic
+# per type, since it's identical regardless of what it's attached to.
+ATTACHMENT_DIRS = {
+    "deposits": data_path("deposit_attachments"),
+    "metals": data_path("metal_attachments"),
+    "investments": data_path("investment_attachments"),
+    "retirement": data_path("retirement_attachments"),
+}
+ATTACHMENT_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx"}
+ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+
+# Each kind's own "view this holding's attachments" route and the URL
+# keyword argument it expects -- lets the generic helpers below build a
+# redirect/URL for any kind without a chain of if/elif per caller.
+ATTACHMENT_ROUTES = {
+    "deposits": ("deposit_attachments_page", "deposit_id"),
+    "metals": ("metal_attachments_page", "metal_id"),
+    "investments": ("investment_attachments_page", "investment_id"),
+    "retirement": ("retirement_attachments_page", "account_id"),
+}
 
 
-def list_investment_attachments(investment_id: int) -> list:
-    folder = INVESTMENT_ATTACHMENTS_DIR / str(investment_id)
+def _attachments_page_url(kind: str, item_id: int) -> str:
+    route, param = ATTACHMENT_ROUTES[kind]
+    return url_for(route, **{param: item_id})
+
+
+def list_attachments(kind: str, item_id: int) -> list:
+    folder = ATTACHMENT_DIRS[kind] / str(item_id)
     if not folder.exists():
         return []
     return [
@@ -5713,6 +5736,62 @@ def list_investment_attachments(investment_id: int) -> list:
         for f in sorted(folder.iterdir())
         if f.is_file()
     ]
+
+
+def save_attachment(kind: str, item_id: int, file) -> str:
+    """Validates and saves an uploaded file against this holding. Returns
+    None on success, or a user-facing error string on failure -- never
+    raises, so a route can just check the return value."""
+    if file is None or file.filename == "":
+        return "Choose a file to attach."
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ATTACHMENT_EXTENSIONS:
+        return f"Only {', '.join(sorted(ATTACHMENT_EXTENSIONS))} files are supported."
+    file.seek(0, 2)
+    size = file.tell()
+    file.seek(0)
+    if size > ATTACHMENT_MAX_BYTES:
+        return "That file is larger than 20 MB — attach a smaller copy (e.g. a compressed scan)."
+    filename = secure_filename(file.filename) or "attachment"
+    folder = ATTACHMENT_DIRS[kind] / str(item_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / filename
+    if dest.exists():
+        dest = folder / f"{dest.stem}_{secrets.token_hex(3)}{dest.suffix}"  # don't clobber a same-named file
+    file.save(dest)
+    return None
+
+
+def _serve_attachment(kind: str, item_id: int, filename: str):
+    """Serves a saved attachment for viewing/downloading. The resolved path
+    is checked against this holding's own folder before anything is served
+    -- a '..' segment can't be used to read a file elsewhere on disk."""
+    base = (ATTACHMENT_DIRS[kind] / str(item_id)).resolve()
+    target = (base / filename).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        return "Attachment not found.", 404
+    return send_file(target, as_attachment=False)
+
+
+def _delete_attachment(kind: str, item_id: int, filename: str):
+    base = (ATTACHMENT_DIRS[kind] / str(item_id)).resolve()
+    target = (base / filename).resolve()
+    if target.is_relative_to(base) and target.is_file():
+        target.unlink()
+    return redirect(_attachments_page_url(kind, item_id))
+
+
+@app.template_global()
+def attachment_count(kind: str, item_id: int) -> int:
+    """For a row template to show "Attachments (N)" without its own
+    list-building code (summarise_deposit, list_metals, ...) needing to
+    plumb this through -- it's just a cheap directory listing."""
+    return len(list_attachments(kind, item_id))
+
+
+@app.template_global()
+def attachments_url(kind: str, item_id: int) -> str:
+    return _attachments_page_url(kind, item_id)
 
 
 def list_investments(db):
@@ -5778,7 +5857,7 @@ def list_investments(db):
             "depositor_name": h["depositor_name"],
             "tag_id": h["tag_id"],
             "remarks": _row_get(h, "remarks", ""),
-            "attachment_count": len(list_investment_attachments(h["id"])),
+            "attachment_count": len(list_attachments("investments", h["id"])),
             "shares": remaining_shares,
             "sold_shares": sold_shares,
             "purchase_price": h["purchase_price"],
@@ -6019,57 +6098,152 @@ def investment_attachments_page(investment_id):
 
     error = None
     if request.method == "POST":
-        file = request.files.get("attachment")
-        if file is None or file.filename == "":
-            error = "Choose a file to attach."
-        else:
-            ext = Path(file.filename).suffix.lower()
-            if ext not in INVESTMENT_ATTACHMENT_EXTENSIONS:
-                error = f"Only {', '.join(sorted(INVESTMENT_ATTACHMENT_EXTENSIONS))} files are supported."
-            else:
-                file.seek(0, 2)
-                size = file.tell()
-                file.seek(0)
-                if size > INVESTMENT_ATTACHMENT_MAX_BYTES:
-                    error = "That file is larger than 20 MB — attach a smaller copy (e.g. a compressed scan)."
-                else:
-                    filename = secure_filename(file.filename) or "attachment"
-                    folder = INVESTMENT_ATTACHMENTS_DIR / str(investment_id)
-                    folder.mkdir(parents=True, exist_ok=True)
-                    dest = folder / filename
-                    if dest.exists():
-                        dest = folder / f"{dest.stem}_{secrets.token_hex(3)}{dest.suffix}"
-                    file.save(dest)
-                    return redirect(url_for("investment_attachments_page", investment_id=investment_id))
+        error = save_attachment("investments", investment_id, request.files.get("attachment"))
+        if error is None:
+            return redirect(url_for("investment_attachments_page", investment_id=investment_id))
 
+    display_name = get_ticker_display_name(row["ticker"])
     return render_template(
-        "investment_attachments.html", active_tab="investments",
-        row=row, display_name=get_ticker_display_name(row["ticker"]),
-        attachments=list_investment_attachments(investment_id),
-        extensions=sorted(INVESTMENT_ATTACHMENT_EXTENSIONS),
+        "attachments.html", active_tab="investments",
+        title=f"{row['ticker']} — {display_name}" if display_name else row["ticker"],
+        subtitle=f"{row['depositor_name'] or '—'} · bought {format_money(row['purchase_price'])}/share on {row['purchase_date']}",
+        back_url=url_for("investments_page"),
+        view_url=lambda name: url_for("view_investment_attachment", investment_id=investment_id, filename=name),
+        delete_url=lambda name: url_for("delete_investment_attachment", investment_id=investment_id, filename=name),
+        attachments=list_attachments("investments", investment_id),
+        extensions=sorted(ATTACHMENT_EXTENSIONS),
         error=error,
     )
 
 
 @app.route("/investments/<int:investment_id>/attachments/<filename>")
 def view_investment_attachment(investment_id, filename):
-    """Serves an attached document for viewing/downloading. Resolved and
-    checked against this investment's own folder before anything is served
-    -- same '..'-can't-escape protection as Mail Scan's attachment viewer."""
-    base = (INVESTMENT_ATTACHMENTS_DIR / str(investment_id)).resolve()
-    target = (base / filename).resolve()
-    if not target.is_relative_to(base) or not target.is_file():
-        return "Attachment not found.", 404
-    return send_file(target, as_attachment=False)
+    return _serve_attachment("investments", investment_id, filename)
 
 
 @app.route("/investments/<int:investment_id>/attachments/<filename>/delete", methods=["POST"])
 def delete_investment_attachment(investment_id, filename):
-    base = (INVESTMENT_ATTACHMENTS_DIR / str(investment_id)).resolve()
-    target = (base / filename).resolve()
-    if target.is_relative_to(base) and target.is_file():
-        target.unlink()
-    return redirect(url_for("investment_attachments_page", investment_id=investment_id))
+    return _delete_attachment("investments", investment_id, filename)
+
+
+@app.route("/deposits/<int:deposit_id>/attachments", methods=["GET", "POST"])
+def deposit_attachments_page(deposit_id):
+    db = get_db()
+    row = db.execute(DEPOSITS_WITH_REFS + " WHERE deposits.id = ?", (deposit_id,)).fetchone()
+    if row is None:
+        return redirect(url_for("dashboard"))
+    s = summarise_deposit(row, db=db)
+
+    error = None
+    if request.method == "POST":
+        error = save_attachment("deposits", deposit_id, request.files.get("attachment"))
+        if error is None:
+            return redirect(url_for("deposit_attachments_page", deposit_id=deposit_id))
+
+    return render_template(
+        "attachments.html", active_tab="dashboard",
+        title=f"{s['holder_name']} — {s['bank_name']}",
+        subtitle=f"{s['deposit_type_label']} · {format_money(s['principal'], s['currency'])} from {s['start_date']}",
+        back_url=url_for("dashboard"),
+        view_url=lambda name: url_for("view_deposit_attachment", deposit_id=deposit_id, filename=name),
+        delete_url=lambda name: url_for("delete_deposit_attachment", deposit_id=deposit_id, filename=name),
+        attachments=list_attachments("deposits", deposit_id),
+        extensions=sorted(ATTACHMENT_EXTENSIONS),
+        error=error,
+    )
+
+
+@app.route("/deposits/<int:deposit_id>/attachments/<filename>")
+def view_deposit_attachment(deposit_id, filename):
+    return _serve_attachment("deposits", deposit_id, filename)
+
+
+@app.route("/deposits/<int:deposit_id>/attachments/<filename>/delete", methods=["POST"])
+def delete_deposit_attachment(deposit_id, filename):
+    return _delete_attachment("deposits", deposit_id, filename)
+
+
+@app.route("/metals/<int:metal_id>/attachments", methods=["GET", "POST"])
+def metal_attachments_page(metal_id):
+    db = get_db()
+    row = db.execute(
+        """SELECT metals.*, depositors.name AS depositor_name
+           FROM metals LEFT JOIN depositors ON metals.depositor_id = depositors.id
+           WHERE metals.id = ?""",
+        (metal_id,),
+    ).fetchone()
+    if row is None:
+        return redirect(url_for("metals_page"))
+
+    error = None
+    if request.method == "POST":
+        error = save_attachment("metals", metal_id, request.files.get("attachment"))
+        if error is None:
+            return redirect(url_for("metal_attachments_page", metal_id=metal_id))
+
+    metal_label = METAL_TYPES.get(row["metal"], row["metal"].title())
+    return render_template(
+        "attachments.html", active_tab="metals",
+        title=f"{metal_label}{' — ' + row['description'] if row['description'] else ''}",
+        subtitle=f"{row['depositor_name'] or '—'} · {row['grams']}g bought on {row['purchase_date']}",
+        back_url=url_for("metals_page"),
+        view_url=lambda name: url_for("view_metal_attachment", metal_id=metal_id, filename=name),
+        delete_url=lambda name: url_for("delete_metal_attachment", metal_id=metal_id, filename=name),
+        attachments=list_attachments("metals", metal_id),
+        extensions=sorted(ATTACHMENT_EXTENSIONS),
+        error=error,
+    )
+
+
+@app.route("/metals/<int:metal_id>/attachments/<filename>")
+def view_metal_attachment(metal_id, filename):
+    return _serve_attachment("metals", metal_id, filename)
+
+
+@app.route("/metals/<int:metal_id>/attachments/<filename>/delete", methods=["POST"])
+def delete_metal_attachment(metal_id, filename):
+    return _delete_attachment("metals", metal_id, filename)
+
+
+@app.route("/retirement/<int:account_id>/attachments", methods=["GET", "POST"])
+def retirement_attachments_page(account_id):
+    db = get_db()
+    row = db.execute(
+        """SELECT retirement_accounts.*, depositors.name AS depositor_name
+           FROM retirement_accounts LEFT JOIN depositors ON retirement_accounts.depositor_id = depositors.id
+           WHERE retirement_accounts.id = ?""",
+        (account_id,),
+    ).fetchone()
+    if row is None:
+        return redirect(url_for("retirement_page"))
+
+    error = None
+    if request.method == "POST":
+        error = save_attachment("retirement", account_id, request.files.get("attachment"))
+        if error is None:
+            return redirect(url_for("retirement_attachments_page", account_id=account_id))
+
+    return render_template(
+        "attachments.html", active_tab="retirement",
+        title=f"{row['account_type']} — {row['depositor_name'] or '—'}",
+        subtitle=f"{row['institution'] or '—'} · opened {row['opened_date']}",
+        back_url=url_for("retirement_page"),
+        view_url=lambda name: url_for("view_retirement_attachment", account_id=account_id, filename=name),
+        delete_url=lambda name: url_for("delete_retirement_attachment", account_id=account_id, filename=name),
+        attachments=list_attachments("retirement", account_id),
+        extensions=sorted(ATTACHMENT_EXTENSIONS),
+        error=error,
+    )
+
+
+@app.route("/retirement/<int:account_id>/attachments/<filename>")
+def view_retirement_attachment(account_id, filename):
+    return _serve_attachment("retirement", account_id, filename)
+
+
+@app.route("/retirement/<int:account_id>/attachments/<filename>/delete", methods=["POST"])
+def delete_retirement_attachment(account_id, filename):
+    return _delete_attachment("retirement", account_id, filename)
 
 
 @app.route("/investments/<int:investment_id>/delete", methods=["POST"])

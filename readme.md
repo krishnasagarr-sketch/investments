@@ -214,6 +214,18 @@ portfolio per tag, plus an "Untagged" bucket) spanning all four holding types, w
 the per-tab totals do on their own. This is separate from **Owned by** — a tag is about
 *purpose*, ownership is about *whose money it is*.
 
+## Attachments
+
+Another cross-cutting feature alongside Tags: every deposit, metal holding, investment, and
+PPF/EPF/NPS account has an **Attachments** link (with a count once anything's attached) for
+keeping the contract note, allotment advice, demat statement, deposit receipt, or a certificate
+scan against it for future reference. Accepts PDF, JPEG/PNG, and Word documents up to 20 MB, one
+per upload. Purely storage — nothing attached is read or acted on, just kept and viewable later
+(a PDF opens inline in a new tab, other types download) or deletable. Stored on disk, one folder
+per holding, under `deposit_attachments/`, `metal_attachments/`, `investment_attachments/`, or
+`retirement_attachments/` next to the database — all four gitignored, since these are real
+personal financial documents.
+
 ## Metals & Market Prices
 
 Record precious-metal holdings: metal (Gold 24K, Gold 22K, silver, platinum, palladium, or
@@ -246,13 +258,6 @@ depositor, optional tag, shares/units, purchase price, purchase date, and option
 - **Mutual funds** are priced by their latest AMFI NAV.
 - A ticker that can't be priced shows "N/A" with the reason and is left out of portfolio totals
   until it prices successfully.
-
-Each holding also has an **Attachments** link (with a count once anything's attached) for keeping
-the contract note, allotment advice, demat statement, or a certificate scan against it for future
-reference — accepts PDF, JPEG/PNG, and Word documents up to 20 MB, stored on disk under
-`investment_attachments/` (one folder per holding, gitignored — these are real personal financial
-documents). Purely storage: nothing attached here is read or acted on, just kept and viewable
-(a PDF opens inline, others download) or deletable later.
 
 ### Selling a holding, and Capital Gains
 

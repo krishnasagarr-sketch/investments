@@ -83,9 +83,14 @@
             <div class="muted" style="font-size:12px;">Opened {{ a.opened_date }}</div>
             {% if a.remarks %}<div class="muted" style="font-size:12px; font-style:italic;">{{ a.remarks }}</div>{% endif %}
           </div>
-          <form class="inline" method="POST" action="{{ url_for('delete_retirement_account', account_id=a.id) }}">
-            <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
-          </form>
+          <div class="row-actions">
+            <a href="{{ attachments_url('retirement', a.id) }}" class="btn link">
+              Attachments{% if attachment_count('retirement', a.id) %} ({{ attachment_count('retirement', a.id) }}){% endif %}
+            </a>
+            <form class="inline" method="POST" action="{{ url_for('delete_retirement_account', account_id=a.id) }}">
+              <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
+            </form>
+          </div>
         </div>
 
         {% if a.over_ppf_limit %}

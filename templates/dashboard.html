@@ -196,6 +196,9 @@
                 {% else %}
                   <a href="{{ url_for('reinvest_deposit', deposit_id=r.id) }}" class="btn link" style="color:var(--amber);">Close early</a>
                 {% endif %}
+                <a href="{{ attachments_url('deposits', r.id) }}" class="btn link">
+                  Attachments{% if attachment_count('deposits', r.id) %} ({{ attachment_count('deposits', r.id) }}){% endif %}
+                </a>
                 <form class="inline" method="POST" action="{{ url_for('delete_deposit', deposit_id=r.id) }}">
                   <button type="submit" class="btn danger" data-confirm
                           data-confirm-label="Remove?">Remove</button>
