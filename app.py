@@ -578,6 +578,10 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'no_match'
         )
     """)
+    if "attachments_saved" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN attachments_saved INTEGER NOT NULL DEFAULT 0")
+    if "attachments_dir" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN attachments_dir TEXT NOT NULL DEFAULT ''")
 
     # Candidate transactions extracted from an email's text -- a triage
     # queue a person reviews, not something auto-written to real financial
@@ -4077,6 +4081,14 @@ def _parse_bank_csv_rows(text: str) -> list:
 MAIL_SCAN_DAYS_BACK_DEFAULT = 30
 MAIL_SCAN_MAX_EMAILS = 300
 
+# Attachments (PDF/CSV/Excel statements) from a bank-looking email are saved
+# here, one subfolder per email, for a later attachment-parsing feature to
+# work through -- this scan itself only reads an email's own text, not what's
+# attached to it (see the module docstring above). Saved, not parsed, so
+# nothing here risks being silently wrong; it's just not lost either.
+MAIL_ATTACHMENTS_DIR = data_path("mail_attachments")
+MAIL_SCAN_ATTACHMENT_EXTENSIONS = {".pdf", ".csv", ".xls", ".xlsx"}
+
 # Sender domain -> bank name, so a scanned transaction can often be
 # pre-linked to an existing bank record. An unrecognised sender still gets
 # scanned by keyword alone; the bank is just left for the person to pick
@@ -4179,6 +4191,47 @@ def _extract_email_text(msg) -> str:
     if plain_parts:
         return "\n".join(plain_parts)
     return "\n".join(_html_to_text(t) for t in html_parts)
+
+
+def _safe_message_id_folder(message_id: str) -> str:
+    """Turns a Message-ID header into a filesystem-safe folder name."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", message_id.strip("<>"))
+    return cleaned[:120] or "unknown"
+
+
+def _save_email_attachments(msg, message_id: str) -> list:
+    """Saves any PDF/CSV/Excel attachment on this email to its own folder
+    under MAIL_ATTACHMENTS_DIR, for a later attachment-parsing feature --
+    this scan doesn't read them itself (see the module note above). Returns
+    the filenames actually saved; an email with none returns []."""
+    if not msg.is_multipart():
+        return []
+    saved = []
+    for part in msg.walk():
+        filename = part.get_filename()
+        if not filename:
+            continue
+        filename = _decode_mime_header(filename) or filename
+        ext = Path(filename).suffix.lower()
+        if ext not in MAIL_SCAN_ATTACHMENT_EXTENSIONS:
+            continue
+        try:
+            payload = part.get_payload(decode=True)
+        except Exception:
+            payload = None
+        if not payload:
+            continue
+        folder = MAIL_ATTACHMENTS_DIR / _safe_message_id_folder(message_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / filename
+        if dest.exists():
+            dest = folder / f"{dest.stem}_{len(saved)}{dest.suffix}"  # same email, two same-named attachments
+        try:
+            dest.write_bytes(payload)
+        except OSError:
+            continue
+        saved.append(dest.name)
+    return saved
 
 
 def _decode_mime_header(raw: str) -> str:
@@ -4332,14 +4385,20 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
     """Scans INBOX for emails since `days_back` days ago not already in
     processed_emails, extracts candidate transactions from each, and queues
     anything new (by dedupe_key) into scanned_transactions -- auto-creating
-    a linked deposit_drafts row for an "fd_booked" one. Returns a summary
-    dict for the Mail Scan page to show. Every email looked at is recorded
-    in processed_emails regardless of outcome, so it's never re-scanned."""
+    a linked deposit_drafts row for an "fd_booked" one. Also saves any PDF/
+    CSV/Excel attachment to MAIL_ATTACHMENTS_DIR for a bank-sender email or
+    one that matched a transaction, even if the body text alone wouldn't
+    have (a plain "your e-statement is attached" email, say) -- those are
+    exactly the ones worth keeping for a later attachment-parsing feature.
+    Returns a summary dict for the Mail Scan page to show. Every email
+    looked at is recorded in processed_emails regardless of outcome, so
+    it's never re-scanned."""
     settings = get_notification_settings(db)
     conn = _imap_connect(settings.get("sender_email", ""), settings.get("sender_app_password", ""))
     scanned = 0
     queued = 0
     drafted = 0
+    attachments_saved = 0
     try:
         conn.select("INBOX", readonly=True)
         since = (date.today() - timedelta(days=days_back)).strftime("%d-%b-%Y")
@@ -4376,6 +4435,12 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             body = _extract_email_text(msg)
             candidates = _extract_transactions_from_text(db, subject, from_addr, body, received_on)
 
+            bank_guess, _ = _guess_bank_from_sender(from_addr, db)
+            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values()
+            saved_files = _save_email_attachments(msg, message_id) if (is_bank_sender or candidates) else []
+            if saved_files:
+                attachments_saved += len(saved_files)
+
             email_status = "no_match"
             for cand in candidates:
                 if cand["dedupe_key"] in already_known:
@@ -4407,9 +4472,12 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
                     drafted += 1
 
             db.execute(
-                """INSERT INTO processed_emails (message_id, mailbox, subject, from_addr, received_date, processed_at, status)
-                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?)""",
-                (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status),
+                """INSERT INTO processed_emails
+                   (message_id, mailbox, subject, from_addr, received_date, processed_at, status,
+                    attachments_saved, attachments_dir)
+                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status,
+                 len(saved_files), _safe_message_id_folder(message_id) if saved_files else ""),
             )
             db.commit()
     finally:
@@ -4417,7 +4485,7 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             conn.logout()
         except Exception:
             pass
-    return {"scanned": scanned, "queued": queued, "drafted": drafted}
+    return {"scanned": scanned, "queued": queued, "drafted": drafted, "attachments_saved": attachments_saved}
 
 
 @app.route("/mail-scan")
@@ -4432,6 +4500,9 @@ def mail_scan_page():
            WHERE scanned_transactions.kind = 'credit' AND scanned_transactions.status = 'pending'
            ORDER BY scanned_transactions.txn_date DESC"""
     ).fetchall()
+    total_attachments = db.execute(
+        "SELECT COALESCE(SUM(attachments_saved), 0) c FROM processed_emails"
+    ).fetchone()["c"]
     return render_template(
         "mail_scan.html", active_tab="mail_scan",
         mail_configured=bool(settings.get("sender_email") and settings.get("sender_app_password")),
@@ -4439,6 +4510,8 @@ def mail_scan_page():
         pending=pending,
         depositors=list_depositors(db), banks=list_banks(db),
         scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
+        total_attachments=total_attachments,
+        attachments_dir=str(MAIL_ATTACHMENTS_DIR),
         result=session.pop("mail_scan_result", None),
         error=session.pop("mail_scan_error", None),
     )
@@ -4453,10 +4526,13 @@ def run_mail_scan():
         days_back = MAIL_SCAN_DAYS_BACK_DEFAULT
     try:
         result = scan_mailbox_for_transactions(db, days_back=days_back)
-        session["mail_scan_result"] = (
+        message = (
             f"Scanned {result['scanned']} new email(s): {result['queued']} transaction(s) queued for review"
             + (f" ({result['drafted']} of those as new deposit drafts)." if result["drafted"] else ".")
         )
+        if result["attachments_saved"]:
+            message += f" Saved {result['attachments_saved']} attachment(s) for later processing."
+        session["mail_scan_result"] = message
     except RuntimeError as e:
         session["mail_scan_error"] = str(e)
     return redirect(url_for("mail_scan_page"))

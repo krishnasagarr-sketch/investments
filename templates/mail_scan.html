@@ -10,8 +10,10 @@
       tab over IMAP (same App Password, used to read instead of send) and looks for transaction-looking
       emails — interest credits and FD-booking confirmations. This is a best-effort keyword scan, not a
       per-bank parser: bank alert wording varies a lot, so expect it to miss some real emails and
-      occasionally flag something irrelevant. <strong>Only the email's own text is scanned, not
-      attachments</strong> (e.g. PDF e-statements) — that's not built yet. Nothing found here is written
+      occasionally flag something irrelevant. <strong>Only the email's own text is scanned for
+      transactions — attachments (e.g. PDF e-statements) aren't read yet.</strong> A PDF/CSV/Excel
+      attachment on a bank-looking email is saved to a folder on disk for a future version to work
+      through, but nothing in it is parsed or acted on today. Nothing found here is written
       to a real record automatically: an interest credit needs a depositor and bank chosen below before
       it becomes an Interest Check line, and an FD-booking guess lands on the
       <a href="{{ url_for('draft_deposits_page') }}">Draft Deposits</a> tab for you to review, edit, and
@@ -49,6 +51,12 @@
       <button type="submit" class="btn" style="width:100%;" {% if not mail_configured %}disabled{% endif %}>Scan Now</button>
     </form>
     <p class="field-hint" style="margin-top:12px; margin-bottom:0;">{{ scanned_count }} email(s) looked at so far, in total.</p>
+    {% if total_attachments %}
+      <p class="field-hint" style="margin-top:4px; margin-bottom:0;">
+        {{ total_attachments }} attachment(s) saved for later processing in
+        <code style="font-size:12px;">{{ attachments_dir }}</code>.
+      </p>
+    {% endif %}
   </div>
 
   <div class="card">

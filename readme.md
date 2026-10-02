@@ -382,8 +382,13 @@ IMAP instead of used to send) for bank-transaction-looking emails, so interest c
 FD bookings don't have to be typed in by hand. This is a generic keyword/regex heuristic, not a
 per-bank parser — bank alert wording varies a lot and isn't standardised the way a statement
 file is, so expect it to occasionally miss a real email or flag something irrelevant. **Only the
-email's own text is scanned, not attachments** (e.g. PDF e-statements) — that needs real sample
-statements to build and trust, and isn't included yet.
+email's own text is scanned for transactions — attachments aren't read yet**, since parsing a
+PDF/CSV/Excel statement and trusting the result needs real sample statements this app hasn't
+seen. A PDF/CSV/Excel attachment on a bank-looking email (recognised sender domain, or the
+email's own text already matched a transaction) is still saved — one subfolder per email, named
+after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost before
+that parsing exists; an irrelevant email's attachment is never saved. The Mail Scan tab shows how
+many have been saved in total and exactly where.
 
 Nothing found is ever written straight to a real record:
 
@@ -476,8 +481,8 @@ upgrading from an older version is a normal `git pull` + restart, no manual step
 - Premature-withdrawal penalties and auto-renewal aren't modelled — every deposit is assumed to
   run to its full tenure as entered.
 - Mail Scan is a best-effort keyword scan, not a per-bank parser, and only reads an email's own
-  text — not attachments like PDF e-statements. It will miss some real transaction emails and
-  occasionally flag something irrelevant; nothing it finds becomes a real record without being
-  reviewed and accepted/approved first (see [Mail Scan & Draft
-  Deposits](#mail-scan--draft-deposits)).
+  text for transactions — attachments like PDF e-statements are saved to disk for later, not
+  parsed. It will miss some real transaction emails and occasionally flag something irrelevant;
+  nothing it finds becomes a real record without being reviewed and accepted/approved first (see
+  [Mail Scan & Draft Deposits](#mail-scan--draft-deposits)).
 - All figures are for personal tracking only; confirm exact values with your bank/CA.

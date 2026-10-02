@@ -6,6 +6,10 @@
 # Cached ticker directory (NSE stocks + AMFI mutual funds) — refetched automatically
 cache/
 
+# Saved bank-email attachments (PDF/CSV/Excel statements) from Mail Scan —
+# real personal financial documents, never committed
+mail_attachments/
+
 # Flask session signing key — generated on first run, must not be shared/committed
 .flask_secret_key
 
