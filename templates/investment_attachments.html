@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ row.ticker }} Attachments — FD Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('investments_page') }}" class="btn secondary">← Back to Investments</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">{{ row.ticker }}{% if display_name %} — {{ display_name }}{% endif %}</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      {{ row.depositor_name or "—" }} · bought {{ (row.purchase_price)|money }}/share on {{ row.purchase_date }}
+    </p>
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Attach a document</h2>
+    <p class="field-hint" style="margin-bottom:16px;">
+      Keep the contract note, allotment advice, demat statement, or a certificate scan against this
+      holding for future reference — nothing here is read or acted on, just stored.
+      Accepts {{ extensions|join(", ") }}, up to 20 MB.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="attachment">File</label>
+        <input type="file" id="attachment" name="attachment" accept="{{ extensions|join(',') }}" required>
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Attach</button>
+    </form>
+  </div>
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 14px;">Attached documents</h2>
+    {% if attachments %}
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        {% for f in attachments %}
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <a href="{{ url_for('view_investment_attachment', investment_id=row.id, filename=f.name) }}" target="_blank">
+              {{ f.name }} <span class="muted">({{ f.size }})</span>
+            </a>
+            <form class="inline" method="POST"
+                  action="{{ url_for('delete_investment_attachment', investment_id=row.id, filename=f.name) }}">
+              <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state"><p>Nothing attached yet.</p></div>
+    {% endif %}
+  </div>
+
+{% endblock %}

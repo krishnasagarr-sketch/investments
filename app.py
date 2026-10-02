@@ -22,6 +22,7 @@ from pathlib import Path
 
 from flask import Flask, render_template, request, redirect, url_for, g, session, send_file, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 try:
     import yfinance as yf
@@ -5693,6 +5694,27 @@ def api_ticker_quote():
     return jsonify(quote_to_inr(get_stock_quote(ticker)))
 
 
+# Documents kept against a holding for future reference -- a contract note,
+# allotment advice, demat statement, physical certificate scan, etc. Purely
+# storage: nothing here is read or parsed, same spirit as Mail Scan's saved
+# attachments. One subfolder per investment id, so two holdings can never
+# collide on a filename.
+INVESTMENT_ATTACHMENTS_DIR = data_path("investment_attachments")
+INVESTMENT_ATTACHMENT_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx"}
+INVESTMENT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+def list_investment_attachments(investment_id: int) -> list:
+    folder = INVESTMENT_ATTACHMENTS_DIR / str(investment_id)
+    if not folder.exists():
+        return []
+    return [
+        {"name": f.name, "size": _human_file_size(f.stat().st_size)}
+        for f in sorted(folder.iterdir())
+        if f.is_file()
+    ]
+
+
 def list_investments(db):
     """Investment holdings with cost, current value (converted to rupees) and
     gain/loss. Prices are fetched live via yfinance on every call — a USD
@@ -5756,6 +5778,7 @@ def list_investments(db):
             "depositor_name": h["depositor_name"],
             "tag_id": h["tag_id"],
             "remarks": _row_get(h, "remarks", ""),
+            "attachment_count": len(list_investment_attachments(h["id"])),
             "shares": remaining_shares,
             "sold_shares": sold_shares,
             "purchase_price": h["purchase_price"],
@@ -5980,6 +6003,73 @@ def sell_investment(investment_id):
         display_name=get_ticker_display_name(row["ticker"]),
         error=error, form_data=form_data,
     )
+
+
+@app.route("/investments/<int:investment_id>/attachments", methods=["GET", "POST"])
+def investment_attachments_page(investment_id):
+    db = get_db()
+    row = db.execute(
+        """SELECT investments.*, depositors.name AS depositor_name
+           FROM investments LEFT JOIN depositors ON investments.depositor_id = depositors.id
+           WHERE investments.id = ?""",
+        (investment_id,),
+    ).fetchone()
+    if row is None:
+        return redirect(url_for("investments_page"))
+
+    error = None
+    if request.method == "POST":
+        file = request.files.get("attachment")
+        if file is None or file.filename == "":
+            error = "Choose a file to attach."
+        else:
+            ext = Path(file.filename).suffix.lower()
+            if ext not in INVESTMENT_ATTACHMENT_EXTENSIONS:
+                error = f"Only {', '.join(sorted(INVESTMENT_ATTACHMENT_EXTENSIONS))} files are supported."
+            else:
+                file.seek(0, 2)
+                size = file.tell()
+                file.seek(0)
+                if size > INVESTMENT_ATTACHMENT_MAX_BYTES:
+                    error = "That file is larger than 20 MB — attach a smaller copy (e.g. a compressed scan)."
+                else:
+                    filename = secure_filename(file.filename) or "attachment"
+                    folder = INVESTMENT_ATTACHMENTS_DIR / str(investment_id)
+                    folder.mkdir(parents=True, exist_ok=True)
+                    dest = folder / filename
+                    if dest.exists():
+                        dest = folder / f"{dest.stem}_{secrets.token_hex(3)}{dest.suffix}"
+                    file.save(dest)
+                    return redirect(url_for("investment_attachments_page", investment_id=investment_id))
+
+    return render_template(
+        "investment_attachments.html", active_tab="investments",
+        row=row, display_name=get_ticker_display_name(row["ticker"]),
+        attachments=list_investment_attachments(investment_id),
+        extensions=sorted(INVESTMENT_ATTACHMENT_EXTENSIONS),
+        error=error,
+    )
+
+
+@app.route("/investments/<int:investment_id>/attachments/<filename>")
+def view_investment_attachment(investment_id, filename):
+    """Serves an attached document for viewing/downloading. Resolved and
+    checked against this investment's own folder before anything is served
+    -- same '..'-can't-escape protection as Mail Scan's attachment viewer."""
+    base = (INVESTMENT_ATTACHMENTS_DIR / str(investment_id)).resolve()
+    target = (base / filename).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        return "Attachment not found.", 404
+    return send_file(target, as_attachment=False)
+
+
+@app.route("/investments/<int:investment_id>/attachments/<filename>/delete", methods=["POST"])
+def delete_investment_attachment(investment_id, filename):
+    base = (INVESTMENT_ATTACHMENTS_DIR / str(investment_id)).resolve()
+    target = (base / filename).resolve()
+    if target.is_relative_to(base) and target.is_file():
+        target.unlink()
+    return redirect(url_for("investment_attachments_page", investment_id=investment_id))
 
 
 @app.route("/investments/<int:investment_id>/delete", methods=["POST"])

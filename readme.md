@@ -247,6 +247,13 @@ depositor, optional tag, shares/units, purchase price, purchase date, and option
 - A ticker that can't be priced shows "N/A" with the reason and is left out of portfolio totals
   until it prices successfully.
 
+Each holding also has an **Attachments** link (with a count once anything's attached) for keeping
+the contract note, allotment advice, demat statement, or a certificate scan against it for future
+reference — accepts PDF, JPEG/PNG, and Word documents up to 20 MB, stored on disk under
+`investment_attachments/` (one folder per holding, gitignored — these are real personal financial
+documents). Purely storage: nothing attached here is read or acted on, just kept and viewable
+(a PDF opens inline, others download) or deletable later.
+
 ### Selling a holding, and Capital Gains
 
 Each holding has a **Sell** link alongside Edit and Remove — enter how many shares (up to what's
