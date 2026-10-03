@@ -7,7 +7,9 @@
     <h2 style="font-size:16px; margin:0 0 4px;">Scan your inbox for bank transactions</h2>
     <p class="field-hint" style="margin-bottom:0;">
       Reads the Gmail inbox already set up on the <a href="{{ url_for('notifications_page') }}">Notifications</a>
-      tab over IMAP (same App Password, used to read instead of send) and looks for transaction-looking
+      tab over IMAP (same App Password, used to read instead of send) — plus the mailbox of every
+      <a href="{{ url_for('bank_accounts_page') }}">bank account</a> that has an email and app password
+      saved (each email is tied to the account whose bank sent it) — and looks for transaction-looking
       emails — interest credits and FD-booking confirmations. This is a best-effort keyword scan, not a
       per-bank parser: bank alert wording varies a lot, so expect it to miss some real emails and
       occasionally flag something irrelevant. <strong>Only the email's own text is scanned for
@@ -34,14 +36,22 @@
     </div>
   {% endif %}
 
-  <div class="card" style="max-width:360px;">
+  <div class="card" style="max-width:420px;">
     {% if not mail_configured %}
       <div class="error-box" style="background:#fff2e0; color:var(--amber); margin-bottom:16px;">
-        No Gmail sender / App Password set yet — add one on the
-        <a href="{{ url_for('notifications_page') }}">Notifications</a> tab first.
+        No mailbox set up yet — add a Gmail sender / App Password on the
+        <a href="{{ url_for('notifications_page') }}">Notifications</a> tab, or an email and app password
+        on a <a href="{{ url_for('bank_accounts_page') }}">bank account</a>.
       </div>
     {% else %}
-      <p class="field-hint" style="margin-bottom:16px;">Scanning <strong>{{ sender_email }}</strong>.</p>
+      <p class="field-hint" style="margin-bottom:6px;">Scanning {{ mailbox_rows|length }} mailbox{{ "es" if mailbox_rows|length != 1 }}:</p>
+      <ul style="margin:0 0 16px 18px; padding:0; font-size:13px;">
+        {% for m in mailbox_rows %}
+          <li><strong>{{ m.email }}</strong>
+            <span class="muted">— {% if m.primary %}Notifications{% else %}bank account{% endif %}{% if m.accounts %}: {{ m.accounts|join("; ") }}{% endif %}</span>
+          </li>
+        {% endfor %}
+      </ul>
     {% endif %}
     <form method="POST" action="{{ url_for('run_mail_scan') }}">
       <div class="form-group">
@@ -142,7 +152,7 @@
         <div style="padding:12px 0; {% if not loop.last %}border-bottom:1px solid var(--border);{% endif %}">
           <div><strong>{{ g.subject }}</strong></div>
           <div class="muted" style="font-size:12px; margin-bottom:8px;">
-            {{ g.from_addr }}{% if g.received_date %} · {{ g.received_date }}{% endif %}
+            {{ g.from_addr }}{% if g.received_date %} · {{ g.received_date }}{% endif %}{% if g.source_email %} · via {{ g.source_email }}{% endif %}
           </div>
           {% for f in g.files %}
             <div style="margin-bottom:8px;">

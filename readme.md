@@ -282,8 +282,7 @@ assembles the password, decrypts the PDF, and opens it.
   account label that appears in the deposit number); a Mail Scan attachment matches by the
   sender's bank. Where several accounts match, **Try every matching account** builds the password
   from each in turn, using whatever you've typed for any detail an account hasn't saved (accounts
-  still missing one are skipped and listed). The email and app password are just stored for now —
-  Mail Scan still reads the one mailbox set up under Notifications. The PAN and customer ID are
+  still missing one are skipped and listed). [Mail Scan](#mail-scan--draft-deposits) reads each account's mailbox with its email and app password. The PAN and customer ID are
   masked in the list; everything is stored, like the Notifications app password, as plain text in
   the local database — and so in its backups. A saved app password is never shown again on any page.
 - **Temporary testing mode.** While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
@@ -457,8 +456,17 @@ at the same bank pay into the same account.
 ## Mail Scan & Draft Deposits
 
 Scans the Gmail inbox already set up on the Notifications tab (same App Password, read over
-IMAP instead of used to send) for bank-transaction-looking emails, so interest credits and new
-FD bookings don't have to be typed in by hand. This is a generic keyword/regex heuristic, not a
+IMAP instead of used to send) — and, **one by one, the mailbox of every [bank account](#attachments)
+that has an email and app password saved** — for bank-transaction-looking emails, so interest
+credits and new FD bookings don't have to be typed in by hand. Each distinct address is scanned
+once (an account whose email is the Notifications one just shares that scan); one mailbox failing —
+a stale app password, say — is reported without stopping the others; and an email is tied to the
+bank account whose bank sent it (when exactly one account of that mailbox matches — otherwise it's
+left untied and the unlock page offers every account at that bank). Emails from an account's own
+mailbox are kept under their own Message-ID namespace, so the same Message-ID turning up in two
+mailboxes counts as two emails, while a transaction seen in both is still queued only once. The
+host comes from the address (Gmail by default; Outlook/Hotmail, Yahoo and iCloud addresses use their
+own IMAP servers — only Gmail has been exercised for real). This is a generic keyword/regex heuristic, not a
 per-bank parser — bank alert wording varies a lot and isn't standardised the way a statement
 file is, so expect it to occasionally miss a real email or flag something irrelevant. **Only the
 email's own text is scanned for transactions — attachments aren't read yet**, since parsing a

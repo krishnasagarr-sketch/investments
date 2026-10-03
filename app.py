@@ -614,6 +614,12 @@ def init_db():
         # Haiku to read the password instructions from. Empty for emails
         # scanned before this existed.
         conn.execute("ALTER TABLE processed_emails ADD COLUMN body_text TEXT NOT NULL DEFAULT ''")
+    if "source_email" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
+        # Which mailbox an email was read from, and (for a bank account's own
+        # mailbox) which bank account it was tied to.
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN source_email TEXT NOT NULL DEFAULT ''")
+    if "bank_account_id" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN bank_account_id INTEGER")
     if "attachments_checked" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
         # Defaults to 0 for every row that already exists -- i.e. every email
         # scanned before attachment-saving existed at all -- so the very next
@@ -4501,34 +4507,94 @@ def _extract_transactions_from_text(db, subject: str, from_addr: str, body: str,
     }]
 
 
+IMAP_HOSTS = {
+    "gmail.com": "imap.gmail.com", "googlemail.com": "imap.gmail.com",
+    "outlook.com": "outlook.office365.com", "hotmail.com": "outlook.office365.com",
+    "live.com": "outlook.office365.com", "msn.com": "outlook.office365.com",
+    "yahoo.com": "imap.mail.yahoo.com", "yahoo.in": "imap.mail.yahoo.com",
+    "yahoo.co.in": "imap.mail.yahoo.com", "ymail.com": "imap.mail.yahoo.com",
+    "icloud.com": "imap.mail.me.com", "me.com": "imap.mail.me.com",
+}
+
+
+def _imap_host_for(address: str) -> str:
+    """The IMAP server for an email address -- Gmail unless its domain is one
+    of the other well-known providers (a custom domain is assumed to be Google
+    Workspace, i.e. Gmail)."""
+    domain = address.rsplit("@", 1)[-1].strip().lower()
+    return IMAP_HOSTS.get(domain, "imap.gmail.com")
+
+
 def _imap_connect(sender_email: str, app_password: str):
-    """Connects to Gmail IMAP with the same App Password already used for
-    SMTP sending (Notifications tab). Raises RuntimeError with a
-    user-facing message on any failure."""
+    """Connects over IMAP with an app password (the same kind already used
+    for SMTP sending on the Notifications tab, or one saved on a bank
+    account). Raises RuntimeError with a user-facing message on any failure."""
     if not sender_email or not app_password:
-        raise RuntimeError(
-            "Set up the Gmail sender address and App Password on the Notifications tab first."
-        )
+        raise RuntimeError("An email address and its app password are both needed to read a mailbox.")
+    host = _imap_host_for(sender_email)
     try:
-        conn = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=20)
+        conn = imaplib.IMAP4_SSL(host, 993, timeout=20)
         conn.login(sender_email, app_password)
         return conn
     except imaplib.IMAP4.error:
         raise RuntimeError(
-            "Gmail rejected the sender email / app password for IMAP login. Make sure IMAP is "
-            "enabled on the account (Gmail settings → Forwarding and POP/IMAP) and the App "
-            "Password on the Notifications tab is current."
+            f"{host} rejected the email / app password for IMAP login. Make sure IMAP is enabled on the "
+            "account (Gmail: Settings → Forwarding and POP/IMAP) and the app password is current."
         )
     except socket.gaierror:
-        raise RuntimeError(
-            "Could not look up imap.gmail.com — check this machine's internet/DNS connection."
-        )
+        raise RuntimeError(f"Could not look up {host} — check this machine's internet/DNS connection.")
     except OSError as e:
-        raise RuntimeError(f"Could not reach imap.gmail.com ({e}).")
+        raise RuntimeError(f"Could not reach {host} ({e}).")
 
 
-def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
-    """Scans INBOX for emails since `days_back` days ago, extracts candidate
+def _mailboxes_to_scan(db) -> list:
+    """Every mailbox a scan covers, each once: the Notifications one, then one
+    per distinct email address saved on a bank account (that has an app
+    password). Each carries `account_ids` -- the bank accounts using that
+    address -- and a `tag` that namespaces its emails' Message-IDs (the
+    Notifications mailbox keeps the bare ID, as before) so the same
+    Message-ID arriving in two mailboxes isn't mistaken for one email."""
+    settings = get_notification_settings(db)
+    primary = (settings.get("sender_email") or "").strip()
+    boxes = []
+    if primary and settings.get("sender_app_password"):
+        boxes.append({"email": primary, "password": settings["sender_app_password"], "tag": "", "account_ids": []})
+    groups = {}
+    for a in db.execute("SELECT id, email, app_password FROM bank_accounts WHERE email != '' ORDER BY id"):
+        g = groups.setdefault(a["email"].strip().lower(), {"email": a["email"].strip(), "password": "", "ids": []})
+        g["ids"].append(a["id"])
+        g["password"] = g["password"] or a["app_password"]
+    for addr, g in groups.items():
+        shared = next((b for b in boxes if b["email"].lower() == addr), None)
+        if shared:
+            shared["account_ids"] += g["ids"]
+        elif g["password"]:
+            boxes.append({"email": g["email"], "password": g["password"],
+                          "tag": hashlib.sha1(addr.encode("utf-8")).hexdigest()[:6], "account_ids": g["ids"]})
+    return boxes
+
+
+def _bank_account_for_email(db, mailbox: dict, from_addr: str):
+    """Which of a mailbox's bank accounts an email belongs to: the one whose
+    bank matches the sender's, if exactly one does; with an unrecognisable
+    sender, the mailbox's only account. Otherwise None (ambiguous)."""
+    ids = mailbox["account_ids"]
+    if not ids:
+        return None
+    marks = ",".join("?" * len(ids))
+    accounts = db.execute(f"SELECT id, bank_ref_id FROM bank_accounts WHERE id IN ({marks})", ids).fetchall()
+    bank_ids = _bank_ids_for_sender(from_addr, db)
+    if bank_ids:
+        hits = [a["id"] for a in accounts if a["bank_ref_id"] in bank_ids]
+        return hits[0] if len(hits) == 1 else None
+    # An unrecognisable sender is only assumed to belong to the mailbox's sole
+    # account when that mailbox is the account's own -- not the general
+    # Notifications one, which gets all sorts of mail.
+    return accounts[0]["id"] if len(accounts) == 1 and mailbox["tag"] else None
+
+
+def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> dict:
+    """Scans one mailbox's INBOX for emails since `days_back` days ago, extracts candidate
     transactions from each new one, and queues anything new (by dedupe_key)
     into scanned_transactions -- auto-creating a linked deposit_drafts row
     for an "fd_booked" one. Also saves any PDF/CSV/Excel attachment to
@@ -4545,9 +4611,10 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
     classification (dedupe_key already protects against that regardless).
     This is what makes a backlog scanned before this feature shipped still
     get its attachments picked up on the very next scan, with no need to
-    reset anything. Returns a summary dict for the Mail Scan page to show."""
-    settings = get_notification_settings(db)
-    conn = _imap_connect(settings.get("sender_email", ""), settings.get("sender_app_password", ""))
+    reset anything. Returns this mailbox's counts. `already_known` is the
+    set of transaction dedupe keys, shared across mailboxes so the same
+    transaction found in two of them is queued once."""
+    conn = _imap_connect(mailbox["email"], mailbox["password"])
     scanned = 0
     rechecked = 0
     queued = 0
@@ -4558,14 +4625,10 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
         since = (date.today() - timedelta(days=days_back)).strftime("%d-%b-%Y")
         status, data = conn.search(None, f'(SINCE "{since}")')
         if status != "OK":
-            raise RuntimeError("Gmail's IMAP search didn't succeed.")
+            raise RuntimeError(f"{mailbox['email']}: the IMAP search didn't succeed.")
         uids = data[0].split()
         if len(uids) > MAIL_SCAN_MAX_EMAILS:
             uids = uids[-MAIL_SCAN_MAX_EMAILS:]  # newest N within the window, not oldest
-
-        already_known = {
-            r["dedupe_key"] for r in db.execute("SELECT dedupe_key FROM scanned_transactions").fetchall()
-        }
 
         for uid in uids:
             status, msg_data = conn.fetch(uid, "(RFC822)")
@@ -4575,6 +4638,8 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             message_id = (msg.get("Message-ID") or "").strip()
             if not message_id:
                 continue
+            if mailbox["tag"]:
+                message_id = f"{mailbox['tag']}:{message_id}"
 
             existing = db.execute(
                 "SELECT * FROM processed_emails WHERE message_id = ?", (message_id,)
@@ -4669,11 +4734,13 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             cur = db.execute(
                 """INSERT INTO processed_emails
                    (message_id, mailbox, subject, from_addr, received_date, processed_at, status,
-                    attachments_saved, attachments_dir, attachments_checked, body_text)
-                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                    attachments_saved, attachments_dir, attachments_checked, body_text,
+                    source_email, bank_account_id)
+                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
                 (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status,
                  len(saved_files), _safe_message_id_folder(message_id) if saved_files else "",
-                 body[:MAIL_BODY_STORE_CHARS] if saved_files else ""),
+                 body[:MAIL_BODY_STORE_CHARS] if saved_files else "",
+                 mailbox["email"], _bank_account_for_email(db, mailbox, from_addr)),
             )
             if saved_files:
                 hint = _extract_password_hint_from_text(f"{subject}\n{body}")
@@ -4691,6 +4758,35 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
         "scanned": scanned, "rechecked": rechecked, "queued": queued, "drafted": drafted,
         "attachments_saved": attachments_saved,
     }
+
+
+def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
+    """Scans every mailbox in play -- the Notifications one and each bank
+    account's own (see _mailboxes_to_scan) -- and totals the counts. One
+    mailbox failing (a stale app password, say) doesn't stop the rest: its
+    problem goes in "errors" and the others are still scanned. Raises
+    RuntimeError only if there's nothing to scan or every mailbox failed."""
+    mailboxes = _mailboxes_to_scan(db)
+    if not mailboxes:
+        raise RuntimeError(
+            "No mailbox is set up yet — add the Gmail sender / App Password on the Notifications tab, "
+            "or an email and app password on a bank account."
+        )
+    already_known = {r["dedupe_key"] for r in db.execute("SELECT dedupe_key FROM scanned_transactions").fetchall()}
+    total = {"scanned": 0, "rechecked": 0, "queued": 0, "drafted": 0, "attachments_saved": 0,
+             "mailboxes": [], "errors": []}
+    for mb in mailboxes:
+        try:
+            r = _scan_one_mailbox(db, mb, days_back, already_known)
+        except RuntimeError as e:
+            total["errors"].append(f"{mb['email']}: {e}")
+            continue
+        for k in ("scanned", "rechecked", "queued", "drafted", "attachments_saved"):
+            total[k] += r[k]
+        total["mailboxes"].append({"email": mb["email"], **r})
+    if not total["mailboxes"]:
+        raise RuntimeError(" ".join(total["errors"]))
+    return total
 
 
 def _human_file_size(num_bytes: int) -> str:
@@ -4730,6 +4826,7 @@ def list_saved_attachments(db) -> list:
             "email_id": email_id,
             "subject": email_row["subject"] if email_row else "(email no longer on record)",
             "from_addr": email_row["from_addr"] if email_row else "",
+            "source_email": email_row["source_email"] if email_row else "",
             "received_date": email_row["received_date"] if email_row else "",
             "mtime": max(f.stat().st_mtime for f in files),
             "files": [
@@ -4788,10 +4885,16 @@ def mail_scan_page():
     total_attachments = db.execute(
         "SELECT COALESCE(SUM(attachments_saved), 0) c FROM processed_emails"
     ).fetchone()["c"]
+    accounts_by_id = {a["id"]: a for a in list_bank_accounts(db)}
+    mailbox_rows = [
+        {"email": mb["email"], "primary": not mb["tag"],
+         "accounts": [_account_text(accounts_by_id[i]) for i in mb["account_ids"] if i in accounts_by_id]}
+        for mb in _mailboxes_to_scan(db)
+    ]
     return render_template(
         "mail_scan.html", active_tab="mail_scan",
-        mail_configured=bool(settings.get("sender_email") and settings.get("sender_app_password")),
-        sender_email=settings.get("sender_email", ""),
+        mail_configured=bool(mailbox_rows),
+        mailbox_rows=mailbox_rows,
         pending=pending,
         depositors=list_depositors(db), banks=list_banks(db),
         scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
@@ -4820,7 +4923,12 @@ def run_mail_scan():
             message += f" Rechecked {result['rechecked']} older email(s) for attachments for the first time."
         if result["attachments_saved"]:
             message += f" Saved {result['attachments_saved']} attachment(s) for later processing."
+        if len(result["mailboxes"]) > 1:
+            message += " By mailbox: " + "; ".join(
+                f"{m['email']} — {m['scanned']} new" for m in result["mailboxes"]) + "."
         session["mail_scan_result"] = message
+        if result["errors"]:
+            session["mail_scan_error"] = "Couldn't read: " + " ".join(result["errors"])
     except RuntimeError as e:
         session["mail_scan_error"] = str(e)
     return redirect(url_for("mail_scan_page"))
@@ -6531,8 +6639,10 @@ def _bank_ids_for_sender(from_addr: str, db) -> set:
     labels = {l for l in domain.split(".") if len(l) >= 3 and l not in _GENERIC_DOMAIN_LABELS}
     ids = set()
     for b in db.execute("SELECT id, bank_id, name FROM banks"):
-        compact = re.sub(r"[^a-z0-9]", "", b["name"].lower())
-        if b["bank_id"].lower() in labels or any(l in compact for l in labels):
+        # "hdfcbank" (domain) vs "HDFC" (your bank's name): match either way round
+        keys = {k for k in (re.sub(r"[^a-z0-9]", "", b["name"].lower()), re.sub(r"[^a-z0-9]", "", b["bank_id"].lower()))
+                if len(k) >= 3}
+        if any(k in l or l in k for k in keys for l in labels):
             ids.add(b["id"])
     return ids
 
@@ -6549,9 +6659,12 @@ def accounts_for_attachment(db, kind: str, item_id: int):
         if r and r["bank_ref_id"]:
             bank_ids, depositor_id, number = {r["bank_ref_id"]}, r["depositor_id"], (r["deposit_number"] or "")
     elif kind == "mail_scan":
-        r = db.execute("SELECT from_addr FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
+        r = db.execute("SELECT from_addr, bank_account_id FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
         if r:
             bank_ids = _bank_ids_for_sender(r["from_addr"] or "", db)
+            tied = [a for a in accounts if a["id"] == r["bank_account_id"]]
+            if tied:  # the scan already tied this email to one bank account
+                return tied, [a for a in accounts if a["id"] != tied[0]["id"]]
     matched = [a for a in accounts if a["bank_ref_id"] in bank_ids]
     if depositor_id is not None:
         same = [a for a in matched if a["depositor_id"] in (depositor_id, None)]
