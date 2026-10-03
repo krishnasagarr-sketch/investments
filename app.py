@@ -5967,6 +5967,8 @@ _PW_PATTERNS = (
         ("name", rf"\b(first|last)\s+{_PW_N}\s+(?:letters?|characters?|chars?|alphabets?)\s+of\s+"
                  rf"(?:(?:your|the|customer|registered|account\s*holder(?:'?s)?)\s+)*name\b"),
         ("name", rf"\bname\b(?:'s)?\s*[,(]?\s*(first|last)\s+{_PW_N}\s+(?:letters?|characters?|chars?|alphabets?)"),
+        ("dob", rf"\b(first|last)\s+{_PW_N}\s+(?:digits?|characters?|chars?|numbers?)\s+of\s+(?:(?:your|the)\s+)*"
+                r"(?:date of birth|d\.o\.b\.?|dob|birth\s*date)"),
         ("dob", r"\b(?:year of birth|birth year)\b"),
         ("dob", r"\b(?:day and month|date and month|day & month|date & month) of birth\b"),
         ("dob", r"\b(?:date of birth|d\.o\.b\.?|dob|birth\s*date|birthday)\b"),
@@ -5982,6 +5984,24 @@ _PW_PATTERNS = (
 _PW_PATTERNS_COMPILED = [(f, re.compile(p, re.I)) for f, p in _PW_PATTERNS]
 
 
+# A note often ends with a worked example ("So, if your Date of Birth is
+# 15/12/1955 and your name is Mr. SURAJ KUMAR, then your password is
+# 1512SUR."). That sentence names the same details again and must not be read
+# as more parts of the recipe. It's blanked out with spaces -- not removed --
+# so positions in the note still line up.
+_PW_EXAMPLE_RES = [
+    re.compile(r"(?:\bso,?\s+)?\b(?:if|suppose|assuming|for\s+(?:example|instance),?\s*(?:if)?)\s+your\b.*?"
+               r"\bpassword\s+(?:is|will\s+be|would\s+be)\s*[:\-]?\s*[\"'“]?[^\s\"'”,;]+[\"'”]?\.?", re.I | re.S),
+    re.compile(r"(?:\be\.g\.?|\beg\b|\bfor\s+(?:example|instance)\b|\bexample\s*[:\-])[^.]*\.?", re.I),
+]
+
+
+def _pw_strip_examples(hint: str) -> str:
+    for rx in _PW_EXAMPLE_RES:
+        hint = rx.sub(lambda m: " " * len(m.group(0)), hint)
+    return hint
+
+
 def _pw_to_int(token: str):
     return int(token) if token.isdigit() else _PW_NUMBER_WORDS.get(token.lower())
 
@@ -5993,6 +6013,7 @@ def parse_password_hint(hint: str) -> dict:
     details needed to fill them in. Position in the sentence is the order
     they're concatenated in. A note with no recognisable details but an
     explicit-looking literal ("password: Abc12345") yields that literal."""
+    hint = _pw_strip_examples(hint)
     found = []
     for field, rx in _PW_PATTERNS_COMPILED:
         for m in rx.finditer(hint):
@@ -6048,7 +6069,9 @@ def describe_password_plan(plan: dict) -> list:
     out = []
     for c in plan["components"]:
         label = PW_FIELD_LABELS[c["field"]].lower().replace("name as registered with the bank", "name")
-        if c["field"] == "dob":
+        if c["field"] == "dob" and c["n"] and c["where"]:
+            text = f"{c['where']} {c['n']} digits of date of birth ({c['fmt'] or 'DDMMYYYY'})"
+        elif c["field"] == "dob":
             text = f"date of birth as {c['fmt']}" if c["fmt"] else "date of birth (format not stated — DDMMYYYY or DDMMYY tried)"
         elif c["n"] and c["where"]:
             unit = "letters" if c["field"] == "name" else "digits"
@@ -6077,11 +6100,19 @@ def _pw_component_options(c: dict, raw: str) -> list:
             d = date.fromisoformat(raw)
         except ValueError:
             raise ValueError("Enter the date of birth as a valid date.")
+        if c["n"] and c["where"]:
+            # "first/last N digits of date of birth": cut that many digits from
+            # the full date (DDMMYYYY unless the note names a layout).
+            digits = _pw_format_dob(d, c["fmt"] or "DDMMYYYY")
+            digits = re.sub(r"\D", "", digits)
+            return [digits[:c["n"]] if c["where"] == "first" else digits[-c["n"]:]]
         fmts = [c["fmt"]] if c["fmt"] else ["DDMMYYYY", "DDMMYY"]
         return [_pw_format_dob(d, f) for f in fmts]
 
     if field == "name":
-        letters = re.sub(r"[^A-Za-z]", "", raw)
+        # A leading title isn't part of the name ("Mr. SURAJ KUMAR" -> SURAJ...).
+        untitled = re.sub(r"^\s*(?:mr|mrs|ms|miss|mx|dr|prof|shri|sri|smt|kumari)\b\.?\s+", "", raw, flags=re.I)
+        letters = re.sub(r"[^A-Za-z]", "", untitled)
         if c["n"] and c["where"]:
             bases = [letters[:c["n"]] if c["where"] == "first" else letters[-c["n"]:]]
         else:
