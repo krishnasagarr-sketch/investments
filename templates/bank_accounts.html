@@ -10,7 +10,7 @@
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">{% if form_data.id %}Edit bank account{% else %}Add a bank account{% endif %}</h2>
     <p class="field-hint" style="margin:0 0 14px;">
-      The name, PAN, date of birth and customer ID <em>this bank</em> has on file. They can differ from bank to
+      The name, PAN, date of birth, customer ID and email <em>this bank</em> has on file. They can differ from bank to
       bank, so each account keeps its own. They're used to fill in the details a protected statement's
       password is built from.
     </p>
@@ -68,6 +68,28 @@
         <label for="customer_id">Customer ID / CIF</label>
         <input type="text" id="customer_id" name="customer_id" value="{{ form_data.customer_id }}" autocomplete="off">
       </div>
+      <div class="form-group">
+        <label for="email">Email ID <span class="muted">(optional)</span></label>
+        <input type="email" id="email" name="email" value="{{ form_data.email }}" autocomplete="off"
+               placeholder="the address this bank mails statements to">
+      </div>
+      <div class="form-group">
+        <label for="app_password">
+          App password for that email
+          {% if has_app_password %}<span class="muted">— one is saved</span>{% else %}<span class="muted">(optional)</span>{% endif %}
+        </label>
+        <input type="password" id="app_password" name="app_password" autocomplete="new-password"
+               placeholder="{{ 'leave blank to keep the saved one' if has_app_password else '16-character app password' }}">
+        <p class="field-hint" style="margin:4px 0 0;">
+          Not the email's normal password. For Gmail, turn on 2-Step Verification, then create one at
+          <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>.
+        </p>
+        {% if has_app_password %}
+          <label style="font-weight:normal; display:flex; gap:6px; align-items:center; margin-top:6px;">
+            <input type="checkbox" name="clear_app_password" value="1" style="width:auto;"> Remove the saved app password
+          </label>
+        {% endif %}
+      </div>
       <button type="submit" class="btn" style="width:100%;">{% if form_data.id %}Save changes{% else %}Add bank account{% endif %}</button>
       {% if form_data.id %}
         <a href="{{ url_for('bank_accounts_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center; display:block; box-sizing:border-box;">Cancel</a>
@@ -90,6 +112,8 @@
             <th>PAN</th>
             <th>Date of birth</th>
             <th>Customer ID</th>
+            <th>Email</th>
+            <th>App password</th>
             <th></th>
           </tr>
         </thead>
@@ -104,6 +128,8 @@
             <td>{{ (a.pan|mask_pan) or "—" }}</td>
             <td>{{ a.dob or "—" }}</td>
             <td>{{ (a.customer_id|mask_tail) or "—" }}</td>
+            <td>{{ a.email or "—" }}</td>
+            <td>{% if a.app_password %}<span class="badge active">saved</span>{% else %}—{% endif %}</td>
             <td>
               <a href="{{ url_for('bank_accounts_page', edit=a.id) }}" class="btn secondary">Edit</a>
               <form class="inline" method="POST" action="{{ url_for('delete_bank_account', account_id=a.id) }}">
@@ -117,7 +143,7 @@
       </div>
       <p class="field-hint" style="margin:12px 0 0;">
         Stored as plain text in this app's local database, like the rest of your data — and so included in
-        any backup of it. The PAN and customer ID are masked here; Edit shows them in full.
+        any backup of it. The PAN and customer ID are masked here (Edit shows them in full); a saved app password is never shown.
       </p>
     {% else %}
       <div class="empty-state">

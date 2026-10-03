@@ -273,16 +273,19 @@ assembles the password, decrypts the PDF, and opens it.
   otherwise upper, lower and as-typed are all tried. Without a key, the `anthropic` package, or a
   working connection, the built-in regex reader takes over and the page says why. `.env` is
   git-ignored — keep your key out of the repository.
-- **Bank Accounts — the details each bank has on file.** The **Bank Accounts** tab keeps a
-  first name, last name, PAN, date of birth and customer ID per bank account (bank, plus an optional depositor and account
-  number/label), because the name (and the rest) can differ from bank to bank. On the unlock page a **Saved bank
-  account** picker fills in those details (with everything the note needs saved, nothing has to be typed): a deposit's attachment pre-selects the account at its
-  bank (narrowed by its depositor, and by an account label that appears in the deposit number); a
-  Mail Scan attachment matches by the sender's bank. Where several accounts match, **Try every
-  matching account** builds the password from each in turn, using whatever you've typed for any
-  detail an account hasn't saved (accounts still missing one are skipped and listed). The PAN and
-  customer ID are masked in the list
-  and stored, like everything else, as plain text in the local database — and so in its backups.
+- **Bank Accounts — the details each bank has on file.** The **Bank Accounts** tab keeps a first
+  name, last name, PAN, date of birth, customer ID and the email address (with its app password)
+  per bank account (bank, plus an optional depositor and account number/label), because the name
+  (and the rest) can differ from bank to bank. On the unlock page a **Saved bank account** picker
+  fills in those details — with everything the note needs saved, nothing has to be typed: a
+  deposit's attachment pre-selects the account at its bank (narrowed by its depositor, and by an
+  account label that appears in the deposit number); a Mail Scan attachment matches by the
+  sender's bank. Where several accounts match, **Try every matching account** builds the password
+  from each in turn, using whatever you've typed for any detail an account hasn't saved (accounts
+  still missing one are skipped and listed). The email and app password are just stored for now —
+  Mail Scan still reads the one mailbox set up under Notifications. The PAN and customer ID are
+  masked in the list; everything is stored, like the Notifications app password, as plain text in
+  the local database — and so in its backups. A saved app password is never shown again on any page.
 - **Temporary testing mode.** While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
   in `app.py` makes the unlock page *display* the password(s) it built from your details (in the
   order tried, with the winner marked), offers a "show the generated password(s) only — don't

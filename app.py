@@ -754,7 +754,8 @@ def init_db():
         )
     """)
 
-    # The name(s), PAN, date of birth and customer ID a bank holds for one of your accounts there -- they
+    # The name(s), PAN, date of birth, customer ID and mailbox (email + app
+    # password, plain text like the Notifications one) a bank holds for one of your accounts there -- they
     # can differ from bank to bank (initials, a married name, ...), so each
     # account keeps its own. Used to fill in the details a protected
     # statement's password is built from. Plain text in this local database,
@@ -772,7 +773,7 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
-    for col in ("dob", "customer_id"):  # added after the table first shipped
+    for col in ("dob", "customer_id", "email", "app_password"):  # added after the table first shipped
         if col not in {r[1] for r in conn.execute("PRAGMA table_info(bank_accounts)")}:
             conn.execute(f"ALTER TABLE bank_accounts ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
@@ -6569,17 +6570,23 @@ def bank_accounts_page():
     db = get_db()
     error = None
     blank = {"id": "", "bank_ref_id": "", "depositor_id": "", "account_label": "", "first_name": "", "last_name": "", "pan": "",
-             "dob": "", "customer_id": ""}
+             "dob": "", "customer_id": "", "email": "", "app_password": ""}
     form_data = dict(blank)
+    has_app_password = False
 
     edit_id = request.args.get("edit", type=int)
     if edit_id and request.method == "GET":
         row = db.execute("SELECT * FROM bank_accounts WHERE id = ?", (edit_id,)).fetchone()
         if row:
-            form_data = {k: ("" if row[k] is None else str(row[k])) for k in blank}
+            # The saved app password is never sent back to the page.
+            form_data = {k: ("" if row[k] is None or k == "app_password" else str(row[k])) for k in blank}
+            has_app_password = bool(row["app_password"])
 
     if request.method == "POST":
         form_data = {k: request.form.get(k, "").strip() for k in blank}
+        if form_data["id"].isdigit():
+            existing = db.execute("SELECT app_password FROM bank_accounts WHERE id = ?", (form_data["id"],)).fetchone()
+            has_app_password = bool(existing and existing["app_password"])
         try:
             if not db.execute("SELECT 1 FROM banks WHERE id = ?", (form_data["bank_ref_id"] or 0,)).fetchone():
                 raise ValueError("Choose the bank.")
@@ -6603,22 +6610,35 @@ def bank_accounts_page():
                     raise ValueError("Enter the date of birth as a valid date.")
                 if born > date.today() or born.year < 1900:
                     raise ValueError("That date of birth doesn't look right.")
+            form_data["email"] = form_data["email"].replace(" ", "")
+            if form_data["email"] and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", form_data["email"]):
+                raise ValueError("Enter a valid email address.")
+            form_data["app_password"] = re.sub(r"\s", "", form_data["app_password"])  # Google shows them in 4s
+            keep_password = has_app_password and not form_data["app_password"] and not request.form.get("clear_app_password")
+            if (form_data["app_password"] or keep_password) and not form_data["email"]:
+                raise ValueError("An app password needs the email address it belongs to.")
             if not (form_data["first_name"] or form_data["last_name"] or form_data["pan"]
-                    or form_data["dob"] or form_data["customer_id"]):
-                raise ValueError("Enter at least one detail: a name, PAN, date of birth or customer ID.")
+                    or form_data["dob"] or form_data["customer_id"] or form_data["email"]):
+                raise ValueError("Enter at least one detail: a name, PAN, date of birth, customer ID or email.")
             args = (int(form_data["bank_ref_id"]), int(form_data["depositor_id"]) if form_data["depositor_id"] else None,
                     form_data["account_label"], form_data["first_name"], form_data["last_name"], form_data["pan"],
-                    form_data["dob"], form_data["customer_id"])
+                    form_data["dob"], form_data["customer_id"], form_data["email"])
             if form_data["id"]:
                 db.execute(
                     """UPDATE bank_accounts SET bank_ref_id = ?, depositor_id = ?, account_label = ?,
-                       first_name = ?, last_name = ?, pan = ?, dob = ?, customer_id = ? WHERE id = ?""",
+                       first_name = ?, last_name = ?, pan = ?, dob = ?, customer_id = ?, email = ? WHERE id = ?""",
                     args + (int(form_data["id"]),))
+                if form_data["app_password"]:
+                    db.execute("UPDATE bank_accounts SET app_password = ? WHERE id = ?",
+                               (form_data["app_password"], int(form_data["id"])))
+                elif not keep_password:
+                    db.execute("UPDATE bank_accounts SET app_password = '' WHERE id = ?", (int(form_data["id"]),))
             else:
                 db.execute(
                     """INSERT INTO bank_accounts (bank_ref_id, depositor_id, account_label, first_name, last_name, pan,
-                                                  dob, customer_id, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", args + (date.today().isoformat(),))
+                                                  dob, customer_id, email, app_password, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    args + (form_data["app_password"], date.today().isoformat()))
             db.commit()
             return redirect(url_for("bank_accounts_page"))
         except ValueError as e:
@@ -6627,7 +6647,7 @@ def bank_accounts_page():
     return render_template(
         "bank_accounts.html", accounts=list_bank_accounts(db), banks=list_banks(db),
         depositors=db.execute("SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
-        form_data=form_data, error=error, active_tab="bank_accounts",
+        form_data=form_data, error=error, has_app_password=has_app_password, active_tab="bank_accounts",
     )
 
 
