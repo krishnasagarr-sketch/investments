@@ -46,7 +46,7 @@
             <td>{{ bank.bank_id }}</td>
             <td>{{ bank.deposit_count }}</td>
             <td>
-              {% if bank.deposit_count == 0 %}
+              {% if bank.deposit_count == 0 and bank.account_count == 0 %}
                 <form class="inline" method="POST"
                       action="{{ url_for('delete_bank', bank_id=bank.id) }}">
                   <button type="submit" class="btn danger" data-confirm

@@ -754,6 +754,25 @@ def init_db():
         )
     """)
 
+    # The name(s) and PAN a bank holds for one of your accounts there -- they
+    # can differ from bank to bank (initials, a married name, ...), so each
+    # account keeps its own. Used to fill in the details a protected
+    # statement's password is built from. Plain text in this local database,
+    # like the rest of it. depositor_id / account_label are optional and only
+    # help pick the right row for a given statement.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bank_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bank_ref_id INTEGER NOT NULL REFERENCES banks(id),
+            depositor_id INTEGER REFERENCES depositors(id),
+            account_label TEXT NOT NULL DEFAULT '',
+            first_name TEXT NOT NULL DEFAULT '',
+            last_name TEXT NOT NULL DEFAULT '',
+            pan TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -1196,7 +1215,8 @@ def list_depositors(db):
 
 def list_banks(db):
     return db.execute(
-        """SELECT b.id, b.bank_id, b.name, COUNT(dep.id) AS deposit_count
+        """SELECT b.id, b.bank_id, b.name, COUNT(dep.id) AS deposit_count,
+                  (SELECT COUNT(*) FROM bank_accounts ba WHERE ba.bank_ref_id = b.id) AS account_count
            FROM banks b
            LEFT JOIN deposits dep ON dep.bank_ref_id = b.id
            GROUP BY b.id ORDER BY b.name COLLATE NOCASE"""
@@ -2318,6 +2338,7 @@ def delete_depositor(depositor_id):
         + db.execute("SELECT COUNT(*) AS n FROM investments WHERE depositor_id = ?", (depositor_id,)).fetchone()["n"]
     )
     if in_use == 0:
+        db.execute("UPDATE bank_accounts SET depositor_id = NULL WHERE depositor_id = ?", (depositor_id,))
         db.execute("DELETE FROM depositors WHERE id = ?", (depositor_id,))
         db.commit()
     return redirect(url_for("depositors_page"))
@@ -2362,6 +2383,8 @@ def delete_bank(bank_id):
     db = get_db()
     in_use = db.execute(
         "SELECT COUNT(*) AS n FROM deposits WHERE bank_ref_id = ?", (bank_id,)
+    ).fetchone()["n"] + db.execute(
+        "SELECT COUNT(*) AS n FROM bank_accounts WHERE bank_ref_id = ?", (bank_id,)
     ).fetchone()["n"]
     if in_use == 0:
         db.execute("DELETE FROM banks WHERE id = ?", (bank_id,))
@@ -6452,6 +6475,145 @@ def raw_attachment(kind, item_id, filename):
     return send_file(target, as_attachment=False)
 
 
+# ---------------------------------------------------------------------------
+# Bank accounts: the first name / last name / PAN each bank has on file
+# ---------------------------------------------------------------------------
+
+PAN_RE = re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
+PERSON_NAME_RE = re.compile(r"[A-Za-z][A-Za-z .'\-]*")
+# Domain labels too common to say which bank an email came from.
+_GENERIC_DOMAIN_LABELS = {
+    "bank", "alerts", "alert", "info", "mail", "email", "mailer", "statements", "statement", "support",
+    "customer", "care", "online", "noreply", "service", "services", "net", "com", "org", "co",
+}
+app.jinja_env.filters["mask_pan"] = lambda v: f"{v[:2]}••••••{v[-2:]}" if v and len(v) == 10 else (v or "")
+
+
+def list_bank_accounts(db):
+    return db.execute(
+        """SELECT ba.*, b.name AS bank_name, d.name AS depositor_name
+           FROM bank_accounts ba
+           JOIN banks b ON b.id = ba.bank_ref_id
+           LEFT JOIN depositors d ON d.id = ba.depositor_id
+           ORDER BY b.name COLLATE NOCASE, d.name COLLATE NOCASE, ba.account_label COLLATE NOCASE, ba.id"""
+    ).fetchall()
+
+
+def _account_values(a) -> dict:
+    """The form-field values one saved account supplies."""
+    first, last = a["first_name"], a["last_name"]
+    return {"first_name": first, "last_name": last, "pan": a["pan"], "name": f"{first} {last}".strip()}
+
+
+def _account_text(a) -> str:
+    who = f"{a['first_name']} {a['last_name']}".strip() or (a["pan"] and "PAN only") or "no name"
+    extra = " · ".join(x for x in (a["depositor_name"], a["account_label"]) if x)
+    return f"{a['bank_name']} — {who}" + (f" ({extra})" if extra else "")
+
+
+def _bank_ids_for_sender(from_addr: str, db) -> set:
+    """The banks (by id) an email's sender most plausibly belongs to."""
+    _, ref = _guess_bank_from_sender(from_addr, db)
+    if ref:
+        return {ref}
+    domain = from_addr.rsplit("@", 1)[-1].lower() if "@" in from_addr else ""
+    labels = {l for l in domain.split(".") if len(l) >= 3 and l not in _GENERIC_DOMAIN_LABELS}
+    ids = set()
+    for b in db.execute("SELECT id, bank_id, name FROM banks"):
+        compact = re.sub(r"[^a-z0-9]", "", b["name"].lower())
+        if b["bank_id"].lower() in labels or any(l in compact for l in labels):
+            ids.add(b["id"])
+    return ids
+
+
+def accounts_for_attachment(db, kind: str, item_id: int):
+    """(matched, others): saved accounts that fit this attachment, best first,
+    and every other saved account. A deposit's attachment matches by its
+    bank, narrowed by its depositor and by the account label appearing in
+    the deposit number; a Mail Scan attachment matches by the sender's bank."""
+    accounts = list_bank_accounts(db)
+    bank_ids, depositor_id, number = set(), None, ""
+    if kind == "deposits":
+        r = db.execute("SELECT bank_ref_id, depositor_id, deposit_number FROM deposits WHERE id = ?", (item_id,)).fetchone()
+        if r and r["bank_ref_id"]:
+            bank_ids, depositor_id, number = {r["bank_ref_id"]}, r["depositor_id"], (r["deposit_number"] or "")
+    elif kind == "mail_scan":
+        r = db.execute("SELECT from_addr FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
+        if r:
+            bank_ids = _bank_ids_for_sender(r["from_addr"] or "", db)
+    matched = [a for a in accounts if a["bank_ref_id"] in bank_ids]
+    if depositor_id is not None:
+        same = [a for a in matched if a["depositor_id"] in (depositor_id, None)]
+        if any(a["depositor_id"] == depositor_id for a in same):
+            matched = same
+    if number:
+        labelled = [a for a in matched if a["account_label"] and a["account_label"] in number]
+        if labelled:
+            matched = labelled
+    ids = {a["id"] for a in matched}
+    return matched, [a for a in accounts if a["id"] not in ids]
+
+
+@app.route("/bank-accounts", methods=["GET", "POST"])
+def bank_accounts_page():
+    db = get_db()
+    error = None
+    blank = {"id": "", "bank_ref_id": "", "depositor_id": "", "account_label": "", "first_name": "", "last_name": "", "pan": ""}
+    form_data = dict(blank)
+
+    edit_id = request.args.get("edit", type=int)
+    if edit_id and request.method == "GET":
+        row = db.execute("SELECT * FROM bank_accounts WHERE id = ?", (edit_id,)).fetchone()
+        if row:
+            form_data = {k: ("" if row[k] is None else str(row[k])) for k in blank}
+
+    if request.method == "POST":
+        form_data = {k: request.form.get(k, "").strip() for k in blank}
+        try:
+            if not db.execute("SELECT 1 FROM banks WHERE id = ?", (form_data["bank_ref_id"] or 0,)).fetchone():
+                raise ValueError("Choose the bank.")
+            if form_data["depositor_id"] and not db.execute(
+                    "SELECT 1 FROM depositors WHERE id = ?", (form_data["depositor_id"],)).fetchone():
+                raise ValueError("That depositor doesn't exist.")
+            for key, label in (("first_name", "First name"), ("last_name", "Last name")):
+                form_data[key] = re.sub(r"\s+", " ", form_data[key])
+                if form_data[key] and not PERSON_NAME_RE.fullmatch(form_data[key]):
+                    raise ValueError(f"{label} can only contain letters, spaces, dots, hyphens and apostrophes.")
+            form_data["pan"] = re.sub(r"\s", "", form_data["pan"]).upper()
+            if form_data["pan"] and not PAN_RE.fullmatch(form_data["pan"]):
+                raise ValueError("A PAN is 5 letters, 4 digits, then a letter (e.g. ABCDE1234F).")
+            if not (form_data["first_name"] or form_data["last_name"] or form_data["pan"]):
+                raise ValueError("Enter at least a first name, last name or PAN.")
+            args = (int(form_data["bank_ref_id"]), int(form_data["depositor_id"]) if form_data["depositor_id"] else None,
+                    form_data["account_label"], form_data["first_name"], form_data["last_name"], form_data["pan"])
+            if form_data["id"]:
+                db.execute(
+                    """UPDATE bank_accounts SET bank_ref_id = ?, depositor_id = ?, account_label = ?,
+                       first_name = ?, last_name = ?, pan = ? WHERE id = ?""", args + (int(form_data["id"]),))
+            else:
+                db.execute(
+                    """INSERT INTO bank_accounts (bank_ref_id, depositor_id, account_label, first_name, last_name, pan, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""", args + (date.today().isoformat(),))
+            db.commit()
+            return redirect(url_for("bank_accounts_page"))
+        except ValueError as e:
+            error = str(e)
+
+    return render_template(
+        "bank_accounts.html", accounts=list_bank_accounts(db), banks=list_banks(db),
+        depositors=db.execute("SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
+        form_data=form_data, error=error, active_tab="bank_accounts",
+    )
+
+
+@app.route("/bank-accounts/<int:account_id>/delete", methods=["POST"])
+def delete_bank_account(account_id):
+    db = get_db()
+    db.execute("DELETE FROM bank_accounts WHERE id = ?", (account_id,))
+    db.commit()
+    return redirect(url_for("bank_accounts_page"))
+
+
 @app.route("/attachments/unlock/<kind>/<int:item_id>/<filename>", methods=["GET", "POST"])
 def unlock_attachment(kind, item_id, filename):
     db = get_db()
@@ -6461,19 +6623,50 @@ def unlock_attachment(kind, item_id, filename):
 
     hint = get_attachment_password(db, kind, item_id, filename)
     plan = get_unlock_plan(db, kind, item_id, filename, hint)
+    matched, others = accounts_for_attachment(db, kind, item_id)
     values = {f: "" for f in PW_FIELD_LABELS}
+    account_choice = str(matched[0]["id"]) if matched else ""
+    if matched:  # pre-fill from the best-matching saved account
+        values.update(_account_values(matched[0]))
     error = None
 
     generated, worked, info, manual = [], None, None, ""
     if request.method == "POST":
         values = {f: request.form.get(f, "").strip() for f in PW_FIELD_LABELS}
+        account_choice = request.form.get("account", "")
         manual = request.form.get("manual_password", "")
         preview = bool(request.form.get("preview")) and SHOW_GENERATED_PASSWORDS
+        # "Try every saved account": the details come from each matching
+        # account in turn; only what isn't kept per account (the date of
+        # birth) is typed.
+        use_all = account_choice == "all" and len(matched) > 1
         candidates = []
         if manual:
             candidates.append(manual)
             generated.append({"pw": manual, "source": "typed directly"})
-        if plan["components"]:
+        if plan["components"] and use_all:
+            if "dob" in plan["fields"] and not values["dob"]:
+                error = "Fill in: " + PW_FIELD_LABELS["dob"] + "."
+            else:
+                skipped = []
+                for a in matched:
+                    acct_values = {**values, **_account_values(a)}
+                    if any(not acct_values[f] for f in plan["fields"]):
+                        skipped.append(_account_text(a))
+                        continue
+                    try:
+                        for b in build_password_candidates(plan, acct_values)[:8]:
+                            if b not in candidates:
+                                candidates.append(b)
+                                generated.append({"pw": b, "source": "built from " + _account_text(a)})
+                    except ValueError as e:
+                        error = str(e)
+                        break
+                if skipped and error is None:
+                    info = "Skipped (a detail the note needs isn't saved): " + "; ".join(skipped) + "."
+                if not generated and error is None:
+                    error = "None of the saved accounts has every detail this note needs."
+        elif plan["components"]:
             missing = [PW_FIELD_LABELS[f] for f in plan["fields"] if not values[f]]
             if missing and not manual:
                 error = "Fill in: " + ", ".join(missing) + "."
@@ -6488,7 +6681,8 @@ def unlock_attachment(kind, item_id, filename):
             candidates.append(plan["literal"])
             generated.append({"pw": plan["literal"], "source": "stated in the note"})
         if preview and error is None:
-            info = "Preview only — these are the passwords that would be tried; nothing was opened."
+            info = "Preview only — these are the passwords that would be tried; nothing was opened." + (
+                " " + info if info else "")
         elif candidates and error is None:
             data, problem, worked = _try_unlock_pdf(target, candidates)
             if data:
@@ -6511,6 +6705,9 @@ def unlock_attachment(kind, item_id, filename):
         filename=filename, hint=hint, plan=plan, reading=describe_password_plan(plan),
         plan_json=json.dumps(plan["raw"], indent=2) if plan.get("raw") else "",
         field_labels=PW_FIELD_LABELS, values=values, error=error,
+        choices=[{"id": a["id"], "text": _account_text(a), "matched": a["id"] in {m["id"] for m in matched},
+                  **_account_values(a)} for a in matched + others],
+        matched_count=len(matched), account_choice=account_choice, accounts_url=url_for("bank_accounts_page"),
         show_generated=SHOW_GENERATED_PASSWORDS, generated=generated, worked=worked, info=info,
         manual_value=manual, unlock_available=PDF_UNLOCK_AVAILABLE, is_pdf=target.suffix.lower() == ".pdf",
         raw_url=url_for("raw_attachment", kind=kind, item_id=item_id, filename=filename),

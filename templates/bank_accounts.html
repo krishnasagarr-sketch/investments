@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Bank Accounts — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('banks_page') }}" class="btn secondary">Banks</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">{% if form_data.id %}Edit bank account{% else %}Add a bank account{% endif %}</h2>
+    <p class="field-hint" style="margin:0 0 14px;">
+      The name and PAN <em>this bank</em> has on file. They can differ from bank to bank, so each account keeps
+      its own. They're used to fill in the details a protected statement's password is built from.
+    </p>
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    {% if not banks %}
+      <div class="empty-state"><p>Add a bank on the <a href="{{ url_for('banks_page') }}">Banks</a> page first.</p></div>
+    {% else %}
+    <form method="POST" action="{{ url_for('bank_accounts_page') }}">
+      <input type="hidden" name="id" value="{{ form_data.id }}">
+      <div class="form-group">
+        <label for="bank_ref_id">Bank</label>
+        <select id="bank_ref_id" name="bank_ref_id" required>
+          <option value="">Choose…</option>
+          {% for b in banks %}
+            <option value="{{ b.id }}" {% if form_data.bank_ref_id == b.id|string %}selected{% endif %}>{{ b.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="depositor_id">Depositor <span class="muted">(optional)</span></label>
+        <select id="depositor_id" name="depositor_id">
+          <option value="">—</option>
+          {% for d in depositors %}
+            <option value="{{ d.id }}" {% if form_data.depositor_id == d.id|string %}selected{% endif %}>{{ d.name }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint" style="margin:4px 0 0;">Picks this account for that depositor's deposits at the bank.</p>
+      </div>
+      <div class="form-group">
+        <label for="account_label">Account number / label <span class="muted">(optional)</span></label>
+        <input type="text" id="account_label" name="account_label" placeholder="e.g. last 4 digits, or Savings"
+               value="{{ form_data.account_label }}" autocomplete="off">
+        <p class="field-hint" style="margin:4px 0 0;">If it appears in a deposit's number, that deposit's statements use this account.</p>
+      </div>
+      <div class="form-group">
+        <label for="first_name">First name</label>
+        <input type="text" id="first_name" name="first_name" value="{{ form_data.first_name }}" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="last_name">Last name</label>
+        <input type="text" id="last_name" name="last_name" value="{{ form_data.last_name }}" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="pan">PAN</label>
+        <input type="text" id="pan" name="pan" maxlength="10" value="{{ form_data.pan }}" autocomplete="off"
+               style="text-transform:uppercase;" placeholder="ABCDE1234F">
+      </div>
+      <button type="submit" class="btn" style="width:100%;">{% if form_data.id %}Save changes{% else %}Add bank account{% endif %}</button>
+      {% if form_data.id %}
+        <a href="{{ url_for('bank_accounts_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center; display:block; box-sizing:border-box;">Cancel</a>
+      {% endif %}
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    {% if accounts %}
+      <div class="table-scroll sticky-last">
+      <table>
+        <thead>
+          <tr>
+            <th>Bank</th>
+            <th>Depositor</th>
+            <th>Account</th>
+            <th>First name</th>
+            <th>Last name</th>
+            <th>PAN</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in accounts %}
+          <tr>
+            <td><strong>{{ a.bank_name }}</strong></td>
+            <td>{{ a.depositor_name or "—" }}</td>
+            <td>{{ a.account_label or "—" }}</td>
+            <td>{{ a.first_name or "—" }}</td>
+            <td>{{ a.last_name or "—" }}</td>
+            <td>{{ (a.pan|mask_pan) or "—" }}</td>
+            <td>
+              <a href="{{ url_for('bank_accounts_page', edit=a.id) }}" class="btn secondary">Edit</a>
+              <form class="inline" method="POST" action="{{ url_for('delete_bank_account', account_id=a.id) }}">
+                <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <p class="field-hint" style="margin:12px 0 0;">
+        Stored as plain text in this app's local database, like the rest of your data — and so included in
+        any backup of it. The PAN is masked here; Edit shows it in full.
+      </p>
+    {% else %}
+      <div class="empty-state">
+        <p>No bank accounts yet. Add one above.</p>
+      </div>
+    {% endif %}
+  </div>
+
+{% endblock %}

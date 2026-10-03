@@ -104,11 +104,34 @@
       <form method="POST" style="margin-bottom:16px;">
         {% for f in plan.fields %}<input type="hidden" name="{{ f }}" value="{{ values[f] }}">{% endfor %}
         <input type="hidden" name="manual_password" value="{{ manual_value }}">
+        <input type="hidden" name="account" value="{{ account_choice }}">
         <input type="hidden" name="open" value="1">
         <button type="submit" class="btn" style="width:100%;">Open the PDF now</button>
       </form>
     {% endif %}
     <form method="POST">
+      {% set uses_account = plan.fields|select("in", ["first_name", "last_name", "pan", "name"])|list %}
+      {% if uses_account %}
+        <div class="form-group">
+          <label for="account">Saved bank account</label>
+          <select id="account" name="account">
+            <option value="">{% if choices %}Type the details in…{% else %}None saved yet{% endif %}</option>
+            {% if matched_count > 1 %}
+              <option value="all" {% if account_choice == "all" %}selected{% endif %}>Try every matching account ({{ matched_count }})</option>
+            {% endif %}
+            {% for c in choices %}
+              <option value="{{ c.id }}" data-first="{{ c.first_name }}" data-last="{{ c.last_name }}"
+                      data-pan="{{ c.pan }}" data-name="{{ c.name }}"
+                      {% if account_choice == c.id|string %}selected{% endif %}>{{ c.text }}{% if not c.matched %} — other bank{% endif %}</option>
+            {% endfor %}
+          </select>
+          <p class="field-hint" style="margin:4px 0 0;">
+            {% if account_choice == "all" %}Each matching account's name and PAN is tried — only the date of birth is needed.
+            {% else %}Pick the account this statement is from to fill in its name and PAN.{% endif %}
+            <a href="{{ accounts_url }}">Manage bank accounts</a>
+          </p>
+        </div>
+      {% endif %}
       {% for f in plan.fields %}
         <div class="form-group">
           <label for="{{ f }}">{{ field_labels[f] }}</label>
@@ -135,6 +158,21 @@
         never written to disk (the saved file stays encrypted, exactly as the bank sent it).
       </p>
     </form>
+    <script>
+      (function () {
+        var sel = document.getElementById("account");
+        if (!sel) return;
+        var map = {first: "first_name", last: "last_name", pan: "pan", name: "name"};
+        sel.addEventListener("change", function () {
+          var o = sel.options[sel.selectedIndex];
+          if (!o || !o.dataset.pan && !o.dataset.first && !o.dataset.last) return;
+          Object.keys(map).forEach(function (k) {
+            var el = document.getElementById(map[k]);
+            if (el) el.value = o.dataset[k] || "";
+          });
+        });
+      })();
+    </script>
     <p class="field-hint" style="margin:12px 0 0;">
       Rather use your own PDF viewer? <a href="{{ raw_url }}">Open the file as saved</a>.
     </p>
