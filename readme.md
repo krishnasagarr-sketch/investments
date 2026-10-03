@@ -262,11 +262,13 @@ assembles the password, decrypts the PDF, and opens it.
   folder), the unlock page sends the bank's email text (Mail Scan keeps up to 8,000 characters of the
   body of any email that carried an attachment; other attachments use their saved password note) to
   Claude Haiku with a JSON-schema structured output and gets back, in order, which details make
-  up the password — `{"fields": [{"type": "date_of_birth", "start_index": 0, "end_index": 4},
-  {"type": "first_name", "start_index": 0, "end_index": 3}]}` (types: `date_of_birth`, `first_name`,
-  `last_name`, `pan`; slices are 0-based, end exclusive; a date of birth is `DDMMYYYY`). Haiku only
-  ever sees that email text — **never the password and never the name/date of birth/PAN you type
-  in**; plain Python slices those details per the JSON, joins them, and tries the result on the
+  up the password — `{"fields": [{"type": "date_of_birth", "date_format": "DDMM"},
+  {"type": "first_name", "start_index": 0, "end_index": 3}]}`. A `date_of_birth` entry carries the
+  layout to write the date in (`DDMMYYYY`, `DDMMYY`, `DDMM`, `YYYY`, `MMYYYY`, …); `first_name`,
+  `last_name` and `pan` entries are 0-based slices, end exclusive (a negative start counts from the
+  end, so "last 3 letters" is `-3..99`). Haiku only ever sees that email text — **never the
+  password and never the name/date of birth/PAN you type in**; plain Python formats and slices
+  those details per the JSON, joins them, and tries the result on the
   PDF. Capitalisation isn't in the JSON: "capital letters"/"lowercase" in the text decides it,
   otherwise upper, lower and as-typed are all tried. Without a key, the `anthropic` package, or a
   working connection, the built-in regex reader takes over and the page says why. `.env` is
