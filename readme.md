@@ -458,15 +458,7 @@ at the same bank pay into the same account.
 Scans the Gmail inbox already set up on the Notifications tab (same App Password, read over
 IMAP instead of used to send) — and, **one by one, the mailbox of every [bank account](#attachments)
 that has an email and app password saved** — for bank-transaction-looking emails, so interest
-credits and new FD bookings don't have to be typed in by hand. Each distinct address is scanned
-once (an account whose email is the Notifications one just shares that scan); one mailbox failing —
-a stale app password, say — is reported without stopping the others; and an email is tied to the
-bank account whose bank sent it (when exactly one account of that mailbox matches — otherwise it's
-left untied and the unlock page offers every account at that bank). Emails from an account's own
-mailbox are kept under their own Message-ID namespace, so the same Message-ID turning up in two
-mailboxes counts as two emails, while a transaction seen in both is still queued only once. The
-host comes from the address (Gmail by default; Outlook/Hotmail, Yahoo and iCloud addresses use their
-own IMAP servers — only Gmail has been exercised for real). This is a generic keyword/regex heuristic, not a
+credits and new FD bookings don't have to be typed in by hand. This is a generic keyword/regex heuristic, not a
 per-bank parser — bank alert wording varies a lot and isn't standardised the way a statement
 file is, so expect it to occasionally miss a real email or flag something irrelevant. **Only the
 email's own text is scanned for transactions — attachments aren't read yet**, since parsing a
@@ -482,6 +474,27 @@ nothing like the bank's own website. The Mail Scan tab shows how many have been 
 and exactly where, plus a **Saved attachments** list grouped by the email each one came from
 (subject, sender, date) with a **View** link per file — a PDF opens inline in a new tab, a
 CSV/Excel file downloads, the same as either would from any other site.
+
+How a scan stays cheap and duplicate-free: each distinct address is scanned **once** (compared
+case-insensitively; an account whose email is the Notifications one just shares that scan), and
+within a scan only each email's Message-ID *header* is fetched first, in batches — mail already
+handled is skipped without downloading it, so a repeat scan downloads nothing new. An email's
+Message-ID is its identity everywhere, so the same email reaching two mailboxes is one email (read
+from the account's own mailbox, which is scanned before the Notifications one), and a transaction
+seen twice is still queued once. One mailbox failing — a stale app password, say — is reported
+without stopping the others. The host comes from the address (Gmail by default; Outlook/Hotmail,
+Yahoo and iCloud addresses use their own IMAP servers — only Gmail has been exercised for real).
+
+**Which bank account an email belongs to.** For each email with a saved attachment the sender's
+bank narrows the candidates; if that leaves one account, that's it. Otherwise the email's text is
+checked against each candidate's account number/label (also masked, like `XXXX1234` or "ending
+1234"), customer ID, PAN, first and last name, and depositor name, and an account wins only on real
+evidence with a clear lead over the runner-up — an unrecognised sender is only assumed to belong to
+the sole account of an account's own mailbox. Whatever the matcher can't settle is left
+**unsorted**: under *Saved attachments* each email has a **Bank account** picker (choose an account,
+*None of these*, or *Match automatically* to hand it back), a manual choice is remembered and never
+overridden, and **Match them to accounts** re-runs the matcher over unsorted emails (handy after
+adding an account). The unlock page pre-selects the account an email was sorted into.
 
 If the email itself says how to open a password-protected attachment — banks routinely spell
 this out ("the password is your PAN in capital letters") — that sentence is picked up

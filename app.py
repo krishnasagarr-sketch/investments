@@ -620,6 +620,11 @@ def init_db():
         conn.execute("ALTER TABLE processed_emails ADD COLUMN source_email TEXT NOT NULL DEFAULT ''")
     if "bank_account_id" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
         conn.execute("ALTER TABLE processed_emails ADD COLUMN bank_account_id INTEGER")
+    if "account_match" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
+        # Why bank_account_id was set: a reason from the automatic matcher,
+        # or "manual" (a person chose -- including "none" -- and a re-match
+        # must leave it alone).
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN account_match TEXT NOT NULL DEFAULT ''")
     if "attachments_checked" not in {r[1] for r in conn.execute("PRAGMA table_info(processed_emails)")}:
         # Defaults to 0 for every row that already exists -- i.e. every email
         # scanned before attachment-saving existed at all -- so the very next
@@ -4276,6 +4281,7 @@ MAIL_SCAN_DATE_RE = re.compile(
 MAIL_SCAN_ACCOUNT_RE = re.compile(
     r"(?:a/?c|account|fd)\s*(?:no\.?|number)?\s*[:\-]?\s*([Xx*]{2,}\d{2,}|\d{6,})", re.IGNORECASE
 )
+MAIL_SCAN_HEADER_BATCH = 200  # emails per header-only fetch (see _scan_one_mailbox)
 MAIL_BODY_STORE_CHARS = 8000  # per email, only for emails that carry an attachment
 MAIL_SCAN_PASSWORD_RE = re.compile(r"\b(password|passcode|pin code)\b", re.IGNORECASE)
 
@@ -4548,49 +4554,124 @@ def _imap_connect(sender_email: str, app_password: str):
 
 
 def _mailboxes_to_scan(db) -> list:
-    """Every mailbox a scan covers, each once: the Notifications one, then one
-    per distinct email address saved on a bank account (that has an app
-    password). Each carries `account_ids` -- the bank accounts using that
-    address -- and a `tag` that namespaces its emails' Message-IDs (the
-    Notifications mailbox keeps the bare ID, as before) so the same
-    Message-ID arriving in two mailboxes isn't mistaken for one email."""
+    """Every mailbox a scan covers, each address exactly once (compared
+    case-insensitively): one per distinct email saved on a bank account (that
+    has an app password), then the Notifications one. Each carries
+    `account_ids` -- the bank accounts using that address -- and `primary`
+    (the Notifications mailbox, which receives all sorts of mail rather than
+    being an account's own). Account mailboxes go first so an email that
+    reached both is read, and attributed, from the account's own copy."""
     settings = get_notification_settings(db)
     primary = (settings.get("sender_email") or "").strip()
-    boxes = []
-    if primary and settings.get("sender_app_password"):
-        boxes.append({"email": primary, "password": settings["sender_app_password"], "tag": "", "account_ids": []})
     groups = {}
     for a in db.execute("SELECT id, email, app_password FROM bank_accounts WHERE email != '' ORDER BY id"):
         g = groups.setdefault(a["email"].strip().lower(), {"email": a["email"].strip(), "password": "", "ids": []})
         g["ids"].append(a["id"])
         g["password"] = g["password"] or a["app_password"]
+    boxes = []
+    primary_box = None
+    if primary and settings.get("sender_app_password"):
+        primary_box = {"email": primary, "password": settings["sender_app_password"], "primary": True,
+                       "account_ids": groups.get(primary.lower(), {}).get("ids", [])}
     for addr, g in groups.items():
-        shared = next((b for b in boxes if b["email"].lower() == addr), None)
-        if shared:
-            shared["account_ids"] += g["ids"]
-        elif g["password"]:
-            boxes.append({"email": g["email"], "password": g["password"],
-                          "tag": hashlib.sha1(addr.encode("utf-8")).hexdigest()[:6], "account_ids": g["ids"]})
+        if addr == primary.lower():
+            continue  # the same address: one scan, covered by the Notifications mailbox
+        if g["password"]:
+            boxes.append({"email": g["email"], "password": g["password"], "primary": False, "account_ids": g["ids"]})
+    if primary_box:
+        boxes.append(primary_box)
     return boxes
 
 
-def _bank_account_for_email(db, mailbox: dict, from_addr: str):
-    """Which of a mailbox's bank accounts an email belongs to: the one whose
-    bank matches the sender's, if exactly one does; with an unrecognisable
-    sender, the mailbox's only account. Otherwise None (ambiguous)."""
-    ids = mailbox["account_ids"]
-    if not ids:
-        return None
-    marks = ",".join("?" * len(ids))
-    accounts = db.execute(f"SELECT id, bank_ref_id FROM bank_accounts WHERE id IN ({marks})", ids).fetchall()
-    bank_ids = _bank_ids_for_sender(from_addr, db)
+def _word_in(text: str, word: str) -> bool:
+    return bool(re.search(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", text, re.I))
+
+
+def _account_evidence(a, text: str, own: bool):
+    """(points, reasons) for how strongly an email's text points at one bank
+    account: its account number/label, customer ID or PAN appearing (5 each),
+    both first and last name appearing (3; one of them, 1), the depositor's
+    name (1), and the email having arrived in that account's own mailbox (1)."""
+    pts, why = 0, []
+    label = (a["account_label"] or "").strip()
+    if label:
+        digits = re.sub(r"\D", "", label)
+        if len(label) >= 4 and re.search(r"(?<![A-Za-z0-9])" + re.escape(label) + r"(?![A-Za-z0-9])", text, re.I):
+            pts += 5; why.append(f"account {label}")
+        elif len(digits) >= 4 and re.search(          # masked: XXXX1234, ****1234, "ending 1234"
+                r"(?:[Xx*•]{2,}[\s-]*|ending(?:\s+(?:in|with))?\s+)" + digits[-4:] + r"(?!\d)", text):
+            pts += 5; why.append(f"account ending {digits[-4:]}")
+    cid = (a["customer_id"] or "").strip()
+    if len(cid) >= 4 and re.search(r"(?<![A-Za-z0-9])" + re.escape(cid) + r"(?![A-Za-z0-9])", text, re.I):
+        pts += 5; why.append("customer ID")
+    if a["pan"] and a["pan"] in text.upper():
+        pts += 5; why.append("PAN")
+    first, last = (a["first_name"] or "").strip(), (a["last_name"] or "").strip()
+    has_first, has_last = len(first) >= 3 and _word_in(text, first), len(last) >= 3 and _word_in(text, last)
+    if has_first and has_last:
+        pts += 3; why.append(f"name {first} {last}")
+    elif has_first or has_last:
+        pts += 1; why.append(f"name {first if has_first else last}")
+    dep = (a["depositor_name"] or "").strip()
+    if len(dep) >= 3 and _word_in(text, dep):
+        pts += 1; why.append(f"depositor {dep}")
+    if own:
+        pts += 1
+    return pts, why
+
+
+def match_bank_account(db, source_email: str, from_addr: str, text: str, dedicated: bool):
+    """Works out which bank account an email belongs to -> (account_id,
+    reason), or (None, "") when it can't tell (a person then sorts it).
+    The sender's bank narrows the candidates; if that leaves one account,
+    that's it. Otherwise the email's text is checked for each candidate's
+    account number, customer ID, PAN and name (see _account_evidence), and
+    the best account wins only with real evidence (3+ points) and a clear
+    lead (2+) over the runner-up. `dedicated` is True for an account's own
+    mailbox, False for the Notifications one -- so an unrecognised sender is
+    only assumed to belong to a mailbox's sole account in the former."""
+    accounts = list_bank_accounts(db)
+    if not accounts:
+        return None, ""
+    src = (source_email or "").strip().lower()
+    own_ids = {a["id"] for a in accounts if (a["email"] or "").strip().lower() == src and src}
+    bank_ids = _bank_ids_for_sender(from_addr or "", db)
     if bank_ids:
-        hits = [a["id"] for a in accounts if a["bank_ref_id"] in bank_ids]
-        return hits[0] if len(hits) == 1 else None
-    # An unrecognisable sender is only assumed to belong to the mailbox's sole
-    # account when that mailbox is the account's own -- not the general
-    # Notifications one, which gets all sorts of mail.
-    return accounts[0]["id"] if len(accounts) == 1 and mailbox["tag"] else None
+        pool = [a for a in accounts if a["bank_ref_id"] in bank_ids]
+    else:
+        pool = [a for a in accounts if a["id"] in own_ids] if dedicated else accounts
+    if not pool:
+        return None, ""
+    if len(pool) == 1 and (bank_ids or dedicated):
+        a = pool[0]
+        return a["id"], (f"only account at {a['bank_name']}" if bank_ids else "only account for this mailbox")
+    scored = sorted(((*_account_evidence(a, text, a["id"] in own_ids), a) for a in pool), key=lambda x: -x[0])
+    top = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0
+    if top[0] >= 3 and top[0] >= runner_up + 2:
+        return top[2]["id"], "matched by " + ", ".join(top[1] or ["this mailbox"])
+    return None, ""
+
+
+def rematch_unassigned_emails(db) -> int:
+    """Re-runs the matcher over saved-attachment emails that have no bank
+    account yet (e.g. after adding an account), leaving manual choices alone.
+    Returns how many it assigned."""
+    notif = (get_notification_settings(db).get("sender_email") or "").strip().lower()
+    assigned = 0
+    rows = db.execute(
+        "SELECT * FROM processed_emails WHERE attachments_saved > 0 AND bank_account_id IS NULL AND account_match != 'manual'"
+    ).fetchall()
+    for r in rows:
+        src = (r["source_email"] or "").strip().lower()
+        account_id, why = match_bank_account(db, src, r["from_addr"], f"{r['subject']}\n{r['body_text']}",
+                                             dedicated=bool(src) and src != notif)
+        if account_id:
+            db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = ? WHERE id = ?",
+                       (account_id, why, r["id"]))
+            assigned += 1
+    db.commit()
+    return assigned
 
 
 def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> dict:
@@ -4620,6 +4701,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
     queued = 0
     drafted = 0
     attachments_saved = 0
+    skipped_known = 0
     try:
         conn.select("INBOX", readonly=True)
         since = (date.today() - timedelta(days=days_back)).strftime("%d-%b-%Y")
@@ -4630,7 +4712,35 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
         if len(uids) > MAIL_SCAN_MAX_EMAILS:
             uids = uids[-MAIL_SCAN_MAX_EMAILS:]  # newest N within the window, not oldest
 
-        for uid in uids:
+        # Cheap first pass: fetch only each email's Message-ID header (in
+        # batches), so mail already handled is skipped without downloading it.
+        known = {r["message_id"]: r["attachments_checked"]
+                 for r in db.execute("SELECT message_id, attachments_checked FROM processed_emails")}
+        to_fetch = []
+        for i in range(0, len(uids), MAIL_SCAN_HEADER_BATCH):
+            chunk = uids[i:i + MAIL_SCAN_HEADER_BATCH]
+            status, headers = conn.fetch(b",".join(chunk).decode(), "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+            if status != "OK":
+                to_fetch += chunk  # can't pre-check this batch: fall back to fetching it in full
+                continue
+            ids = {}
+            for item in headers:
+                if isinstance(item, tuple):
+                    m = re.match(rb"\s*(\d+)\s", item[0])
+                    if m:
+                        ids[m.group(1)] = (email.message_from_bytes(item[1]).get("Message-ID") or "").strip()
+            for uid in chunk:
+                mid = ids.get(uid)
+                if mid is None:
+                    to_fetch.append(uid)       # header not understood: fetch in full to be safe
+                elif not mid:
+                    continue                    # no Message-ID: can't be tracked (never was)
+                elif known.get(mid):
+                    skipped_known += 1          # fully handled before: no need to download it
+                else:
+                    to_fetch.append(uid)
+
+        for uid in to_fetch:
             status, msg_data = conn.fetch(uid, "(RFC822)")
             if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
                 continue
@@ -4638,8 +4748,6 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
             message_id = (msg.get("Message-ID") or "").strip()
             if not message_id:
                 continue
-            if mailbox["tag"]:
-                message_id = f"{mailbox['tag']}:{message_id}"
 
             existing = db.execute(
                 "SELECT * FROM processed_emails WHERE message_id = ?", (message_id,)
@@ -4731,16 +4839,20 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                     )
                     drafted += 1
 
+            account_id, account_why = (None, "")
+            if saved_files:
+                account_id, account_why = match_bank_account(
+                    db, mailbox["email"], from_addr, f"{subject}\n{body}", dedicated=not mailbox["primary"])
             cur = db.execute(
                 """INSERT INTO processed_emails
                    (message_id, mailbox, subject, from_addr, received_date, processed_at, status,
                     attachments_saved, attachments_dir, attachments_checked, body_text,
-                    source_email, bank_account_id)
-                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                    source_email, bank_account_id, account_match)
+                   VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status,
                  len(saved_files), _safe_message_id_folder(message_id) if saved_files else "",
                  body[:MAIL_BODY_STORE_CHARS] if saved_files else "",
-                 mailbox["email"], _bank_account_for_email(db, mailbox, from_addr)),
+                 mailbox["email"], account_id, account_why),
             )
             if saved_files:
                 hint = _extract_password_hint_from_text(f"{subject}\n{body}")
@@ -4756,7 +4868,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
             pass
     return {
         "scanned": scanned, "rechecked": rechecked, "queued": queued, "drafted": drafted,
-        "attachments_saved": attachments_saved,
+        "attachments_saved": attachments_saved, "skipped_known": skipped_known,
     }
 
 
@@ -4774,14 +4886,14 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
         )
     already_known = {r["dedupe_key"] for r in db.execute("SELECT dedupe_key FROM scanned_transactions").fetchall()}
     total = {"scanned": 0, "rechecked": 0, "queued": 0, "drafted": 0, "attachments_saved": 0,
-             "mailboxes": [], "errors": []}
+             "skipped_known": 0, "mailboxes": [], "errors": []}
     for mb in mailboxes:
         try:
             r = _scan_one_mailbox(db, mb, days_back, already_known)
         except RuntimeError as e:
             total["errors"].append(f"{mb['email']}: {e}")
             continue
-        for k in ("scanned", "rechecked", "queued", "drafted", "attachments_saved"):
+        for k in ("scanned", "rechecked", "queued", "drafted", "attachments_saved", "skipped_known"):
             total[k] += r[k]
         total["mailboxes"].append({"email": mb["email"], **r})
     if not total["mailboxes"]:
@@ -4827,6 +4939,8 @@ def list_saved_attachments(db) -> list:
             "subject": email_row["subject"] if email_row else "(email no longer on record)",
             "from_addr": email_row["from_addr"] if email_row else "",
             "source_email": email_row["source_email"] if email_row else "",
+            "account_id": email_row["bank_account_id"] if email_row else None,
+            "account_match": email_row["account_match"] if email_row else "",
             "received_date": email_row["received_date"] if email_row else "",
             "mtime": max(f.stat().st_mtime for f in files),
             "files": [
@@ -4860,6 +4974,40 @@ def view_mail_attachment(folder, filename):
     return send_file(target, as_attachment=False)
 
 
+@app.route("/mail-scan/emails/<int:email_id>/account", methods=["POST"])
+def set_mail_email_account(email_id):
+    """Sorts an email into a bank account by hand: a specific account, "none"
+    (deliberately unassigned), or "auto" to let the matcher try again. A
+    manual choice is remembered and never overridden by a later re-match."""
+    db = get_db()
+    row = db.execute("SELECT * FROM processed_emails WHERE id = ?", (email_id,)).fetchone()
+    choice = request.form.get("account", "")
+    if row and choice == "none":
+        db.execute("UPDATE processed_emails SET bank_account_id = NULL, account_match = 'manual' WHERE id = ?", (email_id,))
+    elif row and choice == "auto":
+        notif = (get_notification_settings(db).get("sender_email") or "").strip().lower()
+        src = (row["source_email"] or "").strip().lower()
+        account_id, why = match_bank_account(db, src, row["from_addr"], f"{row['subject']}\n{row['body_text']}",
+                                             dedicated=bool(src) and src != notif)
+        db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = ? WHERE id = ?",
+                   (account_id, why, email_id))
+    elif row and choice.isdigit() and db.execute("SELECT 1 FROM bank_accounts WHERE id = ?", (int(choice),)).fetchone():
+        db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = 'manual' WHERE id = ?",
+                   (int(choice), email_id))
+    db.commit()
+    return redirect(url_for("mail_scan_page") + "#attachments")
+
+
+@app.route("/mail-scan/rematch", methods=["POST"])
+def rematch_mail_accounts():
+    n = rematch_unassigned_emails(get_db())
+    session["mail_scan_result"] = (
+        f"Matched {n} email(s) to a bank account." if n else
+        "No further emails could be matched automatically — pick an account by hand under Saved attachments."
+    )
+    return redirect(url_for("mail_scan_page"))
+
+
 @app.route("/mail-scan/attachments/<int:email_id>/<filename>/password", methods=["POST"])
 def update_mail_attachment_password(email_id, filename):
     """Edits the password hint on a Mail Scan attachment -- auto-extracted
@@ -4885,16 +5033,21 @@ def mail_scan_page():
     total_attachments = db.execute(
         "SELECT COALESCE(SUM(attachments_saved), 0) c FROM processed_emails"
     ).fetchone()["c"]
-    accounts_by_id = {a["id"]: a for a in list_bank_accounts(db)}
+    all_accounts = list_bank_accounts(db)
+    accounts_by_id = {a["id"]: a for a in all_accounts}
+    unassigned_count = db.execute(
+        "SELECT COUNT(*) c FROM processed_emails WHERE attachments_saved > 0 AND bank_account_id IS NULL"
+    ).fetchone()["c"]
     mailbox_rows = [
-        {"email": mb["email"], "primary": not mb["tag"],
+        {"email": mb["email"], "primary": mb["primary"],
          "accounts": [_account_text(accounts_by_id[i]) for i in mb["account_ids"] if i in accounts_by_id]}
         for mb in _mailboxes_to_scan(db)
     ]
     return render_template(
         "mail_scan.html", active_tab="mail_scan",
         mail_configured=bool(mailbox_rows),
-        mailbox_rows=mailbox_rows,
+        mailbox_rows=mailbox_rows, unassigned_count=unassigned_count,
+        account_choices=[{"id": a["id"], "text": _account_text(a)} for a in all_accounts],
         pending=pending,
         depositors=list_depositors(db), banks=list_banks(db),
         scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
@@ -4923,6 +5076,8 @@ def run_mail_scan():
             message += f" Rechecked {result['rechecked']} older email(s) for attachments for the first time."
         if result["attachments_saved"]:
             message += f" Saved {result['attachments_saved']} attachment(s) for later processing."
+        if result["skipped_known"]:
+            message += f" {result['skipped_known']} email(s) already handled were skipped without being downloaded."
         if len(result["mailboxes"]) > 1:
             message += " By mailbox: " + "; ".join(
                 f"{m['email']} — {m['scanned']} new" for m in result["mailboxes"]) + "."

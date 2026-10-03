@@ -61,6 +61,12 @@
       <button type="submit" class="btn" style="width:100%;" {% if not mail_configured %}disabled{% endif %}>Scan Now</button>
     </form>
     <p class="field-hint" style="margin-top:12px; margin-bottom:0;">{{ scanned_count }} email(s) looked at so far, in total.</p>
+    {% if unassigned_count and account_choices %}
+      <form method="POST" action="{{ url_for('rematch_mail_accounts') }}" style="margin-top:8px;">
+        <p class="field-hint" style="margin:0 0 4px;">{{ unassigned_count }} email(s) with attachments aren't tied to a bank account yet.</p>
+        <button type="submit" class="btn secondary" style="font-size:13px;">Match them to accounts</button>
+      </form>
+    {% endif %}
     {% if total_attachments %}
       <p class="field-hint" style="margin-top:4px; margin-bottom:0;">
         {{ total_attachments }} attachment(s) saved for later processing in
@@ -138,7 +144,7 @@
   </div>
 
   <div class="card">
-    <h2 style="font-size:16px; margin:0 0 4px;">Saved attachments</h2>
+    <h2 id="attachments" style="font-size:16px; margin:0 0 4px;">Saved attachments</h2>
     <p class="field-hint" style="margin-bottom:16px;">
       Not parsed — just kept, one email per group, so nothing is lost before a future version can
       read them. <strong>View</strong> opens a file in a new tab (a PDF renders inline; a CSV/Excel
@@ -154,6 +160,24 @@
           <div class="muted" style="font-size:12px; margin-bottom:8px;">
             {{ g.from_addr }}{% if g.received_date %} · {{ g.received_date }}{% endif %}{% if g.source_email %} · via {{ g.source_email }}{% endif %}
           </div>
+          {% if g.email_id and account_choices %}
+            <form method="POST" action="{{ url_for('set_mail_email_account', email_id=g.email_id) }}"
+                  style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+              <label class="muted" style="font-size:12px;">Bank account</label>
+              <select name="account" style="font-size:13px; padding:5px 8px; max-width:280px;">
+                <option value="" {% if not g.account_id and g.account_match != "manual" %}selected{% endif %}>— not sorted yet —</option>
+                <option value="auto">Match automatically</option>
+                <option value="none" {% if not g.account_id and g.account_match == "manual" %}selected{% endif %}>None of these</option>
+                {% for c in account_choices %}
+                  <option value="{{ c.id }}" {% if g.account_id == c.id %}selected{% endif %}>{{ c.text }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;">Save</button>
+              <span class="muted" style="font-size:12px;">
+                {% if g.account_id %}{{ "set by you" if g.account_match == "manual" else g.account_match }}{% elif g.account_match == "manual" %}left unassigned by you{% else %}couldn't tell — pick one{% endif %}
+              </span>
+            </form>
+          {% endif %}
           {% for f in g.files %}
             <div style="margin-bottom:8px;">
               <a class="btn secondary" style="font-size:13px;"
