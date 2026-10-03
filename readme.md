@@ -63,6 +63,7 @@ if their library is missing (checked once at startup, never crashes a page):
 | Excel export (Deposits, Income & Expenditure statement) | `openpyxl` | Export Excel button is hidden |
 | Live stock/mutual fund prices (Investments) | `yfinance` | Investments tab shows a banner; holdings still list, just unpriced |
 | Unlocking password-protected PDF attachments | `pypdf` (+ `cryptography` for AES) | A protected PDF's unlock page says so and offers the file as saved |
+| Reading a bank's password instructions with Claude Haiku | `anthropic` + `ANTHROPIC_API_KEY` | The built-in regex reader is used instead |
 
 This matters most on Android/iOS builds, which install a smaller dependency set — see
 [Mobile builds](#mobile-builds).
@@ -256,6 +257,20 @@ assembles the password, decrypts the PDF, and opens it.
   and `cryptography` for AES-encrypted PDFs, which is most bank statements — see [Optional
   dependencies](#optional-dependencies). Works identically for [Mail Scan](#mail-scan--draft-deposits)'s
   saved attachments.
+- **Haiku reads the instructions; Python builds the password.** If `ANTHROPIC_API_KEY` is set
+  (environment variable, or a `.env` file next to `app.py` — in the packaged apps, in the app's data
+  folder), the unlock page sends the bank's email text (Mail Scan keeps up to 8,000 characters of the
+  body of any email that carried an attachment; other attachments use their saved password note) to
+  Claude Haiku with a JSON-schema structured output and gets back, in order, which details make
+  up the password — `{"fields": [{"type": "date_of_birth", "start_index": 0, "end_index": 4},
+  {"type": "first_name", "start_index": 0, "end_index": 3}]}` (types: `date_of_birth`, `first_name`,
+  `last_name`, `pan`; slices are 0-based, end exclusive; a date of birth is `DDMMYYYY`). Haiku only
+  ever sees that email text — **never the password and never the name/date of birth/PAN you type
+  in**; plain Python slices those details per the JSON, joins them, and tries the result on the
+  PDF. Capitalisation isn't in the JSON: "capital letters"/"lowercase" in the text decides it,
+  otherwise upper, lower and as-typed are all tried. Without a key, the `anthropic` package, or a
+  working connection, the built-in regex reader takes over and the page says why. `.env` is
+  git-ignored — keep your key out of the repository.
 - **Temporary testing mode.** While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
   in `app.py` makes the unlock page *display* the password(s) it built from your details (in the
   order tried, with the winner marked), offers a "show the generated password(s) only — don't

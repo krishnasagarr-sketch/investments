@@ -32,8 +32,8 @@
 
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Password note</h2>
-    {% if hint %}
-      <p style="margin:0 0 12px; font-style:italic;">“{{ hint }}”</p>
+    {% if hint or reading %}
+      {% if hint %}<p style="margin:0 0 12px; font-style:italic;">“{{ hint }}”</p>{% endif %}
       {% if reading %}
         <p class="field-hint" style="margin-bottom:0;">
           How that's read — the password is, in order:
@@ -41,6 +41,19 @@
         <ol style="margin:6px 0 0 18px; padding:0; font-size:14px;">
           {% for line in reading %}<li>{{ line }}</li>{% endfor %}
         </ol>
+        <p class="field-hint" style="margin:10px 0 0;">
+          {% if plan.source == "haiku" %}
+            Read by Claude Haiku from the {% if plan.from_body %}email{% else %}note{% endif %}. Haiku only sees that
+            text — never the details you type here, nor the password.
+          {% else %}
+            Read by the built-in reader{% if plan.ai_note %} (Claude Haiku wasn't used: {{ plan.ai_note }}){% endif %}.
+          {% endif %}
+        </p>
+        {% if show_generated and plan_json %}
+          <details style="margin-top:8px;"><summary class="field-hint" style="cursor:pointer;">Haiku's JSON (testing mode)</summary>
+            <pre style="font-size:12px; margin:6px 0 0; white-space:pre-wrap;">{{ plan_json }}</pre>
+          </details>
+        {% endif %}
       {% elif plan.literal %}
         <p class="field-hint" style="margin-bottom:0;">The note appears to state the password itself, so that's tried automatically.</p>
       {% else %}

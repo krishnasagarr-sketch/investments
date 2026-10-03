@@ -34,11 +34,11 @@ jobs:
 
       - name: Build Windows EXE
         if: runner.os == 'Windows'
-        run: pyinstaller --onefile --name FDManager --add-data "templates;templates" app.py
+        run: pyinstaller --onefile --name FDManager --collect-all anthropic --add-data "templates;templates" app.py
 
       - name: Build macOS app
         if: runner.os == 'macOS'
-        run: pyinstaller --windowed --name FDManager --add-data "templates:templates" app.py
+        run: pyinstaller --windowed --name FDManager --collect-all anthropic --add-data "templates:templates" app.py
 
       - name: Zip macOS app for upload
         if: runner.os == 'macOS'
