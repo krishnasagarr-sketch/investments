@@ -265,7 +265,7 @@ assembles the password, decrypts the PDF, and opens it.
   up the password — `{"fields": [{"type": "date_of_birth", "date_format": "DDMM"},
   {"type": "first_name", "start_index": 0, "end_index": 3}]}`. A `date_of_birth` entry carries the
   layout to write the date in (`DDMMYYYY`, `DDMMYY`, `DDMM`, `YYYY`, `MMYYYY`, …); `first_name`,
-  `last_name` and `pan` entries are 0-based slices, end exclusive (a negative start counts from the
+  `last_name`, `pan` and `customer_id` entries are 0-based slices, end exclusive (a negative start counts from the
   end, so "last 3 letters" is `-3..99`). Haiku only ever sees that email text — **never the
   password and never the name/date of birth/PAN you type in**; plain Python formats and slices
   those details per the JSON, joins them, and tries the result on the
@@ -273,14 +273,15 @@ assembles the password, decrypts the PDF, and opens it.
   otherwise upper, lower and as-typed are all tried. Without a key, the `anthropic` package, or a
   working connection, the built-in regex reader takes over and the page says why. `.env` is
   git-ignored — keep your key out of the repository.
-- **Bank Accounts — the name and PAN each bank has on file.** The **Bank Accounts** tab keeps a
-  first name, last name and PAN per bank account (bank, plus an optional depositor and account
-  number/label), because the name can differ from bank to bank. On the unlock page a **Saved bank
-  account** picker fills in those details: a deposit's attachment pre-selects the account at its
+- **Bank Accounts — the details each bank has on file.** The **Bank Accounts** tab keeps a
+  first name, last name, PAN, date of birth and customer ID per bank account (bank, plus an optional depositor and account
+  number/label), because the name (and the rest) can differ from bank to bank. On the unlock page a **Saved bank
+  account** picker fills in those details (with everything the note needs saved, nothing has to be typed): a deposit's attachment pre-selects the account at its
   bank (narrowed by its depositor, and by an account label that appears in the deposit number); a
   Mail Scan attachment matches by the sender's bank. Where several accounts match, **Try every
-  matching account** builds the password from each in turn, so only the date of birth is typed
-  (accounts missing a detail the note needs are skipped and listed). The PAN is masked in the list
+  matching account** builds the password from each in turn, using whatever you've typed for any
+  detail an account hasn't saved (accounts still missing one are skipped and listed). The PAN and
+  customer ID are masked in the list
   and stored, like everything else, as plain text in the local database — and so in its backups.
 - **Temporary testing mode.** While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
   in `app.py` makes the unlock page *display* the password(s) it built from your details (in the

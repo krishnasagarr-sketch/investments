@@ -10,8 +10,9 @@
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">{% if form_data.id %}Edit bank account{% else %}Add a bank account{% endif %}</h2>
     <p class="field-hint" style="margin:0 0 14px;">
-      The name and PAN <em>this bank</em> has on file. They can differ from bank to bank, so each account keeps
-      its own. They're used to fill in the details a protected statement's password is built from.
+      The name, PAN, date of birth and customer ID <em>this bank</em> has on file. They can differ from bank to
+      bank, so each account keeps its own. They're used to fill in the details a protected statement's
+      password is built from.
     </p>
     {% if error %}
       <div class="error-box">{{ error }}</div>
@@ -59,6 +60,14 @@
         <input type="text" id="pan" name="pan" maxlength="10" value="{{ form_data.pan }}" autocomplete="off"
                style="text-transform:uppercase;" placeholder="ABCDE1234F">
       </div>
+      <div class="form-group">
+        <label for="dob">Date of birth</label>
+        <input type="date" id="dob" name="dob" value="{{ form_data.dob }}" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="customer_id">Customer ID / CIF</label>
+        <input type="text" id="customer_id" name="customer_id" value="{{ form_data.customer_id }}" autocomplete="off">
+      </div>
       <button type="submit" class="btn" style="width:100%;">{% if form_data.id %}Save changes{% else %}Add bank account{% endif %}</button>
       {% if form_data.id %}
         <a href="{{ url_for('bank_accounts_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center; display:block; box-sizing:border-box;">Cancel</a>
@@ -79,6 +88,8 @@
             <th>First name</th>
             <th>Last name</th>
             <th>PAN</th>
+            <th>Date of birth</th>
+            <th>Customer ID</th>
             <th></th>
           </tr>
         </thead>
@@ -91,6 +102,8 @@
             <td>{{ a.first_name or "—" }}</td>
             <td>{{ a.last_name or "—" }}</td>
             <td>{{ (a.pan|mask_pan) or "—" }}</td>
+            <td>{{ a.dob or "—" }}</td>
+            <td>{{ (a.customer_id|mask_tail) or "—" }}</td>
             <td>
               <a href="{{ url_for('bank_accounts_page', edit=a.id) }}" class="btn secondary">Edit</a>
               <form class="inline" method="POST" action="{{ url_for('delete_bank_account', account_id=a.id) }}">
@@ -104,7 +117,7 @@
       </div>
       <p class="field-hint" style="margin:12px 0 0;">
         Stored as plain text in this app's local database, like the rest of your data — and so included in
-        any backup of it. The PAN is masked here; Edit shows it in full.
+        any backup of it. The PAN and customer ID are masked here; Edit shows them in full.
       </p>
     {% else %}
       <div class="empty-state">
