@@ -256,6 +256,12 @@ assembles the password, decrypts the PDF, and opens it.
   and `cryptography` for AES-encrypted PDFs, which is most bank statements — see [Optional
   dependencies](#optional-dependencies). Works identically for [Mail Scan](#mail-scan--draft-deposits)'s
   saved attachments.
+- **Temporary testing mode.** While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
+  in `app.py` makes the unlock page *display* the password(s) it built from your details (in the
+  order tried, with the winner marked), offers a "show the generated password(s) only — don't
+  open" preview, and waits for an **Open the PDF now** click after a successful unlock. This
+  puts a real secret on screen, so set it to `False` (or delete the flag) once signed off — the
+  page then goes back to unlocking and opening in one step with nothing shown.
 
 ## Metals & Market Prices
 

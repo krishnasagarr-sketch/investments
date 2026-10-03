@@ -5923,6 +5923,14 @@ def update_attachment_password(kind, item_id, filename):
 # Best-effort like the rest of this app's text reading: if the note can't be
 # read, or the guess is wrong, the page says so and takes the password
 # typed in directly.
+# TEMPORARY testing aid -- remove (or set False) once unlocking is signed off.
+# While True, the unlock page prints the password(s) it generated from the
+# details typed in, shows which one opened the file, and offers a "preview
+# only" button that builds them without opening anything, so the builder can
+# be checked by eye. This shows a real secret (e.g. a date of birth) on
+# screen, which is exactly why it's meant to be short-lived.
+SHOW_GENERATED_PASSWORDS = True
+
 PW_FIELD_LABELS = {
     "name": "Name as registered with the bank",
     "dob": "Date of birth",
@@ -6126,9 +6134,10 @@ def _pdf_is_encrypted(path: Path) -> bool:
 
 
 def _try_unlock_pdf(path: Path, passwords: list):
-    """Returns (decrypted_bytes, None) on success, (None, message) if the
-    environment can't decrypt it at all, or (None, None) if simply no
-    candidate worked. Entirely in memory -- nothing is written to disk."""
+    """Returns (decrypted_bytes, None, password_that_worked) on success,
+    (None, message, None) if the environment can't decrypt it at all, or
+    (None, None, None) if simply no candidate worked. Entirely in memory --
+    nothing is written to disk."""
     for pw in passwords:
         try:
             reader = PdfReader(str(path))
@@ -6139,12 +6148,12 @@ def _try_unlock_pdf(path: Path, passwords: list):
                 writer.add_page(page)
             buf = io.BytesIO()
             writer.write(buf)
-            return buf.getvalue(), None
+            return buf.getvalue(), None, pw
         except PyPdfDependencyError:
-            return None, "This PDF uses AES encryption, which needs the 'cryptography' package installed alongside the app."
+            return None, "This PDF uses AES encryption, which needs the 'cryptography' package installed alongside the app.", None
         except Exception:
             continue
-    return None, None
+    return None, None, None
 
 
 def _attachment_file_path(db, kind: str, item_id: int, filename: str):
@@ -6171,7 +6180,7 @@ def _serve_or_unlock(db, kind: str, item_id: int, filename: str, target: Path):
     the unlock page rather than leaving the browser's viewer to ask for a
     password with no idea how to build it."""
     if _pdf_is_encrypted(target):
-        data, _ = _try_unlock_pdf(target, [""])
+        data, _, _ = _try_unlock_pdf(target, [""])
         if data:
             return send_file(io.BytesIO(data), mimetype="application/pdf", download_name=filename, as_attachment=False)
         return redirect(url_for("unlock_attachment", kind=kind, item_id=item_id, filename=filename))
@@ -6200,31 +6209,45 @@ def unlock_attachment(kind, item_id, filename):
     values = {f: "" for f in PW_FIELD_LABELS}
     error = None
 
+    generated, worked, info, manual = [], None, None, ""
     if request.method == "POST":
         values = {f: request.form.get(f, "").strip() for f in PW_FIELD_LABELS}
         manual = request.form.get("manual_password", "")
+        preview = bool(request.form.get("preview")) and SHOW_GENERATED_PASSWORDS
         candidates = []
         if manual:
             candidates.append(manual)
+            generated.append({"pw": manual, "source": "typed directly"})
         if plan["components"]:
             missing = [PW_FIELD_LABELS[f] for f in plan["fields"] if not values[f]]
             if missing and not manual:
                 error = "Fill in: " + ", ".join(missing) + "."
             elif not missing:
                 try:
-                    candidates += build_password_candidates(plan, values)
+                    built = build_password_candidates(plan, values)
+                    candidates += built
+                    generated += [{"pw": b, "source": "built from the details"} for b in built]
                 except ValueError as e:
                     error = str(e)
         if plan["literal"]:
             candidates.append(plan["literal"])
-        if candidates and error is None:
-            data, problem = _try_unlock_pdf(target, candidates)
+            generated.append({"pw": plan["literal"], "source": "stated in the note"})
+        if preview and error is None:
+            info = "Preview only — these are the passwords that would be tried; nothing was opened."
+        elif candidates and error is None:
+            data, problem, worked = _try_unlock_pdf(target, candidates)
             if data:
-                return send_file(io.BytesIO(data), mimetype="application/pdf", download_name=filename, as_attachment=False)
-            error = problem or (
-                "None of the passwords built from those details opened the file. Check each detail, or the "
-                "reading of the note below, and try again — or type the password directly."
-            )
+                # Normally the PDF is the response. In testing mode a success
+                # first shows which password worked, then opens on request
+                # (the details are re-posted with open=1) -- the decrypted
+                # copy still only ever exists in memory.
+                if not SHOW_GENERATED_PASSWORDS or request.form.get("open") == "1":
+                    return send_file(io.BytesIO(data), mimetype="application/pdf", download_name=filename, as_attachment=False)
+            else:
+                error = problem or (
+                    "None of the passwords built from those details opened the file. Check each detail, or the "
+                    "reading of the note below, and try again — or type the password directly."
+                )
         elif not candidates and error is None:
             error = "Enter the password, or fill in the details asked for."
 
@@ -6232,7 +6255,8 @@ def unlock_attachment(kind, item_id, filename):
         "unlock_attachment.html", active_tab="mail_scan" if kind == "mail_scan" else "dashboard",
         filename=filename, hint=hint, plan=plan, reading=describe_password_plan(plan),
         field_labels=PW_FIELD_LABELS, values=values, error=error,
-        unlock_available=PDF_UNLOCK_AVAILABLE, is_pdf=target.suffix.lower() == ".pdf",
+        show_generated=SHOW_GENERATED_PASSWORDS, generated=generated, worked=worked, info=info,
+        manual_value=manual, unlock_available=PDF_UNLOCK_AVAILABLE, is_pdf=target.suffix.lower() == ".pdf",
         raw_url=url_for("raw_attachment", kind=kind, item_id=item_id, filename=filename),
         back_url=url_for("mail_scan_page") if kind == "mail_scan" else _attachments_page_url(kind, item_id),
     )

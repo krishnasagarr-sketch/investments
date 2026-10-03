@@ -59,8 +59,41 @@
 
   {% if is_pdf and unlock_available %}
   <div class="card" style="max-width:520px;">
+    {% if show_generated %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber);">
+        <strong>Testing mode:</strong> the password(s) generated from the details you enter are shown
+        on this page, so the builder can be checked by eye. This displays a real secret on screen and is
+        temporary — it will be switched off once unlocking has been fully tested.
+      </div>
+    {% endif %}
     {% if error %}
       <div class="error-box">{{ error }}</div>
+    {% endif %}
+    {% if info %}
+      <div class="error-box" style="background:#eef3f8; color:var(--accent);">{{ info }}</div>
+    {% endif %}
+    {% if show_generated and generated %}
+      <div style="border:1px dashed var(--border); border-radius:8px; padding:10px 12px; margin-bottom:14px;">
+        <div class="field-hint" style="margin:0 0 6px;"><strong>Generated password(s)</strong>, in the order they're tried:</div>
+        {% for g in generated %}
+          <div style="font-family:ui-monospace,Menlo,monospace; font-size:14px; padding:2px 0;">
+            {{ g.pw }}
+            <span class="muted" style="font-family:inherit; font-size:12px;">— {{ g.source }}</span>
+            {% if worked and g.pw == worked %}<span class="badge active">opened the file</span>{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% if show_generated and worked is not none %}
+      <div class="error-box" style="background:#eaf6ec; color:var(--green);">
+        That worked — the file is unlocked. It hasn't been opened yet; press the button below.
+      </div>
+      <form method="POST" style="margin-bottom:16px;">
+        {% for f in plan.fields %}<input type="hidden" name="{{ f }}" value="{{ values[f] }}">{% endfor %}
+        <input type="hidden" name="manual_password" value="{{ manual_value }}">
+        <input type="hidden" name="open" value="1">
+        <button type="submit" class="btn" style="width:100%;">Open the PDF now</button>
+      </form>
     {% endif %}
     <form method="POST">
       {% for f in plan.fields %}
@@ -78,7 +111,12 @@
         <label for="manual_password">{% if plan.fields %}Or type the password directly{% else %}Password{% endif %} <span class="muted">(optional)</span></label>
         <input type="password" id="manual_password" name="manual_password" autocomplete="off">
       </div>
-      <button type="submit" class="btn" style="width:100%;">Unlock &amp; open</button>
+      <button type="submit" class="btn" style="width:100%;">{% if show_generated %}Try it &amp; show the password{% else %}Unlock &amp; open{% endif %}</button>
+      {% if show_generated %}
+        <button type="submit" name="preview" value="1" class="btn secondary" style="width:100%; margin-top:8px;">
+          Show the generated password(s) only — don't open
+        </button>
+      {% endif %}
       <p class="field-hint" style="margin:10px 0 0;">
         What you enter is used only to open this file just now — it isn't saved, and the opened copy is
         never written to disk (the saved file stays encrypted, exactly as the bank sent it).
