@@ -54,7 +54,7 @@ proper `depositors`/`banks` records.
 
 ### Optional dependencies
 
-`requirements.txt` installs everything the desktop build uses. Two features degrade gracefully
+`requirements.txt` installs everything the desktop build uses. A few features degrade gracefully
 if their library is missing (checked once at startup, never crashes a page):
 
 | Feature | Library | If missing |
@@ -62,6 +62,7 @@ if their library is missing (checked once at startup, never crashes a page):
 | PDF export (TDS, DICGC, Income & Expenditure statement) | `fpdf2` | Export PDF button is hidden |
 | Excel export (Deposits, Income & Expenditure statement) | `openpyxl` | Export Excel button is hidden |
 | Live stock/mutual fund prices (Investments) | `yfinance` | Investments tab shows a banner; holdings still list, just unpriced |
+| Unlocking password-protected PDF attachments | `pypdf` (+ `cryptography` for AES) | A protected PDF's unlock page says so and offers the file as saved |
 
 This matters most on Android/iOS builds, which install a smaller dependency set — see
 [Mobile builds](#mobile-builds).
@@ -228,10 +229,33 @@ personal financial documents.
 
 Many bank-issued PDFs are password-protected (a PAN number, a date of birth, an account number),
 so each attachment has its own optional **password field** — set it at upload time or edit it
-later independently of the file itself. It's a plain note, not an actual unlock mechanism (the
-app never opens the file itself, your PDF viewer does), so either the real password or just the
-scheme works equally well, e.g. "PAN in capitals" or "DOB as DDMMYYYY" — whatever's enough to
-jog your memory next time.
+later independently of the file itself. Put in the bank's own wording, or the real password:
+either works.
+
+### Opening a protected PDF
+
+Clicking **View** on a password-protected PDF doesn't just hand it to your browser's viewer to
+ask for a password it can't work out — the app reads the password note and builds the password
+for you. A bank's note is usually a *recipe* ("first four letters of your name in capitals
+followed by your date of birth as DDMM"), so the unlock page shows how it read the note (here:
+1. first 4 letters of name in CAPITALS, 2. date of birth as DDMM) and asks for just the details
+that recipe needs — name, date of birth, PAN, registered mobile number, account number,
+customer ID/CIF, folio or Aadhaar — in the order the note gives them. Type them in, and it
+assembles the password, decrypts the PDF, and opens it.
+
+- Understands "first/last N letters/digits of …", date formats written as `DDMMYYYY`, `DDMM`,
+  `YYMM…` and so on (or "year of birth"), "in capitals"/"in lowercase" per part, and a password
+  stated outright in the note. Where the note leaves case or date format unstated it tries the
+  likely variants (e.g. a name in upper, lower and as typed; `DDMMYYYY` then `DDMMYY`).
+- If the note can't be read, or the guess is wrong, it says so and takes the password typed
+  directly; **Open the file as saved** hands over the untouched file for your own PDF viewer.
+- The details you type are used for that one request and **never stored**. The decrypted copy is
+  streamed to the browser and **never written to disk** — the saved file stays encrypted exactly
+  as the bank sent it. A PDF that's only "encrypted" to restrict printing opens straight away.
+- PDFs only (a protected Word/Excel file isn't unlocked, just shown with its note). Needs `pypdf`,
+  and `cryptography` for AES-encrypted PDFs, which is most bank statements — see [Optional
+  dependencies](#optional-dependencies). Works identically for [Mail Scan](#mail-scan--draft-deposits)'s
+  saved attachments.
 
 ## Metals & Market Prices
 

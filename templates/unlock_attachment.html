@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Unlock {{ filename }} — FD Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ back_url }}" class="btn secondary">← Back</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">🔒 {{ filename }}</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      This PDF is password-protected. Fill in what its password note asks for and it's opened for you.
+    </p>
+  </div>
+
+  {% if not is_pdf %}
+    <div class="card" style="max-width:520px;">
+      <div class="error-box" style="margin:0;">
+        Only PDFs can be unlocked here. <a href="{{ raw_url }}">Open the file as saved</a> and use the
+        password note below in whatever program opens it.
+      </div>
+    </div>
+  {% elif not unlock_available %}
+    <div class="card" style="max-width:520px;">
+      <div class="error-box" style="background:#fff2e0; color:var(--amber); margin:0;">
+        Unlocking isn't available in this build (it needs the <code>pypdf</code> package).
+        <a href="{{ raw_url }}">Open the file as saved</a> and enter the password yourself.
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="card" style="max-width:520px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Password note</h2>
+    {% if hint %}
+      <p style="margin:0 0 12px; font-style:italic;">“{{ hint }}”</p>
+      {% if reading %}
+        <p class="field-hint" style="margin-bottom:0;">
+          How that's read — the password is, in order:
+        </p>
+        <ol style="margin:6px 0 0 18px; padding:0; font-size:14px;">
+          {% for line in reading %}<li>{{ line }}</li>{% endfor %}
+        </ol>
+      {% elif plan.literal %}
+        <p class="field-hint" style="margin-bottom:0;">The note appears to state the password itself, so that's tried automatically.</p>
+      {% else %}
+        <p class="field-hint" style="margin-bottom:0;">
+          I couldn't recognise a pattern in that note, so there's nothing to build a password from —
+          type the password directly below.
+        </p>
+      {% endif %}
+    {% else %}
+      <p class="field-hint" style="margin-bottom:0;">
+        No password note saved for this file. Type the password directly below, or add a note on the
+        <a href="{{ back_url }}">attachments list</a> so it's remembered next time.
+      </p>
+    {% endif %}
+  </div>
+
+  {% if is_pdf and unlock_available %}
+  <div class="card" style="max-width:520px;">
+    {% if error %}
+      <div class="error-box">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      {% for f in plan.fields %}
+        <div class="form-group">
+          <label for="{{ f }}">{{ field_labels[f] }}</label>
+          {% if f == "dob" %}
+            <input type="date" id="dob" name="dob" value="{{ values.dob }}" autocomplete="off">
+          {% else %}
+            <input type="text" id="{{ f }}" name="{{ f }}" value="{{ values[f] }}" autocomplete="off"
+                   {% if f == "pan" %}maxlength="10" style="text-transform:uppercase;"{% endif %}>
+          {% endif %}
+        </div>
+      {% endfor %}
+      <div class="form-group">
+        <label for="manual_password">{% if plan.fields %}Or type the password directly{% else %}Password{% endif %} <span class="muted">(optional)</span></label>
+        <input type="password" id="manual_password" name="manual_password" autocomplete="off">
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Unlock &amp; open</button>
+      <p class="field-hint" style="margin:10px 0 0;">
+        What you enter is used only to open this file just now — it isn't saved, and the opened copy is
+        never written to disk (the saved file stays encrypted, exactly as the bank sent it).
+      </p>
+    </form>
+    <p class="field-hint" style="margin:12px 0 0;">
+      Rather use your own PDF viewer? <a href="{{ raw_url }}">Open the file as saved</a>.
+    </p>
+  </div>
+  {% endif %}
+
+{% endblock %}

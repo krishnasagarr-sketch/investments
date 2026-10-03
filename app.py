@@ -3,6 +3,7 @@ import email
 import html
 import imaplib
 import io
+import itertools
 import math
 import re
 import os
@@ -46,6 +47,19 @@ try:
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
+
+# Opening a password-protected PDF attachment (see the "Unlock a protected
+# attachment" section). pypdf is pure Python; AES-encrypted PDFs -- which is
+# most bank statements -- additionally need `cryptography`, which pypdf
+# raises DependencyError about if it's missing. Desktop-only, like fpdf2
+# above: not installed on the Android/iOS builds, where the unlock page just
+# says so and links to the raw file instead.
+try:
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.errors import DependencyError as PyPdfDependencyError
+    PDF_UNLOCK_AVAILABLE = True
+except ImportError:
+    PDF_UNLOCK_AVAILABLE = False
 
 IS_FROZEN = getattr(sys, "frozen", False)
 
@@ -4693,6 +4707,10 @@ def view_mail_attachment(folder, filename):
     target = (base / folder / filename).resolve()
     if not target.is_relative_to(base) or not target.is_file():
         return "Attachment not found.", 404
+    db = get_db()
+    row = db.execute("SELECT id FROM processed_emails WHERE attachments_dir = ?", (folder,)).fetchone()
+    if row:
+        return _serve_or_unlock(db, "mail_scan", row["id"], filename, target)
     return send_file(target, as_attachment=False)
 
 
@@ -5861,7 +5879,7 @@ def _serve_attachment(kind: str, item_id: int, filename: str):
     target = (base / filename).resolve()
     if not target.is_relative_to(base) or not target.is_file():
         return "Attachment not found.", 404
-    return send_file(target, as_attachment=False)
+    return _serve_or_unlock(get_db(), kind, item_id, filename, target)
 
 
 def _delete_attachment(db, kind: str, item_id: int, filename: str):
@@ -5888,6 +5906,336 @@ def update_attachment_password(kind, item_id, filename):
     db = get_db()
     set_attachment_password(db, kind, item_id, filename, request.form.get("password_hint", ""))
     return redirect(_attachments_page_url(kind, item_id))
+
+
+# ---------- Unlock a protected attachment ----------
+# Many bank PDFs are encrypted with a password the bank *describes* rather
+# than hands over: "first four letters of your name in capitals followed by
+# your date of birth as DDMM". The password note saved against an
+# attachment (by hand, or lifted from the email by Mail Scan) is usually
+# exactly that sentence. Opening such a file therefore reads the note,
+# works out which personal details it calls for and in what order, asks for
+# just those, assembles the password, and decrypts the PDF in memory.
+#
+# The details typed in are used for that one request and never stored; the
+# decrypted copy is streamed to the browser and never written to disk, so
+# the saved attachment stays encrypted at rest exactly as the bank sent it.
+# Best-effort like the rest of this app's text reading: if the note can't be
+# read, or the guess is wrong, the page says so and takes the password
+# typed in directly.
+PW_FIELD_LABELS = {
+    "name": "Name as registered with the bank",
+    "dob": "Date of birth",
+    "pan": "PAN",
+    "mobile": "Registered mobile number",
+    "account": "Account number",
+    "customer_id": "Customer ID / CIF",
+    "folio": "Folio number",
+    "aadhaar": "Aadhaar number",
+}
+_PW_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_PW_N = r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
+_PW_UPPER_RE = re.compile(r"capital|upper\s*-?\s*case|\bcaps\b|block (?:letters|capitals)", re.I)
+_PW_LOWER_RE = re.compile(r"lower\s*-?\s*case|small (?:letters|case)", re.I)
+_PW_DATE_FMT_RE = re.compile(r"\b[dmy]{2,4}(?:[/\-.]?[dmy]{2,4}){1,2}\b", re.I)
+_PW_DATE_FMT_OK = re.compile(r"(?:DD|MMM|MM|YYYY|YY|[/\-.])+")
+
+
+def _pw_digit_field_patterns(field: str, label: str) -> list:
+    """The three ways a note refers to a digits-based detail: "first/last N
+    digits of your <label>", "<label>'s last N digits", or just "<label>"."""
+    return [
+        (field, rf"\b(first|last)\s+{_PW_N}\s+(?:digits?|characters?|chars?)\s+of\s+(?:(?:your|the|registered)\s+)*{label}"),
+        (field, rf"\b{label}(?:'s)?\s*[,(]?\s*(first|last)\s+{_PW_N}\s+(?:digits?|characters?|chars?)"),
+        (field, rf"\b{label}"),
+    ]
+
+
+_PW_PATTERNS = (
+    [
+        ("name", rf"\b(first|last)\s+{_PW_N}\s+(?:letters?|characters?|chars?|alphabets?)\s+of\s+"
+                 rf"(?:(?:your|the|customer|registered|account\s*holder(?:'?s)?)\s+)*name\b"),
+        ("name", rf"\bname\b(?:'s)?\s*[,(]?\s*(first|last)\s+{_PW_N}\s+(?:letters?|characters?|chars?|alphabets?)"),
+        ("dob", r"\b(?:year of birth|birth year)\b"),
+        ("dob", r"\b(?:day and month|date and month|day & month|date & month) of birth\b"),
+        ("dob", r"\b(?:date of birth|d\.o\.b\.?|dob|birth\s*date|birthday)\b"),
+        ("pan", r"\bpan\b(?:\s*(?:card|number|no\.?))?"),
+    ]
+    + _pw_digit_field_patterns("mobile", r"(?:mobile|phone|cell|contact)(?:\s*(?:number|no\.?))?")
+    + _pw_digit_field_patterns("account", r"(?:account|a/c)(?!\s*holder)(?:\s*(?:number|no\.?))?")
+    + _pw_digit_field_patterns("customer_id", r"(?:customer\s*id|customer\s*number|cif(?:\s*(?:number|no\.?))?|client\s*id)")
+    + _pw_digit_field_patterns("folio", r"folio(?:\s*(?:number|no\.?))?")
+    + _pw_digit_field_patterns("aadhaar", r"(?:aadhaar|aadhar|uid)(?:\s*(?:number|no\.?))?")
+    + [("name", r"\bname\b")]
+)
+_PW_PATTERNS_COMPILED = [(f, re.compile(p, re.I)) for f, p in _PW_PATTERNS]
+
+
+def _pw_to_int(token: str):
+    return int(token) if token.isdigit() else _PW_NUMBER_WORDS.get(token.lower())
+
+
+def parse_password_hint(hint: str) -> dict:
+    """Reads a bank's password instruction into an ordered list of
+    components -- {field, where ("first"/"last"/None), n, fmt (for a date of
+    birth), case ("upper"/"lower"/None)} -- plus the distinct personal
+    details needed to fill them in. Position in the sentence is the order
+    they're concatenated in. A note with no recognisable details but an
+    explicit-looking literal ("password: Abc12345") yields that literal."""
+    found = []
+    for field, rx in _PW_PATTERNS_COMPILED:
+        for m in rx.finditer(hint):
+            comp = {"field": field, "start": m.start(), "end": m.end(), "where": None, "n": None, "fmt": None}
+            groups = [g for g in m.groups() if g]
+            if len(groups) >= 2 and groups[0].lower() in ("first", "last"):
+                comp["where"], comp["n"] = groups[0].lower(), _pw_to_int(groups[1])
+            text = m.group(0).lower()
+            if field == "dob":
+                if "year" in text:
+                    comp["fmt"] = "YYYY"
+                elif "month" in text:
+                    comp["fmt"] = "DDMM"
+            found.append(comp)
+
+    # Overlaps: earliest start wins, then the longer (more specific) match.
+    found.sort(key=lambda c: (c["start"], -(c["end"] - c["start"])))
+    comps, last_end = [], -1
+    for c in found:
+        if c["start"] >= last_end:
+            comps.append(c)
+            last_end = c["end"]
+
+    global_up, global_low = bool(_PW_UPPER_RE.search(hint)), bool(_PW_LOWER_RE.search(hint))
+    for i, c in enumerate(comps):
+        seg_end = comps[i + 1]["start"] if i + 1 < len(comps) else len(hint)
+        segment = hint[c["start"]:seg_end]
+        up, low = bool(_PW_UPPER_RE.search(segment)), bool(_PW_LOWER_RE.search(segment))
+        if not (up or low):
+            up, low = global_up, global_low
+        c["case"] = "upper" if up and not low else "lower" if low and not up else None
+        if c["field"] == "dob" and not c["fmt"]:
+            for scope in (segment, hint):
+                for m in _PW_DATE_FMT_RE.finditer(scope):
+                    if _PW_DATE_FMT_OK.fullmatch(m.group(0).upper()):
+                        c["fmt"] = m.group(0).upper()
+                        break
+                if c["fmt"]:
+                    break
+
+    fields = list(dict.fromkeys(c["field"] for c in comps))
+    literal = ""
+    if not comps:
+        m = re.search(r"password\s*(?:is|:|-|=)\s*[\"'“]?([^\s\"'”,;]{4,40})", hint, re.I)
+        if m and any(ch.isdigit() for ch in m.group(1)):
+            literal = m.group(1)
+    return {"components": comps, "fields": fields, "literal": literal}
+
+
+def describe_password_plan(plan: dict) -> list:
+    """Plain-English reading of the parsed note, shown on the unlock page so
+    a wrong interpretation is obvious before anything is tried."""
+    out = []
+    for c in plan["components"]:
+        label = PW_FIELD_LABELS[c["field"]].lower().replace("name as registered with the bank", "name")
+        if c["field"] == "dob":
+            text = f"date of birth as {c['fmt']}" if c["fmt"] else "date of birth (format not stated — DDMMYYYY or DDMMYY tried)"
+        elif c["n"] and c["where"]:
+            unit = "letters" if c["field"] == "name" else "digits"
+            text = f"{c['where']} {c['n']} {unit} of {label}"
+        else:
+            text = label
+        if c["case"] and c["field"] in ("name", "pan", "customer_id"):
+            text += " in CAPITALS" if c["case"] == "upper" else " in lowercase"
+        out.append(text)
+    return out
+
+
+def _pw_format_dob(d: date, fmt: str) -> str:
+    def sub(m):
+        return {"YYYY": f"{d.year:04d}", "YY": f"{d.year % 100:02d}", "MMM": d.strftime("%b").upper(),
+                "MM": f"{d.month:02d}", "DD": f"{d.day:02d}"}[m.group(0)]
+    return re.sub(r"YYYY|YY|MMM|MM|DD", sub, fmt)
+
+
+def _pw_component_options(c: dict, raw: str) -> list:
+    """Every plausible string this one component could contribute. Case is
+    only enumerated when the note didn't say (a PAN defaults to capitals)."""
+    field = c["field"]
+    if field == "dob":
+        try:
+            d = date.fromisoformat(raw)
+        except ValueError:
+            raise ValueError("Enter the date of birth as a valid date.")
+        fmts = [c["fmt"]] if c["fmt"] else ["DDMMYYYY", "DDMMYY"]
+        return [_pw_format_dob(d, f) for f in fmts]
+
+    if field == "name":
+        letters = re.sub(r"[^A-Za-z]", "", raw)
+        if c["n"] and c["where"]:
+            bases = [letters[:c["n"]] if c["where"] == "first" else letters[-c["n"]:]]
+        else:
+            bases = [raw.strip(), raw.replace(" ", "")]
+    elif field == "pan":
+        bases = [raw.replace(" ", "")]
+    else:
+        value = re.sub(r"[\s\-]", "", raw)
+        if c["n"] and c["where"]:
+            value = value[:c["n"]] if c["where"] == "first" else value[-c["n"]:]
+        bases = [value]
+
+    case = c["case"] or ("upper" if field == "pan" else None)
+    out = []
+    for b in bases:
+        if case == "upper":
+            out.append(b.upper())
+        elif case == "lower":
+            out.append(b.lower())
+        elif field == "name":
+            out += [b.upper(), b.lower(), b]
+        else:
+            out.append(b)
+    return list(dict.fromkeys(out))
+
+
+def build_password_candidates(plan: dict, values: dict, limit: int = 24) -> list:
+    """Concatenates each component's options in the order the note gave
+    them, capped so an unspecified-case, unspecified-format note can't
+    explode into hundreds of attempts. Raises ValueError for a detail that
+    can't be used (e.g. an unparseable date)."""
+    option_lists = [_pw_component_options(c, values.get(c["field"], "")) for c in plan["components"]]
+    out = []
+    for combo in itertools.product(*option_lists):
+        pw = "".join(combo)
+        if pw and pw not in out:
+            out.append(pw)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _pdf_is_encrypted(path: Path) -> bool:
+    if not PDF_UNLOCK_AVAILABLE or path.suffix.lower() != ".pdf":
+        return False
+    try:
+        return bool(PdfReader(str(path)).is_encrypted)
+    except Exception:
+        return False
+
+
+def _try_unlock_pdf(path: Path, passwords: list):
+    """Returns (decrypted_bytes, None) on success, (None, message) if the
+    environment can't decrypt it at all, or (None, None) if simply no
+    candidate worked. Entirely in memory -- nothing is written to disk."""
+    for pw in passwords:
+        try:
+            reader = PdfReader(str(path))
+            if not reader.decrypt(pw):
+                continue
+            writer = PdfWriter()
+            for page in reader.pages:
+                writer.add_page(page)
+            buf = io.BytesIO()
+            writer.write(buf)
+            return buf.getvalue(), None
+        except PyPdfDependencyError:
+            return None, "This PDF uses AES encryption, which needs the 'cryptography' package installed alongside the app."
+        except Exception:
+            continue
+    return None, None
+
+
+def _attachment_file_path(db, kind: str, item_id: int, filename: str):
+    """Resolves a saved attachment of any kind (a holding's, or Mail Scan's,
+    where item_id is the email's own processed_emails id) to its file,
+    confined to that attachment's own folder -- None if it isn't there."""
+    if kind == "mail_scan":
+        row = db.execute("SELECT attachments_dir FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
+        if not row or not row["attachments_dir"]:
+            return None
+        base = (MAIL_ATTACHMENTS_DIR / row["attachments_dir"]).resolve()
+    elif kind in ATTACHMENT_DIRS:
+        base = (ATTACHMENT_DIRS[kind] / str(item_id)).resolve()
+    else:
+        return None
+    target = (base / filename).resolve()
+    return target if target.is_relative_to(base) and target.is_file() else None
+
+
+def _serve_or_unlock(db, kind: str, item_id: int, filename: str, target: Path):
+    """The shared "View" behaviour: an unprotected file opens as before; a
+    protected PDF first tries the empty password (a PDF can be "encrypted"
+    only to restrict printing/copying, and opens freely), otherwise goes to
+    the unlock page rather than leaving the browser's viewer to ask for a
+    password with no idea how to build it."""
+    if _pdf_is_encrypted(target):
+        data, _ = _try_unlock_pdf(target, [""])
+        if data:
+            return send_file(io.BytesIO(data), mimetype="application/pdf", download_name=filename, as_attachment=False)
+        return redirect(url_for("unlock_attachment", kind=kind, item_id=item_id, filename=filename))
+    return send_file(target, as_attachment=False)
+
+
+@app.route("/attachments/raw/<kind>/<int:item_id>/<filename>")
+def raw_attachment(kind, item_id, filename):
+    """The file exactly as saved, unlocking skipped -- for opening a
+    protected PDF in your own viewer (which will ask for the password)."""
+    target = _attachment_file_path(get_db(), kind, item_id, filename)
+    if target is None:
+        return "Attachment not found.", 404
+    return send_file(target, as_attachment=False)
+
+
+@app.route("/attachments/unlock/<kind>/<int:item_id>/<filename>", methods=["GET", "POST"])
+def unlock_attachment(kind, item_id, filename):
+    db = get_db()
+    target = _attachment_file_path(db, kind, item_id, filename)
+    if target is None:
+        return "Attachment not found.", 404
+
+    hint = get_attachment_password(db, kind, item_id, filename)
+    plan = parse_password_hint(hint)
+    values = {f: "" for f in PW_FIELD_LABELS}
+    error = None
+
+    if request.method == "POST":
+        values = {f: request.form.get(f, "").strip() for f in PW_FIELD_LABELS}
+        manual = request.form.get("manual_password", "")
+        candidates = []
+        if manual:
+            candidates.append(manual)
+        if plan["components"]:
+            missing = [PW_FIELD_LABELS[f] for f in plan["fields"] if not values[f]]
+            if missing and not manual:
+                error = "Fill in: " + ", ".join(missing) + "."
+            elif not missing:
+                try:
+                    candidates += build_password_candidates(plan, values)
+                except ValueError as e:
+                    error = str(e)
+        if plan["literal"]:
+            candidates.append(plan["literal"])
+        if candidates and error is None:
+            data, problem = _try_unlock_pdf(target, candidates)
+            if data:
+                return send_file(io.BytesIO(data), mimetype="application/pdf", download_name=filename, as_attachment=False)
+            error = problem or (
+                "None of the passwords built from those details opened the file. Check each detail, or the "
+                "reading of the note below, and try again — or type the password directly."
+            )
+        elif not candidates and error is None:
+            error = "Enter the password, or fill in the details asked for."
+
+    return render_template(
+        "unlock_attachment.html", active_tab="mail_scan" if kind == "mail_scan" else "dashboard",
+        filename=filename, hint=hint, plan=plan, reading=describe_password_plan(plan),
+        field_labels=PW_FIELD_LABELS, values=values, error=error,
+        unlock_available=PDF_UNLOCK_AVAILABLE, is_pdf=target.suffix.lower() == ".pdf",
+        raw_url=url_for("raw_attachment", kind=kind, item_id=item_id, filename=filename),
+        back_url=url_for("mail_scan_page") if kind == "mail_scan" else _attachments_page_url(kind, item_id),
+    )
 
 
 @app.template_global()
