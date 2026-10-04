@@ -685,7 +685,9 @@ def init_db():
     """)
 
     for col, ddl in (("source_kind", "TEXT NOT NULL DEFAULT ''"), ("source_item_id", "INTEGER"),
-                     ("source_filename", "TEXT NOT NULL DEFAULT ''")):
+                     ("source_filename", "TEXT NOT NULL DEFAULT ''"),
+                     ("rate_note", "TEXT NOT NULL DEFAULT ''"),        # how the rate was worked out, if it was
+                     ("extraction_json", "TEXT NOT NULL DEFAULT ''")):  # exactly what the model read, for checking
         # A draft created from a saved attachment remembers which one (so it
         # isn't drafted twice, and the card can link back to the document).
         if col not in {r[1] for r in conn.execute("PRAGMA table_info(deposit_drafts)")}:
@@ -6452,9 +6454,10 @@ def haiku_available() -> bool:
     return ANTHROPIC_AVAILABLE and bool(_anthropic_api_key())
 
 
-def _haiku_json(system_prompt: str, user_content: str, schema: dict, max_tokens: int = 600):
-    """One structured-output call to Haiku -> (parsed JSON object, None) or
-    (None, plain-English reason it couldn't be done)."""
+def _haiku_json(system_prompt: str, user_content: str, schema: dict, max_tokens: int = 600, model: str = None):
+    """One structured-output call (Haiku unless `model` says otherwise) ->
+    (parsed JSON object, None) or (None, plain-English reason it couldn't be
+    done)."""
     if not ANTHROPIC_AVAILABLE:
         return None, "the 'anthropic' package isn't installed"
     key = _anthropic_api_key()
@@ -6463,7 +6466,7 @@ def _haiku_json(system_prompt: str, user_content: str, schema: dict, max_tokens:
     try:
         client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=1)
         resp = client.messages.create(
-            model=HAIKU_MODEL, max_tokens=max_tokens, system=system_prompt,
+            model=model or HAIKU_MODEL, max_tokens=max_tokens, system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )
@@ -6814,6 +6817,7 @@ def _nullable(json_type: str) -> dict:
     return {"anyOf": [{"type": json_type}, {"type": "null"}]}
 
 
+EXTRACT_MODEL = "claude-sonnet-5-5"  # reading a whole document is worth the stronger model
 FD_EXTRACT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -6829,12 +6833,14 @@ FD_EXTRACT_SCHEMA = {
         "compounding_frequency": {"type": "integer", "enum": [1, 2, 4, 12]},
         "start_date": _nullable("string"),
         "maturity_date": _nullable("string"),
+        "maturity_amount": _nullable("number"),
+        "interest_amount": _nullable("number"),
         "account_category": {"type": "string", "enum": ["Resident", "NRE", "NRO", "FCNR"]},
         "currency": {"type": "string"},
     },
     "required": ["is_deposit_document", "bank_name", "holder_name", "deposit_number", "deposit_type", "principal",
                  "interest_rate", "tenure_value", "tenure_unit", "compounding_frequency", "start_date",
-                 "maturity_date", "account_category", "currency"],
+                 "maturity_date", "maturity_amount", "interest_amount", "account_category", "currency"],
     "additionalProperties": False,
 }
 FD_EXTRACT_PROMPT = """\
@@ -6844,7 +6850,8 @@ You read the text of a document from an Indian bank -- usually a fixed deposit (
 - bank_name: the bank issuing it. holder_name: the (first) depositor's name as printed. deposit_number: the FD / RD / receipt / account number as printed, else "".
 - deposit_type: "cumulative" if interest is reinvested/compounded and paid at maturity; "simple" if interest is paid out periodically or is simple interest; "recurring" for a recurring deposit (RD). If unclear, "cumulative".
 - principal: the amount deposited (NOT the maturity amount), as a plain number. For an RD, the monthly instalment. null if not stated.
-- interest_rate: the annual rate in percent (e.g. 7.1), null if not stated.
+- interest_rate: the annual rate in percent (e.g. 7.1) that applies to this deposit -- look for it under any label ("Rate of Interest", "ROI", "Interest Rate", "% p.a.", "per annum"), even in a table where the label and the number are on separate lines or the % sign is missing. If a base rate and an optional extra (senior-citizen / bonus) rate are both shown, use the total only if the document says it applies to this depositor, otherwise the base rate. null only if no rate appears anywhere.
+- maturity_amount: the amount payable at maturity, as a plain number, null if not stated. interest_amount: the total interest payable over the term if stated, else null.
 - tenure_value + tenure_unit: the term, in "months" or "days" (convert years to months). null tenure_value if only a maturity date is given.
 - compounding_frequency: times per year interest compounds -- 1, 2, 4 (quarterly) or 12 (monthly). Use 4 if not stated.
 - start_date: the deposit / value / booking date, maturity_date: the maturity date, both as YYYY-MM-DD (read Indian dd/mm/yyyy dates day-first); null if not stated.
@@ -6927,6 +6934,41 @@ def _add_months(d: date, months: int) -> date:
     return date(y, m, min(d.day, last))
 
 
+def implied_annual_rate(deposit_type: str, principal, maturity_amount, interest_amount, tenure, unit, start, maturity, compounding):
+    """The annual rate (%) a deposit's own figures imply, for documents that
+    don't print one: cumulative -> the compound rate that grows the principal
+    to the maturity amount; payout/simple -> interest over principal and term.
+    Returns (rate rounded to 2 places, how it was worked out) or (None, "").
+    Recurring deposits aren't attempted. Only plausible results (1-15%) are
+    returned; it's approximate, since the bank's own rounding and compounding
+    convention are unknown."""
+    if deposit_type == "recurring" or not principal:
+        return None, ""
+    if tenure and unit == "months":
+        years = tenure / 12
+    elif tenure and unit == "days":
+        years = tenure / DAYS_PER_YEAR
+    elif start and maturity and maturity > start:
+        years = (maturity - start).days / DAYS_PER_YEAR
+    else:
+        return None, ""
+    if years <= 0:
+        return None, ""
+    n = compounding if compounding in (1, 2, 4, 12) else 4
+    rate = None
+    if deposit_type == "cumulative" and maturity_amount and maturity_amount > principal:
+        rate = n * ((maturity_amount / principal) ** (1 / (n * years)) - 1) * 100
+        how = f"worked out from the maturity amount ₹{maturity_amount:,.2f} (compounded {n}×/year)"
+    elif deposit_type == "simple":
+        interest = interest_amount if interest_amount else (maturity_amount - principal if maturity_amount and maturity_amount > principal else None)
+        if interest and interest > 0:
+            rate = interest / (principal * years) * 100
+            how = f"worked out from the interest of ₹{interest:,.2f} over the term"
+    if rate is None or not 1 <= rate <= 15:
+        return None, ""
+    return round(rate, 2), how + " — approximate, check it against the document"
+
+
 def draft_fields_from_extraction(db, ex: dict, kind: str, item_id: int) -> dict:
     """Turns Haiku's extraction into draft-deposit columns, keeping only what
     is plausible -- anything doubtful is left blank for the person to fill in
@@ -6948,6 +6990,14 @@ def draft_fields_from_extraction(db, ex: dict, kind: str, item_id: int) -> dict:
             tenure, unit = (maturity - start).days, "days"
     if deposit_type == "recurring":
         unit = "months"
+    compounding = ex.get("compounding_frequency") if ex.get("compounding_frequency") in (1, 2, 4, 12) else 4
+    rate_note = ""
+    if rate is None:  # not printed (or implausible): see whether the document's own figures imply it
+        def _num(key):
+            v = ex.get(key)
+            return float(v) if isinstance(v, (int, float)) and v > 0 else None
+        rate, rate_note = implied_annual_rate(deposit_type, principal, _num("maturity_amount"), _num("interest_amount"),
+                                              tenure, unit, start, maturity, compounding)
     category = ex.get("account_category") if ex.get("account_category") in ACCOUNT_CATEGORIES else "Resident"
     currency = "INR"
     if category == "FCNR":
@@ -6970,7 +7020,7 @@ def draft_fields_from_extraction(db, ex: dict, kind: str, item_id: int) -> dict:
         "depositor_id": depositor_id, "bank_ref_id": bank_id or (None if (ex.get("bank_name") or "").strip() else tied_bank),
         "deposit_type": deposit_type,
         "principal": principal, "interest_rate": rate, "tenure_value": str(tenure) if tenure else "",
-        "tenure_unit": unit, "compounding_frequency": ex.get("compounding_frequency") if ex.get("compounding_frequency") in (1, 2, 4, 12) else 4,
+        "tenure_unit": unit, "compounding_frequency": compounding, "rate_note": rate_note,
         "account_category": category, "currency": currency, "start_date": start.isoformat() if start else None,
         "deposit_number": (ex.get("deposit_number") or "").strip()[:60],
     }
@@ -7005,9 +7055,10 @@ def draft_deposit_from_attachment(kind, item_id, filename):
     if text is None:
         flash(f"Couldn't read {filename}: {why}.", "error")
         return redirect(back)
-    ex, why = _haiku_json(FD_EXTRACT_PROMPT, f"<document>\n{text}\n</document>", FD_EXTRACT_SCHEMA, max_tokens=800)
+    ex, why = _haiku_json(FD_EXTRACT_PROMPT, f"<document>\n{text}\n</document>", FD_EXTRACT_SCHEMA,
+                          max_tokens=900, model=EXTRACT_MODEL)
     if ex is None:
-        flash(f"Couldn't read {filename} with Claude Haiku: {why}.", "error")
+        flash(f"Couldn't read {filename} with Claude: {why}.", "error")
         return redirect(back)
     if not ex.get("is_deposit_document"):
         flash(f"{filename} doesn't look like a fixed/recurring deposit receipt, so no draft was made.", "error")
@@ -7018,11 +7069,11 @@ def draft_deposit_from_attachment(kind, item_id, filename):
         """INSERT INTO deposit_drafts
            (depositor_id, bank_ref_id, deposit_type, principal, interest_rate, tenure_value, tenure_unit,
             compounding_frequency, account_category, currency, start_date, deposit_number, source_snippet,
-            created_at, source_kind, source_item_id, source_filename)
+            created_at, source_kind, source_item_id, source_filename, rate_note, extraction_json)
            VALUES (:depositor_id, :bank_ref_id, :deposit_type, :principal, :interest_rate, :tenure_value,
                    :tenure_unit, :compounding_frequency, :account_category, :currency, :start_date,
-                   :deposit_number, :snippet, :created_at, :kind, :item_id, :filename)""",
-        {**f, "snippet": f"Read from the attachment {filename}" + (f" — {ex.get('bank_name')}" if ex.get("bank_name") else ""),
+                   :deposit_number, :snippet, :created_at, :kind, :item_id, :filename, :rate_note, :extraction_json)""",
+        {**f, "extraction_json": json.dumps(ex, indent=2), "snippet": f"Read from the attachment {filename}" + (f" — {ex.get('bank_name')}" if ex.get("bank_name") else ""),
          "created_at": date.today().isoformat(), "kind": kind, "item_id": item_id, "filename": filename})
     db.commit()
     missing = [label for key, label in (("principal", "amount"), ("interest_rate", "rate"), ("tenure_value", "tenure"),

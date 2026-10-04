@@ -276,14 +276,19 @@ assembles the password, decrypts the PDF, and opens it.
 - **Create draft FD from an attachment.** Next to every saved PDF (Mail Scan's and each holding's
   Attachments page) is a **Create draft FD** button. It opens the PDF the usual way (a locked one is
   unlocked first, as above), sends its text — up to 12,000 characters of the first 12 pages — to
-  Claude Haiku with a JSON-schema structured output, and files what it finds as a **pending draft**
+  Claude **Sonnet** (`EXTRACT_MODEL` in `app.py` — the password note above stays on the cheaper Haiku) with a JSON-schema structured output, and files what it finds as a **pending draft**
   on the Draft Deposits tab: amount (or RD instalment), rate, tenure (derived from the start and
   maturity dates when only those are given — in months when it lands exactly, else days), start
   date, deposit type (cumulative / payout-simple / recurring), compounding, account category and
   currency, and the FD number. The bank and depositor are matched by name against your Banks and
   Depositors only when exactly one fits (a bank the document names that you haven't added is left
   blank; an email's sorted bank account is only a fallback when the document names none). Implausible
-  values (a rate over 30%, a bad date) are dropped rather than guessed. A document that isn't an
+  values (a rate over 30%, a bad date) are dropped rather than guessed. Many receipts print no
+  rate at all — then it's **worked out from the maturity amount** (compound rate for a cumulative
+  deposit, interest over principal and term for a payout one; kept only if it lands between 1% and
+  15%) and the card says so, as an approximation to check. If neither is available the rate stays
+  blank. Each card has a **What was read from the document** box with the model's raw JSON, to see
+  exactly what it found. A document that isn't an
   FD/RD receipt is refused, there's one draft per file (re-clicking points to it), and the draft card
   links back to the PDF — nothing becomes a real deposit until you check it and **Approve**. On
   approval the PDF is **moved** (not copied) onto the new deposit's own attachments, with its kept
