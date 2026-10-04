@@ -75,6 +75,9 @@
               {% endif %}
             </td>
             <td>
+              <a href="{{ attachments_url('deposits', h.id) }}" class="btn link">
+                Attachments{% if attachment_count('deposits', h.id) %} ({{ attachment_count('deposits', h.id) }}){% endif %}
+              </a>
               <form class="inline" method="POST" action="{{ url_for('reopen_deposit', deposit_id=h.id) }}">
                 <button type="submit" class="btn link" data-confirm data-confirm-label="Reopen?">Reopen</button>
               </form>
