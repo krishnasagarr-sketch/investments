@@ -79,6 +79,9 @@
         temporary — it will be switched off once unlocking has been fully tested.
       </div>
     {% endif %}
+    {% if notice and not error and not generated %}
+      <div class="error-box" style="background:#fff2e0; color:var(--amber);">{{ notice }}</div>
+    {% endif %}
     {% if error %}
       <div class="error-box">{{ error }}</div>
     {% endif %}
@@ -99,15 +102,21 @@
     {% endif %}
     {% if show_generated and worked is not none %}
       <div class="error-box" style="background:#eaf6ec; color:var(--green);">
-        That worked — the file is unlocked. It hasn't been opened yet; press the button below.
+        That worked — {{ unlock_status or "the file is unlocked" }}.
+        {% if replaced %}The saved file is now the unlocked copy; the original is kept (see <strong>View original</strong> in the attachments list).
+        {% else %}It hasn't been opened yet; press the button below.{% endif %}
       </div>
-      <form method="POST" style="margin-bottom:16px;">
-        {% for f in plan.fields %}<input type="hidden" name="{{ f }}" value="{{ values[f] }}">{% endfor %}
-        <input type="hidden" name="manual_password" value="{{ manual_value }}">
-        <input type="hidden" name="account" value="{{ account_choice }}">
-        <input type="hidden" name="open" value="1">
-        <button type="submit" class="btn" style="width:100%;">Open the PDF now</button>
-      </form>
+      {% if replaced %}
+        <a href="{{ raw_url }}" target="_blank" class="btn" style="width:100%; display:block; box-sizing:border-box; text-align:center; margin-bottom:16px;">Open the PDF now</a>
+      {% else %}
+        <form method="POST" style="margin-bottom:16px;">
+          {% for f in plan.fields %}<input type="hidden" name="{{ f }}" value="{{ values[f] }}">{% endfor %}
+          <input type="hidden" name="manual_password" value="{{ manual_value }}">
+          <input type="hidden" name="account" value="{{ account_choice }}">
+          <input type="hidden" name="open" value="1">
+          <button type="submit" class="btn" style="width:100%;">Open the PDF now</button>
+        </form>
+      {% endif %}
     {% endif %}
     <form method="POST">
       {% set uses_account = plan.fields|select("in", ["first_name", "last_name", "pan", "name", "dob", "customer_id"])|list %}
@@ -155,8 +164,9 @@
         </button>
       {% endif %}
       <p class="field-hint" style="margin:10px 0 0;">
-        What you enter is used only to open this file just now — it isn't saved, and the opened copy is
-        never written to disk (the saved file stays encrypted, exactly as the bank sent it).
+        What you enter is used only to open this file just now — it isn't saved. Once the password works, it
+        is taken off the saved file so it opens directly next time; the original, exactly as the bank sent
+        it, is kept and can be viewed from the attachments list.
       </p>
     </form>
     <script>

@@ -764,6 +764,10 @@ def init_db():
             UNIQUE(kind, item_id, filename)
         )
     """)
+    if "unlock_status" not in {r[1] for r in conn.execute("PRAGMA table_info(attachment_notes)")}:
+        # What happened when this file's password was removed (see
+        # permanently_unlock_pdf): verified identical, or why it was left alone.
+        conn.execute("ALTER TABLE attachment_notes ADD COLUMN unlock_status TEXT NOT NULL DEFAULT ''")
 
     # The name(s), PAN, date of birth, customer ID and mailbox (email + app
     # password, plain text like the Notifications one) a bank holds for one of your accounts there -- they
@@ -4379,6 +4383,10 @@ def _save_email_attachments(msg, message_id: str) -> list:
         folder = MAIL_ATTACHMENTS_DIR / _safe_message_id_folder(message_id)
         folder.mkdir(parents=True, exist_ok=True)
         dest = folder / filename
+        kept = folder / ORIGINALS_DIRNAME / filename
+        if dest.exists() and (dest.read_bytes() == payload or (kept.exists() and kept.read_bytes() == payload)):
+            saved.append(dest.name)  # this exact file is already here (possibly since unlocked): don't duplicate it
+            continue
         if dest.exists():
             dest = folder / f"{dest.stem}_{len(saved)}{dest.suffix}"  # same email, two same-named attachments
         try:
@@ -4948,6 +4956,8 @@ def list_saved_attachments(db) -> list:
                     "name": f.name,
                     "size": _human_file_size(f.stat().st_size),
                     "password_hint": get_attachment_password(db, "mail_scan", email_id, f.name) if email_id else "",
+                    "unlock_status": get_attachment_unlock_status(db, "mail_scan", email_id, f.name) if email_id else "",
+                    "original_url": _original_url(db, "mail_scan", email_id, f.name) if email_id else None,
                 }
                 for f in files
             ],
@@ -6139,6 +6149,23 @@ def set_attachment_password(db, kind: str, item_id: int, filename: str, password
     db.commit()
 
 
+def get_attachment_unlock_status(db, kind: str, item_id: int, filename: str) -> str:
+    row = db.execute(
+        "SELECT unlock_status FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
+        (kind, item_id, filename),
+    ).fetchone()
+    return row["unlock_status"] if row else ""
+
+
+def set_attachment_unlock_status(db, kind: str, item_id: int, filename: str, status: str) -> None:
+    db.execute(
+        """INSERT INTO attachment_notes (kind, item_id, filename, unlock_status) VALUES (?, ?, ?, ?)
+           ON CONFLICT(kind, item_id, filename) DO UPDATE SET unlock_status = excluded.unlock_status""",
+        (kind, item_id, filename, status),
+    )
+    db.commit()
+
+
 def list_attachments(db, kind: str, item_id: int) -> list:
     folder = ATTACHMENT_DIRS[kind] / str(item_id)
     if not folder.exists():
@@ -6148,6 +6175,8 @@ def list_attachments(db, kind: str, item_id: int) -> list:
             "name": f.name,
             "size": _human_file_size(f.stat().st_size),
             "password_hint": get_attachment_password(db, kind, item_id, f.name),
+            "unlock_status": get_attachment_unlock_status(db, kind, item_id, f.name),
+            "original_url": _original_url(db, kind, item_id, f.name),
         }
         for f in sorted(folder.iterdir())
         if f.is_file()
@@ -6199,6 +6228,7 @@ def _delete_attachment(db, kind: str, item_id: int, filename: str):
     target = (base / filename).resolve()
     if target.is_relative_to(base) and target.is_file():
         target.unlink()
+        (base / ORIGINALS_DIRNAME / filename).unlink(missing_ok=True)
         db.execute(
             "DELETE FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
             (kind, item_id, filename),
@@ -6241,6 +6271,7 @@ def update_attachment_password(kind, item_id, filename):
 # only" button that builds them without opening anything, so the builder can
 # be checked by eye. This shows a real secret (e.g. a date of birth) on
 # screen, which is exactly why it's meant to be short-lived.
+KEEP_ORIGINAL_LOCKED_FILES = True  # keep the locked original under _originals/ when a file is unlocked
 SHOW_GENERATED_PASSWORDS = True
 
 PW_FIELD_LABELS = {
@@ -6705,35 +6736,191 @@ def _try_unlock_pdf(path: Path, passwords: list):
     return None, None, None
 
 
-def _attachment_file_path(db, kind: str, item_id: int, filename: str):
-    """Resolves a saved attachment of any kind (a holding's, or Mail Scan's,
-    where item_id is the email's own processed_emails id) to its file,
-    confined to that attachment's own folder -- None if it isn't there."""
+ORIGINALS_DIRNAME = "_originals"  # inside an attachment's folder: the files exactly as received
+
+
+def _attachment_base_dir(db, kind: str, item_id: int):
+    """The folder holding one holding's (or one email's) attachments -- None
+    if there isn't one."""
     if kind == "mail_scan":
         row = db.execute("SELECT attachments_dir FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
         if not row or not row["attachments_dir"]:
             return None
-        base = (MAIL_ATTACHMENTS_DIR / row["attachments_dir"]).resolve()
-    elif kind in ATTACHMENT_DIRS:
-        base = (ATTACHMENT_DIRS[kind] / str(item_id)).resolve()
-    else:
+        return (MAIL_ATTACHMENTS_DIR / row["attachments_dir"]).resolve()
+    if kind in ATTACHMENT_DIRS:
+        return (ATTACHMENT_DIRS[kind] / str(item_id)).resolve()
+    return None
+
+
+def _attachment_file_path(db, kind: str, item_id: int, filename: str):
+    """Resolves a saved attachment of any kind (a holding's, or Mail Scan's,
+    where item_id is the email's own processed_emails id) to its file,
+    confined to that attachment's own folder -- None if it isn't there."""
+    base = _attachment_base_dir(db, kind, item_id)
+    if base is None:
         return None
     target = (base / filename).resolve()
     return target if target.is_relative_to(base) and target.is_file() else None
 
 
-def _serve_or_unlock(db, kind: str, item_id: int, filename: str, target: Path):
-    """The shared "View" behaviour: an unprotected file opens as before; a
-    protected PDF first tries the empty password (a PDF can be "encrypted"
-    only to restrict printing/copying, and opens freely), otherwise goes to
-    the unlock page rather than leaving the browser's viewer to ask for a
-    password with no idea how to build it."""
-    if _pdf_is_encrypted(target):
-        data, _, _ = _try_unlock_pdf(target, [""])
-        if data:
-            return send_file(io.BytesIO(data), mimetype="application/pdf", download_name=filename, as_attachment=False)
-        return redirect(url_for("unlock_attachment", kind=kind, item_id=item_id, filename=filename))
+def _original_path(db, kind: str, item_id: int, filename: str):
+    """The untouched, still-locked original of a file whose password was
+    removed -- None if none was kept."""
+    base = _attachment_base_dir(db, kind, item_id)
+    if base is None:
+        return None
+    target = (base / ORIGINALS_DIRNAME / filename).resolve()
+    return target if target.is_relative_to(base) and target.is_file() else None
+
+
+def _original_url(db, kind: str, item_id: int, filename: str):
+    if _original_path(db, kind, item_id, filename) is None:
+        return None
+    return url_for("view_original_attachment", kind=kind, item_id=item_id, filename=filename)
+
+
+@app.route("/attachments/original/<kind>/<int:item_id>/<filename>")
+def view_original_attachment(kind, item_id, filename):
+    """The original file exactly as the bank sent it (still password-locked,
+    so a viewer will ask for the password) -- for checking the unlocked copy
+    against, or for anything that needs the original (e.g. a signed copy)."""
+    target = _original_path(get_db(), kind, item_id, filename)
+    if target is None:
+        return "No original was kept for this file.", 404
     return send_file(target, as_attachment=False)
+
+
+def _pdf_is_signed(reader) -> bool:
+    try:
+        acro = reader.trailer["/Root"].get("/AcroForm")
+        if not acro:
+            return False
+        acro = acro.get_object()
+        if int(acro.get("/SigFlags", 0)) & 1:
+            return True
+        return any(f.get_object().get("/FT") == "/Sig" for f in acro.get("/Fields", []))
+    except Exception:
+        return False
+
+
+def _pdf_page_texts(reader, limit: int = 200) -> list:
+    out = []
+    for page in reader.pages[:limit]:
+        try:
+            out.append(re.sub(r"\s+", " ", page.extract_text() or "").strip())
+        except Exception:
+            out.append(None)
+    return out
+
+
+def permanently_unlock_pdf(target: Path, password: str):
+    """Replaces a password-locked PDF with a copy that has the password
+    removed, but only after checking the copy: it must open with no
+    password, have the same page count, and carry the same text on every
+    page as the original. The original is kept untouched under _originals/
+    (unless KEEP_ORIGINAL_LOCKED_FILES is off) before the swap, which is
+    atomic. Returns (replaced, status, unlocked_bytes) -- on any failure the
+    file is left exactly as it was and the bytes (if made) can still be shown.
+    Text, pages and signatures are checked; images and layout aren't, which
+    is what the kept original is for."""
+    try:
+        reader = PdfReader(str(target))
+        if not reader.is_encrypted or not reader.decrypt(password):
+            return False, "not replaced — the password didn't open the file", None
+        pages, signed, original_texts = len(reader.pages), _pdf_is_signed(reader), _pdf_page_texts(reader)
+        writer = PdfWriter(clone_from=reader)
+        buf = io.BytesIO()
+        writer.write(buf)
+        data = buf.getvalue()
+
+        check = PdfReader(io.BytesIO(data))
+        if check.is_encrypted:
+            return False, "not replaced — the copy came out still locked", data
+        if len(check.pages) != pages:
+            return False, f"not replaced — the copy has {len(check.pages)} pages, the original {pages}", data
+        new_texts = _pdf_page_texts(check)
+        for i, (a, b) in enumerate(zip(original_texts, new_texts), start=1):
+            if a != b:
+                return False, f"not replaced — the text on page {i} differs from the original", data
+
+        if KEEP_ORIGINAL_LOCKED_FILES:
+            originals = target.parent / ORIGINALS_DIRNAME
+            originals.mkdir(exist_ok=True)
+            kept = originals / target.name
+            if not kept.exists():  # never overwrite the genuine original
+                shutil.copy2(target, kept)
+        tmp = target.with_name(f".{target.name}.unlocking")
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+        note = f"password removed — text and page count verified identical to the original ({pages} page{'s' if pages != 1 else ''})"
+        if len(original_texts) >= 200:
+            note += " (first 200 pages compared)"
+        if signed:
+            note += "; the original was digitally signed and this copy no longer carries the signature"
+        return True, note, data
+    except PyPdfDependencyError:
+        return False, "not replaced — AES decryption needs the 'cryptography' package", None
+    except Exception as e:
+        return False, f"not replaced — {type(e).__name__} while rewriting the file", None
+
+
+def _finalize_unlock(db, kind: str, item_id: int, filename: str, target: Path, password: str, fallback: bytes):
+    """Permanently unlocks a file whose password just worked, records how it
+    went, and returns (bytes to show, replaced?)."""
+    replaced, status, data = permanently_unlock_pdf(target, password)
+    set_attachment_unlock_status(db, kind, item_id, filename, status)
+    return (data or fallback), replaced
+
+
+def _auto_regenerate_password(db, kind: str, item_id: int, filename: str, target: Path):
+    """Rebuilds the password for a file with no usable saved one, with no
+    typing: Haiku (or the built-in reader) reads the password note, the
+    details it needs come from the saved bank account(s) matching this
+    attachment, and every resulting candidate is tried. Returns (decrypted
+    bytes, the password that worked), or (None, None) if the note can't be
+    read, no matching account has every detail it needs, or nothing opened
+    the file."""
+    hint = get_attachment_password(db, kind, item_id, filename)
+    plan = get_unlock_plan(db, kind, item_id, filename, hint)
+    candidates = [plan["literal"]] if plan["literal"] else []
+    if plan["components"]:
+        matched, _ = accounts_for_attachment(db, kind, item_id)
+        for a in matched:
+            vals = {f: "" for f in PW_FIELD_LABELS}
+            vals.update({k: v for k, v in _account_values(a).items() if v})
+            if all(vals[f] for f in plan["fields"]):
+                try:
+                    candidates += [b for b in build_password_candidates(plan, vals)[:8] if b not in candidates]
+                except ValueError:
+                    continue
+    if not candidates:
+        return None, None
+    data, _, worked = _try_unlock_pdf(target, candidates)
+    return (data, worked) if data else (None, None)
+
+
+def _serve_or_unlock(db, kind: str, item_id: int, filename: str, target: Path):
+    """The shared "View" behaviour. An unprotected file opens as before. A
+    protected PDF is tried with the empty password (a PDF can be "encrypted"
+    only to restrict printing/copying -- left as it is), then with a password
+    regenerated from its note and the matching saved bank account(s) (see
+    _auto_regenerate_password). If one works, the file is permanently
+    unlocked (original kept) and opened; otherwise the unlock page asks for
+    the details by hand."""
+    if not _pdf_is_encrypted(target):
+        return send_file(target, as_attachment=False)
+
+    def opened(data):
+        return send_file(io.BytesIO(data), mimetype="application/pdf", download_name=filename, as_attachment=False)
+
+    data, _, _ = _try_unlock_pdf(target, [""])
+    if data:
+        return opened(data)
+    data, worked = _auto_regenerate_password(db, kind, item_id, filename, target)
+    if data:
+        shown, _ = _finalize_unlock(db, kind, item_id, filename, target, worked, data)
+        return opened(shown)
+    return redirect(url_for("unlock_attachment", kind=kind, item_id=item_id, filename=filename, why="none"))
 
 
 @app.route("/attachments/raw/<kind>/<int:item_id>/<filename>")
@@ -6934,6 +7121,9 @@ def unlock_attachment(kind, item_id, filename):
     if target is None:
         return "Attachment not found.", 404
 
+    raw_url = url_for("raw_attachment", kind=kind, item_id=item_id, filename=filename)
+    if target.suffix.lower() == ".pdf" and PDF_UNLOCK_AVAILABLE and not _pdf_is_encrypted(target):
+        return redirect(raw_url)  # already unlocked -- just open it
     hint = get_attachment_password(db, kind, item_id, filename)
     plan = get_unlock_plan(db, kind, item_id, filename, hint)
     matched, others = accounts_for_attachment(db, kind, item_id)
@@ -6946,8 +7136,11 @@ def unlock_attachment(kind, item_id, filename):
         account_choice = str(best["id"])
         values.update(_account_values(best))
     error = None
+    notice = ("A password couldn't be built for this file from your saved bank accounts — fill in the "
+              "details below." if request.args.get("why") == "none" else None)
 
     generated, worked, info, manual = [], None, None, ""
+    replaced, unlock_status = False, ""
     if request.method == "POST":
         values = {f: request.form.get(f, "").strip() for f in PW_FIELD_LABELS}
         account_choice = request.form.get("account", "")
@@ -7002,6 +7195,9 @@ def unlock_attachment(kind, item_id, filename):
         elif candidates and error is None:
             data, problem, worked = _try_unlock_pdf(target, candidates)
             if data:
+                # Take the password off the saved file for good (the original is kept).
+                data, replaced = _finalize_unlock(db, kind, item_id, filename, target, worked, data)
+                unlock_status = get_attachment_unlock_status(db, kind, item_id, filename)
                 # Normally the PDF is the response. In testing mode a success
                 # first shows which password worked, then opens on request
                 # (the details are re-posted with open=1) -- the decrypted
@@ -7020,13 +7216,14 @@ def unlock_attachment(kind, item_id, filename):
         "unlock_attachment.html", active_tab="mail_scan" if kind == "mail_scan" else "dashboard",
         filename=filename, hint=hint, plan=plan, reading=describe_password_plan(plan),
         plan_json=json.dumps(plan["raw"], indent=2) if plan.get("raw") else "",
-        field_labels=PW_FIELD_LABELS, values=values, error=error,
+        field_labels=PW_FIELD_LABELS, values=values, error=error, notice=notice,
+        replaced=replaced, unlock_status=unlock_status,
         choices=[{"id": a["id"], "text": _account_text(a), "matched": a["id"] in {m["id"] for m in matched},
                   **_account_values(a)} for a in matched + others],
         matched_count=len(matched), account_choice=account_choice, accounts_url=url_for("bank_accounts_page"),
         show_generated=SHOW_GENERATED_PASSWORDS, generated=generated, worked=worked, info=info,
         manual_value=manual, unlock_available=PDF_UNLOCK_AVAILABLE, is_pdf=target.suffix.lower() == ".pdf",
-        raw_url=url_for("raw_attachment", kind=kind, item_id=item_id, filename=filename),
+        raw_url=raw_url,
         back_url=url_for("mail_scan_page") if kind == "mail_scan" else _attachments_page_url(kind, item_id),
     )
 

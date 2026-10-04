@@ -58,13 +58,17 @@
               <a href="{{ view_url(f.name) }}" target="_blank">
                 {{ f.name }} <span class="muted">({{ f.size }})</span>
               </a>
+              <span style="display:flex; align-items:center; gap:10px;">
+              {% if f.original_url %}<a href="{{ f.original_url }}" target="_blank" class="muted" style="font-size:12px;" title="The file exactly as received (still password-locked)">View original</a>{% endif %}
               <form class="inline" method="POST" action="{{ delete_url(f.name) }}">
                 <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
               </form>
+              </span>
             </div>
-            <form method="POST" action="{{ password_url(f.name) }}" style="display:flex; gap:6px; margin-top:6px;">
+            {% if f.unlock_status %}<div class="muted" style="font-size:12px; margin-top:2px;">🔓 {{ f.unlock_status }}</div>{% endif %}
+            <form method="POST" action="{{ password_url(f.name) }}" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;">
               <input type="text" name="password_hint" value="{{ f.password_hint }}"
-                     placeholder="No password noted — add one" style="flex:1; font-size:13px; padding:7px 10px;">
+                     placeholder="No password noted — add one" style="flex:1; min-width:160px; font-size:13px; padding:7px 10px;">
               <button type="submit" class="btn secondary" style="font-size:13px; padding:7px 12px;">Save</button>
             </form>
           </div>

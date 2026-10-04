@@ -250,13 +250,29 @@ assembles the password, decrypts the PDF, and opens it.
   likely variants (e.g. a name in upper, lower and as typed; `DDMMYYYY` then `DDMMYY`).
 - If the note can't be read, or the guess is wrong, it says so and takes the password typed
   directly; **Open the file as saved** hands over the untouched file for your own PDF viewer.
-- The details you type are used for that one request and **never stored**. The decrypted copy is
-  streamed to the browser and **never written to disk** — the saved file stays encrypted exactly
-  as the bank sent it. A PDF that's only "encrypted" to restrict printing opens straight away.
+- The details you type are used for that one request and **never stored**, and **no password is
+  stored anywhere** — see the next point for what happens to the file instead. A PDF that's only
+  "encrypted" to restrict printing opens straight away and is left as it is.
 - PDFs only (a protected Word/Excel file isn't unlocked, just shown with its note). Needs `pypdf`,
   and `cryptography` for AES-encrypted PDFs, which is most bank statements — see [Optional
   dependencies](#optional-dependencies). Works identically for [Mail Scan](#mail-scan--draft-deposits)'s
   saved attachments.
+- **The password comes off the file; the original is kept.** **View** tries, in order: no password,
+  then a **regenerated** one — the note is read as described below, the details come from the saved
+  bank account(s) matching the file (a deposit's bank/depositor, or the account the email was
+  sorted into), and every candidate is tried, all without typing. If that fails you land on the
+  unlock page, which says why and takes the details (or the password) by hand. Whatever opens the
+  file is then **removed from the saved file for good**: an unlocked copy replaces it, so from then
+  on it just opens, in any viewer, with nothing stored. The swap only happens after a check — the
+  copy must open with no password, have the same page count, and carry the same text on every page
+  (the first 200) as the original; if not, the saved file is left untouched and the reason is shown.
+  The **untouched original, still locked, exactly as the bank sent it, is kept** in an `_originals/`
+  folder beside it (switch off with `KEEP_ORIGINAL_LOCKED_FILES = False` in `app.py`), and each
+  file in the attachment lists gets a **View original** link plus a 🔓 line saying what was
+  verified. Text and page count are what's compared; images, layout and digital signatures aren't
+  (a signed original is flagged — the copy no longer carries the signature), which is what the
+  kept original is for. Deleting an attachment deletes its original too, and re-saving the same
+  email attachment later doesn't create a duplicate.
 - **Haiku reads the instructions; Python builds the password.** If `ANTHROPIC_API_KEY` is set
   (environment variable, or a `.env` file next to `app.py` — in the packaged apps, in the app's data
   folder), the unlock page sends the bank's email text (Mail Scan keeps up to 8,000 characters of the
@@ -288,7 +304,7 @@ assembles the password, decrypts the PDF, and opens it.
 - **Temporary testing mode.** While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
   in `app.py` makes the unlock page *display* the password(s) it built from your details (in the
   order tried, with the winner marked), offers a "show the generated password(s) only — don't
-  open" preview, and waits for an **Open the PDF now** click after a successful unlock. This
+  open" preview, and waits for an **Open the PDF now** click after a successful unlock (by then the saved file is already unlocked). This
   puts a real secret on screen, so set it to `False` (or delete the flag) once signed off — the
   page then goes back to unlocking and opening in one step with nothing shown.
 
