@@ -285,7 +285,10 @@ assembles the password, decrypts the PDF, and opens it.
   blank; an email's sorted bank account is only a fallback when the document names none). Implausible
   values (a rate over 30%, a bad date) are dropped rather than guessed. A document that isn't an
   FD/RD receipt is refused, there's one draft per file (re-clicking points to it), and the draft card
-  links back to the PDF — nothing becomes a real deposit until you check it and **Approve**. Needs
+  links back to the PDF — nothing becomes a real deposit until you check it and **Approve**. On
+  approval the PDF is **moved** (not copied) onto the new deposit's own attachments, with its kept
+  locked original, password note and unlock status, so the document stays with the FD for future
+  reference (it then no longer appears in Mail Scan's list); rejecting the draft leaves it where it is. Needs
   `ANTHROPIC_API_KEY` and, like the password note, **sends the document's text to Anthropic** — only
   when you click the button. It can misread; check every field against the document.
 - **Haiku reads the instructions; Python builds the password.** If `ANTHROPIC_API_KEY` is set

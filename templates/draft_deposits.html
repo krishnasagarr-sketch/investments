@@ -6,13 +6,6 @@
 {% endblock %}
 
 {% block content %}
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for category, message in messages %}
-      <div class="card" style="max-width:640px;">
-        <div class="error-box" style="margin:0; {% if category == 'info' %}background:#eef3f8; color:var(--accent);{% endif %}">{{ message }}</div>
-      </div>
-    {% endfor %}
-  {% endwith %}
 
   <div class="card" style="max-width:640px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Deposits drafted from scanned mail</h2>
@@ -40,7 +33,7 @@
         <p class="field-hint" style="margin-bottom:16px;">
           Read from the attachment
           <a href="{{ url_for('raw_attachment', kind=d.source_kind, item_id=d.source_item_id, filename=d.source_filename) }}" target="_blank">{{ d.source_filename }}</a>
-          — it can misread things, so check every field against the document before approving.
+          — it can misread things, so check every field against the document before approving. On approval the document is moved to the new deposit's attachments; rejecting the draft leaves it where it is.
         </p>
       {% else %}
         <p class="field-hint" style="margin-bottom:16px;" title="{{ d.source_snippet }}">

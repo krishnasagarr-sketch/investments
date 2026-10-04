@@ -6,13 +6,6 @@
 {% endblock %}
 
 {% block content %}
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for category, message in messages %}
-      <div class="card" style="max-width:640px;">
-        <div class="error-box" style="margin:0; {% if category == 'info' %}background:#eef3f8; color:var(--accent);{% endif %}">{{ message }}</div>
-      </div>
-    {% endfor %}
-  {% endwith %}
 
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">{{ title }}</h2>

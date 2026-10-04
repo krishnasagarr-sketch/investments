@@ -5215,6 +5215,16 @@ def approve_deposit_draft(draft_id):
                 (draft["scanned_transaction_id"],),
             )
         db.commit()
+        if draft["source_filename"]:
+            # The deposit now exists: file the source document with it.
+            try:
+                moved = move_attachment_to_deposit(db, draft["source_kind"], draft["source_item_id"],
+                                                   draft["source_filename"], new_deposit_id)
+            except OSError:
+                moved = None
+            flash(f"Deposit created. “{moved}” was moved to its attachments for future reference." if moved else
+                  f"Deposit created, but “{draft['source_filename']}” couldn't be moved to it (the file is no longer "
+                  "where it was saved).", "info" if moved else "error")
         return redirect(url_for("dashboard"))
     except ValueError as e:
         session["draft_deposit_error"] = f"Draft #{draft_id}: {e}"
@@ -7021,6 +7031,41 @@ def draft_deposit_from_attachment(kind, item_id, filename):
     flash(f"Draft #{cur.lastrowid} created from {filename}. Check it before approving."
           + (f" Couldn't find: {', '.join(missing)}." if missing else ""), "info")
     return redirect(url_for("draft_deposits_page") + f"#draft-{cur.lastrowid}")
+
+
+def move_attachment_to_deposit(db, kind: str, item_id: int, filename: str, deposit_id: int):
+    """Moves a saved attachment (and its kept locked original, password note
+    and unlock status) onto a deposit's own attachments, so the document
+    stays with the FD it describes. Returns the file's new name, or None if
+    the source file is no longer there. It's a move, not a copy: the file
+    leaves where it was (an email's attachment list, or another holding's)."""
+    src = _attachment_file_path(db, kind, item_id, filename)
+    if src is None:
+        return None
+    folder = ATTACHMENT_DIRS["deposits"] / str(deposit_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = secure_filename(src.name) or "attachment"
+    dest = folder / name
+    if dest.exists():
+        dest = folder / f"{dest.stem}_{secrets.token_hex(3)}{dest.suffix}"
+    original = _original_path(db, kind, item_id, filename)
+    shutil.move(str(src), str(dest))
+    if original is not None:
+        (folder / ORIGINALS_DIRNAME).mkdir(exist_ok=True)
+        shutil.move(str(original), str(folder / ORIGINALS_DIRNAME / dest.name))
+    note = db.execute(
+        "SELECT password_hint, unlock_status FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
+        (kind, item_id, filename)).fetchone()
+    if note:
+        db.execute(
+            """INSERT INTO attachment_notes (kind, item_id, filename, password_hint, unlock_status) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(kind, item_id, filename) DO UPDATE SET password_hint = excluded.password_hint,
+                                                                unlock_status = excluded.unlock_status""",
+            ("deposits", deposit_id, dest.name, note["password_hint"], note["unlock_status"]))
+        db.execute("DELETE FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
+                   (kind, item_id, filename))
+    db.commit()
+    return dest.name
 
 
 @app.route("/attachments/original/<kind>/<int:item_id>/<filename>")
