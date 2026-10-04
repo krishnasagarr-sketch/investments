@@ -25,9 +25,26 @@
     </div>
   {% endif %}
 
+  <style>
+    .draft-row { display:flex; gap:20px; align-items:flex-start; margin-bottom:20px; }
+    .draft-row .draft-card { flex:0 0 460px; max-width:460px; margin-bottom:0; }
+    .draft-viewer { flex:1; min-width:0; position:sticky; top:12px; height:calc(100vh - 24px);
+                    display:flex; flex-direction:column; background:var(--card, #fff);
+                    border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+    .draft-viewer .viewer-head { display:flex; justify-content:space-between; align-items:center; gap:12px;
+                                 padding:10px 14px; border-bottom:1px solid var(--border); font-size:13px; }
+    .draft-viewer .viewer-head .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .draft-viewer iframe { flex:1; width:100%; border:0; background:#fff; }
+    @media (max-width: 1000px) {
+      .draft-row { flex-direction:column; }
+      .draft-row .draft-card { flex:none; width:100%; max-width:100%; }
+      .draft-viewer { position:static; width:100%; height:75vh; min-height:480px; }
+    }
+  </style>
   {% if drafts %}
     {% for d in drafts %}
-    <div class="card" id="draft-{{ d.id }}" style="max-width:460px;">
+    <div class="draft-row" id="draft-{{ d.id }}">
+    <div class="card draft-card">
       <h2 style="font-size:16px; margin:0 0 4px;">Draft #{{ d.id }}</h2>
       {% if d.source_filename %}
         <p class="field-hint" style="margin-bottom:16px;">
@@ -159,6 +176,17 @@
       <form method="POST" action="{{ url_for('reject_deposit_draft', draft_id=d.id) }}" style="margin-top:8px;">
         <button type="submit" class="btn danger" style="width:100%;" data-confirm data-confirm-label="Reject this draft?">Reject</button>
       </form>
+    </div>
+    {% if d.source_filename %}
+      {% set doc_url = url_for('preview_attachment', kind=d.source_kind, item_id=d.source_item_id, filename=d.source_filename) %}
+      <div class="draft-viewer">
+        <div class="viewer-head">
+          <span class="name"><strong>Source document</strong> — {{ d.source_filename }}</span>
+          <a href="{{ doc_url }}" target="_blank">Open in new tab ↗</a>
+        </div>
+        <iframe src="{{ doc_url }}#view=FitH&navpanes=0" title="Source document for draft #{{ d.id }}"></iframe>
+      </div>
+    {% endif %}
     </div>
     {% endfor %}
   {% else %}

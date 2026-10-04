@@ -293,7 +293,9 @@ assembles the password, decrypts the PDF, and opens it.
   comes back without the amount, any rate figure or any date, the PDF **itself** (up to 8 MB) is
   handed to the model so it can see the page, headings and all; the box says which was used. A document that isn't an
   FD/RD receipt is refused, there's one draft per file (re-clicking points to it), and the draft card
-  links back to the PDF — nothing becomes a real deposit until you check it and **Approve**. On
+  shows the PDF itself in a **viewer pane on the right** (sticky beside the form, stacked below it on
+  narrow screens; a locked file is unlocked first) so every field can be checked against the document
+  as you edit it, with an *Open in new tab* link — nothing becomes a real deposit until you check it and **Approve**. On
   approval the PDF is **moved** (not copied) onto the new deposit's own attachments, with its kept
   locked original, password note and unlock status, so the document stays with the FD for future
   reference (it then no longer appears in Mail Scan's list); rejecting the draft leaves it where it is. Needs

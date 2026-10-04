@@ -5176,7 +5176,7 @@ def draft_deposits_page():
         "SELECT * FROM deposit_drafts WHERE status = 'pending' ORDER BY created_at DESC, id DESC"
     ).fetchall()
     return render_template(
-        "draft_deposits.html", active_tab="draft_deposits",
+        "draft_deposits.html", active_tab="draft_deposits", wide_page=True,
         drafts=drafts,
         depositors=db.execute("SELECT id, holder_id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
         banks=db.execute("SELECT id, bank_id, name FROM banks ORDER BY name COLLATE NOCASE").fetchall(),
@@ -7309,6 +7309,17 @@ def _serve_or_unlock(db, kind: str, item_id: int, filename: str, target: Path):
         shown, _ = _finalize_unlock(db, kind, item_id, filename, target, worked, data)
         return opened(shown)
     return redirect(url_for("unlock_attachment", kind=kind, item_id=item_id, filename=filename, why="none"))
+
+
+@app.route("/attachments/view/<kind>/<int:item_id>/<filename>")
+def preview_attachment(kind, item_id, filename):
+    """A saved attachment opened the way View opens it (a locked PDF is
+    unlocked first), for showing inside a page -- e.g. beside a draft deposit."""
+    db = get_db()
+    target = _attachment_file_path(db, kind, item_id, filename)
+    if target is None:
+        return "Attachment not found.", 404
+    return _serve_or_unlock(db, kind, item_id, filename, target)
 
 
 @app.route("/attachments/raw/<kind>/<int:item_id>/<filename>")
