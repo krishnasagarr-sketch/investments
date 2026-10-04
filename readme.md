@@ -273,8 +273,9 @@ assembles the password, decrypts the PDF, and opens it.
   (a signed original is flagged — the copy no longer carries the signature), which is what the
   kept original is for. Deleting an attachment deletes its original too, and re-saving the same
   email attachment later doesn't create a duplicate.
-- **Create draft FD from an attachment.** Next to every saved PDF (Mail Scan's and each holding's
-  Attachments page) is a **Create draft FD** button. It opens the PDF the usual way (a locked one is
+- **Create draft FD from an attachment.** Next to every saved PDF in Mail Scan's **Saved attachments** is a **Create draft FD** button (not on a
+  holding's own Attachments page — that document already belongs to a record, and drafting from it
+  would duplicate the FD). It opens the PDF the usual way (a locked one is
   unlocked first, as above), sends its text — up to 12,000 characters of the first 12 pages — to
   Claude **Sonnet** (`EXTRACT_MODEL` in `app.py` — the password note above stays on the cheaper Haiku) with a JSON-schema structured output, and files what it finds as a **pending draft**
   on the Draft Deposits tab: amount (or RD instalment), rate, tenure (derived from the start and
@@ -292,7 +293,8 @@ assembles the password, decrypts the PDF, and opens it.
   columns stay apart — plain extraction once ran `38063` and `30000` together), and if the read still
   comes back without the amount, any rate figure or any date, the PDF **itself** (up to 8 MB) is
   handed to the model so it can see the page, headings and all; the box says which was used. A document that isn't an
-  FD/RD receipt is refused, there's one draft per file (re-clicking points to it), and the draft card
+  FD/RD receipt is refused, as is one whose FD number already belongs to a deposit or a pending draft
+  (compared ignoring spaces and dashes — it's probably the same FD), there's one draft per file (re-clicking points to it), and the draft card
   shows the PDF itself in a **viewer pane on the right** (sticky beside the form, stacked below it on
   narrow screens; a locked file is unlocked first) so every field can be checked against the document
   as you edit it, with an *Open in new tab* link — nothing becomes a real deposit until you check it and **Approve**. On

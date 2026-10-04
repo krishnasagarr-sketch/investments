@@ -59,11 +59,6 @@
                 {{ f.name }} <span class="muted">({{ f.size }})</span>
               </a>
               <span style="display:flex; align-items:center; gap:10px;">
-              {% if f.draft_url %}
-                <form class="inline" method="POST" action="{{ f.draft_url }}">
-                  <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;" title="Read this PDF with Claude Haiku and create a draft deposit to review">Create draft FD</button>
-                </form>
-              {% endif %}
               {% if f.original_url %}<a href="{{ f.original_url }}" target="_blank" class="muted" style="font-size:12px;" title="The file exactly as received (still password-locked)">View original</a>{% endif %}
               <form class="inline" method="POST" action="{{ delete_url(f.name) }}">
                 <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>

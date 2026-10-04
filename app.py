@@ -6199,8 +6199,6 @@ def list_attachments(db, kind: str, item_id: int) -> list:
             "password_hint": get_attachment_password(db, kind, item_id, f.name),
             "unlock_status": get_attachment_unlock_status(db, kind, item_id, f.name),
             "original_url": _original_url(db, kind, item_id, f.name),
-            "draft_url": url_for("draft_deposit_from_attachment", kind=kind, item_id=item_id, filename=f.name)
-                         if f.suffix.lower() == ".pdf" else None,
         }
         for f in sorted(folder.iterdir())
         if f.is_file()
@@ -7073,6 +7071,12 @@ def draft_deposit_from_attachment(kind, item_id, filename):
     db = get_db()
     back = (url_for("mail_scan_page") + "#attachments") if kind == "mail_scan" else (
         _attachments_page_url(kind, item_id) if kind in ATTACHMENT_ROUTES else url_for("dashboard"))
+    if kind != "mail_scan":
+        # A holding's own attachment belongs to a record that already exists; drafting
+        # from it would make a duplicate (and approving would move the file off it).
+        flash("A draft deposit can only be made from a Mail Scan attachment — this document already "
+              "belongs to a record.", "error")
+        return redirect(back)
     target = _attachment_file_path(db, kind, item_id, filename)
     if target is None:
         flash("Attachment not found.", "error")
@@ -7113,6 +7117,20 @@ def draft_deposit_from_attachment(kind, item_id, filename):
         return redirect(back)
 
     f = draft_fields_from_extraction(db, ex, kind, item_id)
+    number = _compact(f["deposit_number"])
+    if len(number) >= 4:
+        for dep in db.execute("SELECT d.id, d.deposit_number, d.principal, b.name AS bank FROM deposits d "
+                              "LEFT JOIN banks b ON b.id = d.bank_ref_id WHERE d.deposit_number != ''"):
+            if _compact(dep["deposit_number"]) == number:
+                flash(f"No draft made: deposit #{dep['id']} ({dep['bank'] or 'bank not set'}, ₹{dep['principal']:,.0f}) "
+                      f"already has the number {f['deposit_number']}, so this is probably the same FD.", "error")
+                return redirect(back)
+        pending = db.execute("SELECT id, deposit_number FROM deposit_drafts WHERE status = 'pending' AND deposit_number != ''").fetchall()
+        for dr in pending:
+            if _compact(dr["deposit_number"]) == number:
+                flash(f"No draft made: draft #{dr['id']} already has the number {f['deposit_number']} — "
+                      "review that one.", "error")
+                return redirect(url_for("draft_deposits_page") + f"#draft-{dr['id']}")
     cur = db.execute(
         """INSERT INTO deposit_drafts
            (depositor_id, bank_ref_id, deposit_type, principal, interest_rate, tenure_value, tenure_unit,
