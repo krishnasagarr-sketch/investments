@@ -131,6 +131,9 @@
             <td>{{ a.email or "—" }}</td>
             <td>{% if a.app_password %}<span class="badge active">saved</span>{% else %}—{% endif %}</td>
             <td>
+              <a href="{{ attachments_url('bank_accounts', a.id) }}" class="btn secondary">
+                Statements{% if attachment_count('bank_accounts', a.id) %} ({{ attachment_count('bank_accounts', a.id) }}){% endif %}
+              </a>
               <a href="{{ url_for('bank_accounts_page', edit=a.id) }}" class="btn secondary">Edit</a>
               <form class="inline" method="POST" action="{{ url_for('delete_bank_account', account_id=a.id) }}">
                 <button type="submit" class="btn danger" data-confirm data-confirm-label="Remove?">Remove</button>

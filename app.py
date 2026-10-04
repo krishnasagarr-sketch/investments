@@ -6134,6 +6134,7 @@ ATTACHMENT_DIRS = {
     "metals": data_path("metal_attachments"),
     "investments": data_path("investment_attachments"),
     "retirement": data_path("retirement_attachments"),
+    "bank_accounts": data_path("bank_account_attachments"),
 }
 ATTACHMENT_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx"}
 ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -6146,6 +6147,7 @@ ATTACHMENT_ROUTES = {
     "metals": ("metal_attachments_page", "metal_id"),
     "investments": ("investment_attachments_page", "investment_id"),
     "retirement": ("retirement_attachments_page", "account_id"),
+    "bank_accounts": ("bank_account_attachments_page", "account_id"),
 }
 
 
@@ -7412,6 +7414,9 @@ def accounts_for_attachment(db, kind: str, item_id: int):
     bank, narrowed by its depositor and by the account label appearing in
     the deposit number; a Mail Scan attachment matches by the sender's bank."""
     accounts = list_bank_accounts(db)
+    if kind == "bank_accounts":  # a statement attached to an account: that account, and only it, fits
+        own = [a for a in accounts if a["id"] == item_id]
+        return own, [a for a in accounts if a["id"] != item_id]
     bank_ids, depositor_id, number = set(), None, ""
     if kind == "deposits":
         r = db.execute("SELECT bank_ref_id, depositor_id, deposit_number FROM deposits WHERE id = ?", (item_id,)).fetchone()
@@ -7526,9 +7531,53 @@ def bank_accounts_page():
 @app.route("/bank-accounts/<int:account_id>/delete", methods=["POST"])
 def delete_bank_account(account_id):
     db = get_db()
+    if attachment_count("bank_accounts", account_id):
+        flash("This account still has statements attached — delete those first (they'd be left behind otherwise).", "error")
+        return redirect(url_for("bank_accounts_page"))
     db.execute("DELETE FROM bank_accounts WHERE id = ?", (account_id,))
     db.commit()
     return redirect(url_for("bank_accounts_page"))
+
+
+@app.route("/bank-accounts/<int:account_id>/attachments", methods=["GET", "POST"])
+def bank_account_attachments_page(account_id):
+    """Bank statements (and anything else) kept against one bank account --
+    the same attachment page, password note and automatic unlocking as every
+    other holding; the account's own saved details rebuild a statement's
+    password."""
+    db = get_db()
+    account = next((a for a in list_bank_accounts(db) if a["id"] == account_id), None)
+    if account is None:
+        return redirect(url_for("bank_accounts_page"))
+    error = None
+    if request.method == "POST":
+        error = save_attachment(db, "bank_accounts", account_id, request.files.get("attachment"),
+                                request.form.get("password_hint", ""))
+        if error is None:
+            return redirect(url_for("bank_account_attachments_page", account_id=account_id))
+    return render_template(
+        "attachments.html", active_tab="bank_accounts",
+        title=f"{account['bank_name']} — {account['first_name']} {account['last_name']}".strip(" —"),
+        subtitle="Bank statements and other documents for this account"
+                 + (f" · {account['account_label']}" if account["account_label"] else ""),
+        back_url=url_for("bank_accounts_page"),
+        view_url=lambda name: url_for("view_bank_account_attachment", account_id=account_id, filename=name),
+        delete_url=lambda name: url_for("delete_bank_account_attachment", account_id=account_id, filename=name),
+        password_url=lambda name: url_for("update_attachment_password", kind="bank_accounts", item_id=account_id, filename=name),
+        attachments=list_attachments(db, "bank_accounts", account_id),
+        extensions=sorted(ATTACHMENT_EXTENSIONS),
+        error=error,
+    )
+
+
+@app.route("/bank-accounts/<int:account_id>/attachments/<filename>")
+def view_bank_account_attachment(account_id, filename):
+    return _serve_attachment("bank_accounts", account_id, filename)
+
+
+@app.route("/bank-accounts/<int:account_id>/attachments/<filename>/delete", methods=["POST"])
+def delete_bank_account_attachment(account_id, filename):
+    return _delete_attachment(get_db(), "bank_accounts", account_id, filename)
 
 
 @app.route("/attachments/unlock/<kind>/<int:item_id>/<filename>", methods=["GET", "POST"])

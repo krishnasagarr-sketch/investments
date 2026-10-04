@@ -17,6 +17,7 @@ deposit_attachments/
 metal_attachments/
 investment_attachments/
 retirement_attachments/
+bank_account_attachments/
 
 # Flask session signing key — generated on first run, must not be shared/committed
 .flask_secret_key

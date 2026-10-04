@@ -218,14 +218,17 @@ the per-tab totals do on their own. This is separate from **Owned by** — a tag
 
 ## Attachments
 
-Another cross-cutting feature alongside Tags: every deposit, metal holding, investment, and
-PPF/EPF/NPS account has an **Attachments** link (with a count once anything's attached) for
+Another cross-cutting feature alongside Tags: every deposit, metal holding, investment,
+PPF/EPF/NPS account and — as **Statements**, on the Bank Accounts tab — every bank account has an
+**Attachments** link (with a count once anything's attached) for
 keeping the contract note, allotment advice, demat statement, deposit receipt, or a certificate
 scan against it for future reference. Accepts PDF, JPEG/PNG, and Word documents up to 20 MB, one
-per upload. Purely storage — nothing attached is read or acted on, just kept and viewable later
+per upload. (A bank account's statements work exactly the same, including the automatic unlock — the account's
+own saved name, date of birth, PAN etc. rebuild the password — and an account that still has
+statements can't be deleted.) Purely storage — nothing attached is read or acted on, just kept and viewable later
 (a PDF opens inline in a new tab, other types download) or deletable. Stored on disk, one folder
 per holding, under `deposit_attachments/`, `metal_attachments/`, `investment_attachments/`, or
-`retirement_attachments/` next to the database — all four gitignored, since these are real
+`retirement_attachments/`, or `bank_account_attachments/` next to the database — all gitignored, since these are real
 personal financial documents.
 
 Many bank-issued PDFs are password-protected (a PAN number, a date of birth, an account number),
