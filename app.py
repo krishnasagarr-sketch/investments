@@ -685,6 +685,18 @@ def init_db():
         )
     """)
 
+    # Files moved out of Mail Scan onto a deposit / bank account, by the hash of the file as
+    # received -- so scanning the same email again (after a history reset) doesn't bring the
+    # attachment back.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS moved_attachments (
+            sha256 TEXT PRIMARY KEY,
+            dest_kind TEXT NOT NULL,
+            dest_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            moved_at TEXT NOT NULL
+        )
+    """)
     for col, ddl in (("source_kind", "TEXT NOT NULL DEFAULT ''"), ("source_item_id", "INTEGER"),
                      ("source_filename", "TEXT NOT NULL DEFAULT ''"),
                      ("rate_note", "TEXT NOT NULL DEFAULT ''"),        # how the rate was worked out, if it was
@@ -4368,7 +4380,7 @@ def _safe_message_id_folder(message_id: str) -> str:
     return cleaned[:120] or "unknown"
 
 
-def _save_email_attachments(msg, message_id: str) -> list:
+def _save_email_attachments(msg, message_id: str, db=None) -> list:
     """Saves any PDF/CSV/Excel attachment on this email to its own folder
     under MAIL_ATTACHMENTS_DIR, for a later attachment-parsing feature --
     this scan doesn't read them itself (see the module note above). Returns
@@ -4390,6 +4402,9 @@ def _save_email_attachments(msg, message_id: str) -> list:
             payload = None
         if not payload:
             continue
+        if db is not None and db.execute("SELECT 1 FROM moved_attachments WHERE sha256 = ?",
+                                         (hashlib.sha256(payload).hexdigest(),)).fetchone():
+            continue  # already moved onto a deposit / bank account: don't bring it back
         folder = MAIL_ATTACHMENTS_DIR / _safe_message_id_folder(message_id)
         folder.mkdir(parents=True, exist_ok=True)
         dest = folder / filename
@@ -4786,7 +4801,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                 rechecked += 1
                 was_previously_matched = existing["status"] in ("queued", "duplicate")
                 saved_files = (
-                    _save_email_attachments(msg, message_id) if (is_bank_sender or was_previously_matched) else []
+                    _save_email_attachments(msg, message_id, db) if (is_bank_sender or was_previously_matched) else []
                 )
                 if saved_files:
                     attachments_saved += len(saved_files)
@@ -4823,7 +4838,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
             body = _extract_email_text(msg)
             candidates = _extract_transactions_from_text(db, subject, from_addr, body, received_on)
 
-            saved_files = _save_email_attachments(msg, message_id) if (is_bank_sender or candidates) else []
+            saved_files = _save_email_attachments(msg, message_id, db) if (is_bank_sender or candidates) else []
             if saved_files:
                 attachments_saved += len(saved_files)
 
@@ -7152,22 +7167,24 @@ def draft_deposit_from_attachment(kind, item_id, filename):
     return redirect(url_for("draft_deposits_page") + f"#draft-{cur.lastrowid}")
 
 
-def move_attachment_to_deposit(db, kind: str, item_id: int, filename: str, deposit_id: int):
+def move_attachment(db, kind: str, item_id: int, filename: str, dest_kind: str, dest_id: int):
     """Moves a saved attachment (and its kept locked original, password note
-    and unlock status) onto a deposit's own attachments, so the document
-    stays with the FD it describes. Returns the file's new name, or None if
-    the source file is no longer there. It's a move, not a copy: the file
-    leaves where it was (an email's attachment list, or another holding's)."""
+    and unlock status) onto another record's own attachments -- a deposit's,
+    or a bank account's. Returns the file's new name, or None if the source
+    file is no longer there. It's a move, not a copy: the file leaves where it
+    was (an email's attachment list, or another holding's), and what was moved
+    is remembered so a re-scan of the email doesn't bring it back."""
     src = _attachment_file_path(db, kind, item_id, filename)
     if src is None:
         return None
-    folder = ATTACHMENT_DIRS["deposits"] / str(deposit_id)
+    folder = ATTACHMENT_DIRS[dest_kind] / str(dest_id)
     folder.mkdir(parents=True, exist_ok=True)
     name = secure_filename(src.name) or "attachment"
     dest = folder / name
     if dest.exists():
         dest = folder / f"{dest.stem}_{secrets.token_hex(3)}{dest.suffix}"
     original = _original_path(db, kind, item_id, filename)
+    as_received = hashlib.sha256((original or src).read_bytes()).hexdigest()
     shutil.move(str(src), str(dest))
     if original is not None:
         (folder / ORIGINALS_DIRNAME).mkdir(exist_ok=True)
@@ -7180,11 +7197,44 @@ def move_attachment_to_deposit(db, kind: str, item_id: int, filename: str, depos
             """INSERT INTO attachment_notes (kind, item_id, filename, password_hint, unlock_status) VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(kind, item_id, filename) DO UPDATE SET password_hint = excluded.password_hint,
                                                                 unlock_status = excluded.unlock_status""",
-            ("deposits", deposit_id, dest.name, note["password_hint"], note["unlock_status"]))
+            (dest_kind, dest_id, dest.name, note["password_hint"], note["unlock_status"]))
         db.execute("DELETE FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
                    (kind, item_id, filename))
+    if kind == "mail_scan":
+        db.execute("INSERT OR REPLACE INTO moved_attachments (sha256, dest_kind, dest_id, filename, moved_at) "
+                   "VALUES (?, ?, ?, ?, ?)", (as_received, dest_kind, dest_id, dest.name, date.today().isoformat()))
     db.commit()
     return dest.name
+
+
+def move_attachment_to_deposit(db, kind: str, item_id: int, filename: str, deposit_id: int):
+    return move_attachment(db, kind, item_id, filename, "deposits", deposit_id)
+
+
+@app.route("/mail-scan/attachments/<int:email_id>/<filename>/move-to-account", methods=["POST"])
+def move_mail_attachment_to_account(email_id, filename):
+    """Moves a Mail Scan attachment (typically a bank statement) onto a bank
+    account's own Statements. An email not yet tied to an account gets tied to
+    the one chosen here."""
+    db = get_db()
+    back = url_for("mail_scan_page") + "#attachments"
+    account = next((a for a in list_bank_accounts(db)
+                    if str(a["id"]) == request.form.get("account", "")), None)
+    if account is None:
+        flash("Choose the bank account to move it to.", "error")
+        return redirect(back)
+    try:
+        moved = move_attachment(db, "mail_scan", email_id, filename, "bank_accounts", account["id"])
+    except OSError:
+        moved = None
+    if moved is None:
+        flash(f"Couldn't move “{filename}” — it's no longer where it was saved.", "error")
+        return redirect(back)
+    db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = 'manual' "
+               "WHERE id = ? AND bank_account_id IS NULL", (account["id"], email_id))
+    db.commit()
+    flash(f"Moved “{moved}” to {_account_text(account)} — it's now under that account's Statements.", "info")
+    return redirect(back)
 
 
 @app.route("/attachments/original/<kind>/<int:item_id>/<filename>")

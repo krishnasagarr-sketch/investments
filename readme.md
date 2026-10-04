@@ -276,6 +276,14 @@ assembles the password, decrypts the PDF, and opens it.
   (a signed original is flagged — the copy no longer carries the signature), which is what the
   kept original is for. Deleting an attachment deletes its original too, and re-saving the same
   email attachment later doesn't create a duplicate.
+- **Move statements to their bank account.** Each file under Mail Scan's **Saved attachments** has a
+  **Move to bank account…** picker (pre-set to the account its email was sorted into) and a **Move**
+  button. It moves the file — with its kept locked original, password note and unlock status — onto
+  that account's **Statements** (Bank Accounts tab), where it unlocks automatically from the account's
+  own details; an email that wasn't sorted yet gets sorted into the account you chose. It's a real
+  move: the file leaves Mail Scan's list, a same-named statement already there isn't overwritten, and
+  what was moved is remembered (by the hash of the file as received), so scanning the same email again
+  — e.g. after a history reset — doesn't bring it back.
 - **Create draft FD from an attachment.** Next to every saved PDF in Mail Scan's **Saved attachments** is a **Create draft FD** button (not on a
   holding's own Attachments page — that document already belongs to a record, and drafting from it
   would duplicate the FD). It opens the PDF the usual way (a locked one is
