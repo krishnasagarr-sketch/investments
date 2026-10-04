@@ -6,6 +6,13 @@
 {% endblock %}
 
 {% block content %}
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="card" style="max-width:640px;">
+        <div class="error-box" style="margin:0; {% if category == 'info' %}background:#eef3f8; color:var(--accent);{% endif %}">{{ message }}</div>
+      </div>
+    {% endfor %}
+  {% endwith %}
 
   <div class="card" style="max-width:640px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Deposits drafted from scanned mail</h2>
@@ -27,11 +34,19 @@
 
   {% if drafts %}
     {% for d in drafts %}
-    <div class="card" style="max-width:460px;">
+    <div class="card" id="draft-{{ d.id }}" style="max-width:460px;">
       <h2 style="font-size:16px; margin:0 0 4px;">Draft #{{ d.id }}</h2>
-      <p class="field-hint" style="margin-bottom:16px;" title="{{ d.source_snippet }}">
-        From the scanned email: “{{ d.source_snippet[:140] }}{% if d.source_snippet|length > 140 %}…{% endif %}”
-      </p>
+      {% if d.source_filename %}
+        <p class="field-hint" style="margin-bottom:16px;">
+          Read from the attachment
+          <a href="{{ url_for('raw_attachment', kind=d.source_kind, item_id=d.source_item_id, filename=d.source_filename) }}" target="_blank">{{ d.source_filename }}</a>
+          — it can misread things, so check every field against the document before approving.
+        </p>
+      {% else %}
+        <p class="field-hint" style="margin-bottom:16px;" title="{{ d.source_snippet }}">
+          From the scanned email: “{{ d.source_snippet[:140] }}{% if d.source_snippet|length > 140 %}…{% endif %}”
+        </p>
+      {% endif %}
 
       <form method="POST" action="{{ url_for('approve_deposit_draft', draft_id=d.id) }}">
         <div class="form-group">
@@ -48,7 +63,7 @@
           <label for="account_category_{{ d.id }}">Account Category</label>
           <select id="account_category_{{ d.id }}" name="account_category" onchange="fdDraftSync('{{ d.id }}')">
             {% for key, label in account_categories.items() %}
-              <option value="{{ key }}" {% if key == "Resident" %}selected{% endif %}>{{ label }}</option>
+              <option value="{{ key }}" {% if key == d.account_category %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
         </div>
@@ -57,7 +72,7 @@
           <label for="currency_{{ d.id }}">Currency</label>
           <select id="currency_{{ d.id }}" name="currency">
             {% for c in fcnr_currencies %}
-              <option value="{{ c }}">{{ c }}</option>
+              <option value="{{ c }}" {% if c == d.currency %}selected{% endif %}>{{ c }}</option>
             {% endfor %}
           </select>
         </div>
@@ -86,7 +101,7 @@
           <label for="deposit_type_{{ d.id }}">Deposit Type</label>
           <select id="deposit_type_{{ d.id }}" name="deposit_type" onchange="fdDraftSync('{{ d.id }}')">
             {% for key, label in deposit_types.items() %}
-              <option value="{{ key }}" {% if key == "cumulative" %}selected{% endif %}>{{ label }}</option>
+              <option value="{{ key }}" {% if key == d.deposit_type %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
         </div>
@@ -94,22 +109,22 @@
         <div class="form-group">
           <label for="principal_{{ d.id }}">Principal Amount</label>
           <input type="number" step="any" id="principal_{{ d.id }}" name="principal" value="{{ d.principal }}" required>
-          <p class="field-hint">Taken from the scanned amount — check it against the email before approving.</p>
+          <p class="field-hint">{% if d.source_filename %}Read from the attachment{% else %}Taken from the scanned amount{% endif %} — check it against the {% if d.source_filename %}document{% else %}email{% endif %} before approving.</p>
         </div>
 
         <div class="form-group">
           <label for="interest_rate_{{ d.id }}">Annual Interest Rate (%)</label>
-          <input type="number" step="any" id="interest_rate_{{ d.id }}" name="interest_rate" placeholder="e.g. 6.5" required>
-          <p class="field-hint">Not in the email — fill in the rate you were offered.</p>
+          <input type="number" step="any" id="interest_rate_{{ d.id }}" name="interest_rate" placeholder="e.g. 6.5" value="{{ d.interest_rate if d.interest_rate is not none else '' }}" required>
+          {% if d.interest_rate is none %}<p class="field-hint">Not found in the {% if d.source_filename %}document{% else %}email{% endif %} — fill in the rate you were offered.</p>{% endif %}
         </div>
 
         <div class="form-group">
           <label for="tenure_value_{{ d.id }}">Tenure</label>
           <div style="display:flex; gap:8px;">
-            <input type="number" id="tenure_value_{{ d.id }}" name="tenure_value" placeholder="e.g. 12" required style="flex:1;">
+            <input type="number" id="tenure_value_{{ d.id }}" name="tenure_value" placeholder="e.g. 12" value="{{ d.tenure_value }}" required style="flex:1;">
             <select id="tenure_unit_{{ d.id }}" name="tenure_unit" style="width:auto;">
               {% for key, label in tenure_units.items() %}
-                <option value="{{ key }}">{{ label }}</option>
+                <option value="{{ key }}" {% if key == d.tenure_unit %}selected{% endif %}>{{ label }}</option>
               {% endfor %}
             </select>
           </div>
@@ -118,10 +133,10 @@
         <div class="form-group" id="compounding_group_{{ d.id }}">
           <label for="compounding_frequency_{{ d.id }}">Compounding Frequency</label>
           <select id="compounding_frequency_{{ d.id }}" name="compounding_frequency">
-            <option value="1">Annually</option>
-            <option value="2">Semi-annually</option>
-            <option value="4" selected>Quarterly</option>
-            <option value="12">Monthly</option>
+            <option value="1" {% if d.compounding_frequency == 1 %}selected{% endif %}>Annually</option>
+            <option value="2" {% if d.compounding_frequency == 2 %}selected{% endif %}>Semi-annually</option>
+            <option value="4" {% if d.compounding_frequency == 4 %}selected{% endif %}>Quarterly</option>
+            <option value="12" {% if d.compounding_frequency == 12 %}selected{% endif %}>Monthly</option>
           </select>
         </div>
 
@@ -137,7 +152,7 @@
 
         <div class="form-group">
           <label for="remarks_{{ d.id }}">Remarks <span class="muted">(optional)</span></label>
-          <textarea id="remarks_{{ d.id }}" name="remarks" rows="2">Drafted from scanned mail</textarea>
+          <textarea id="remarks_{{ d.id }}" name="remarks" rows="2">{% if d.source_filename %}Drafted from attachment {{ d.source_filename }}{% else %}Drafted from scanned mail{% endif %}</textarea>
         </div>
 
         <button type="submit" class="btn" style="width:100%;">Approve &amp; Create Deposit</button>
@@ -154,6 +169,8 @@
   {% endif %}
 
   <script>
+    {% for d in drafts %}document.addEventListener("DOMContentLoaded", function () { fdDraftSync("{{ d.id }}"); });
+    {% endfor %}
     function fdDraftSync(id) {
       var type = document.getElementById("deposit_type_" + id).value;
       var category = document.getElementById("account_category_" + id).value;

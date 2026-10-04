@@ -273,6 +273,21 @@ assembles the password, decrypts the PDF, and opens it.
   (a signed original is flagged — the copy no longer carries the signature), which is what the
   kept original is for. Deleting an attachment deletes its original too, and re-saving the same
   email attachment later doesn't create a duplicate.
+- **Create draft FD from an attachment.** Next to every saved PDF (Mail Scan's and each holding's
+  Attachments page) is a **Create draft FD** button. It opens the PDF the usual way (a locked one is
+  unlocked first, as above), sends its text — up to 12,000 characters of the first 12 pages — to
+  Claude Haiku with a JSON-schema structured output, and files what it finds as a **pending draft**
+  on the Draft Deposits tab: amount (or RD instalment), rate, tenure (derived from the start and
+  maturity dates when only those are given — in months when it lands exactly, else days), start
+  date, deposit type (cumulative / payout-simple / recurring), compounding, account category and
+  currency, and the FD number. The bank and depositor are matched by name against your Banks and
+  Depositors only when exactly one fits (a bank the document names that you haven't added is left
+  blank; an email's sorted bank account is only a fallback when the document names none). Implausible
+  values (a rate over 30%, a bad date) are dropped rather than guessed. A document that isn't an
+  FD/RD receipt is refused, there's one draft per file (re-clicking points to it), and the draft card
+  links back to the PDF — nothing becomes a real deposit until you check it and **Approve**. Needs
+  `ANTHROPIC_API_KEY` and, like the password note, **sends the document's text to Anthropic** — only
+  when you click the button. It can misread; check every field against the document.
 - **Haiku reads the instructions; Python builds the password.** If `ANTHROPIC_API_KEY` is set
   (environment variable, or a `.env` file next to `app.py` — in the packaged apps, in the app's data
   folder), the unlock page sends the bank's email text (Mail Scan keeps up to 8,000 characters of the

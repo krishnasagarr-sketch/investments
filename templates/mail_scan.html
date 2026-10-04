@@ -2,6 +2,13 @@
 {% block title %}Mail Scan — Fixed Deposit Manager{% endblock %}
 
 {% block content %}
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="card" style="max-width:640px;">
+        <div class="error-box" style="margin:0; {% if category == 'info' %}background:#eef3f8; color:var(--accent);{% endif %}">{{ message }}</div>
+      </div>
+    {% endfor %}
+  {% endwith %}
 
   <div class="card" style="max-width:640px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Scan your inbox for bank transactions</h2>
@@ -184,6 +191,11 @@
                  href="{{ url_for('view_mail_attachment', folder=g.folder, filename=f.name) }}" target="_blank">
                 {{ f.name }} <span class="muted">({{ f.size }})</span>
               </a>
+              {% if f.draft_url %}
+                <form method="POST" action="{{ f.draft_url }}" style="display:inline; margin-left:8px;">
+                  <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;" title="Read this PDF with Claude Haiku and create a draft deposit to review">Create draft FD</button>
+                </form>
+              {% endif %}
               {% if f.original_url %}<a href="{{ f.original_url }}" target="_blank" class="muted" style="font-size:12px; margin-left:8px;" title="The file exactly as received (still password-locked)">View original</a>{% endif %}
               {% if f.unlock_status %}<div class="muted" style="font-size:12px; margin-top:2px;">🔓 {{ f.unlock_status }}</div>{% endif %}
               {% if g.email_id %}
