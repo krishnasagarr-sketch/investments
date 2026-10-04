@@ -288,7 +288,10 @@ assembles the password, decrypts the PDF, and opens it.
   deposit, interest over principal and term for a payout one; kept only if it lands between 1% and
   15%) and the card says so, as an approximation to check. If neither is available the rate stays
   blank. Each card has a **What was read from the document** box with the model's raw JSON, to see
-  exactly what it found. A document that isn't an
+  exactly what it found. The text is taken with the PDF's **layout preserved** (a table's
+  columns stay apart — plain extraction once ran `38063` and `30000` together), and if the read still
+  comes back without the amount, any rate figure or any date, the PDF **itself** (up to 8 MB) is
+  handed to the model so it can see the page, headings and all; the box says which was used. A document that isn't an
   FD/RD receipt is refused, there's one draft per file (re-clicking points to it), and the draft card
   links back to the PDF — nothing becomes a real deposit until you check it and **Approve**. On
   approval the PDF is **moved** (not copied) onto the new deposit's own attachments, with its kept
