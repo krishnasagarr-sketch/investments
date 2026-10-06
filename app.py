@@ -10,6 +10,7 @@ import json
 import math
 import re
 import os
+import poplib
 import secrets
 import shutil
 import smtplib
@@ -4553,7 +4554,15 @@ IMAP_HOSTS = {
     "yahoo.com": "imap.mail.yahoo.com", "yahoo.in": "imap.mail.yahoo.com",
     "yahoo.co.in": "imap.mail.yahoo.com", "ymail.com": "imap.mail.yahoo.com",
     "icloud.com": "imap.mail.me.com", "me.com": "imap.mail.me.com",
+    "rediffmailpro.com": "imap.rediffmailpro.com",  # Rediffmail Pro (paid) has IMAP
 }
+# Providers read over POP3 instead: free Rediffmail has no IMAP (and no app passwords --
+# the mailbox's own password is used).
+POP_HOSTS = {"rediffmail.com": "pop.rediffmail.com"}
+
+
+def _mail_protocol_for(address: str) -> str:
+    return "pop3" if address.rsplit("@", 1)[-1].strip().lower() in POP_HOSTS else "imap"
 
 
 def _imap_host_for(address: str) -> str:
@@ -4584,6 +4593,122 @@ def _imap_connect(sender_email: str, app_password: str):
         raise RuntimeError(f"Could not look up {host} — check this machine's internet/DNS connection.")
     except OSError as e:
         raise RuntimeError(f"Could not reach {host} ({e}).")
+
+
+class _ImapSession:
+    """A mailbox read over IMAP -- the scan's view of it: candidates() (the
+    recent emails), message_ids() (just their Message-ID headers, cheaply),
+    fetch() (one whole email), close()."""
+
+    def __init__(self, address: str, password: str):
+        self.address = address
+        self.conn = _imap_connect(address, password)
+
+    def candidates(self, since: date, limit: int) -> list:
+        self.conn.select("INBOX", readonly=True)
+        status, data = self.conn.search(None, f'(SINCE "{since.strftime("%d-%b-%Y")}")')
+        if status != "OK":
+            raise RuntimeError(f"{self.address}: the IMAP search didn't succeed.")
+        uids = data[0].split()
+        return uids[-limit:] if len(uids) > limit else uids  # newest N within the window, not oldest
+
+    def message_ids(self, uids: list) -> dict:
+        """{uid: Message-ID ("" if it has none)}; a uid left out couldn't be pre-checked."""
+        status, headers = self.conn.fetch(b",".join(uids).decode(), "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+        ids = {}
+        if status != "OK":
+            return ids
+        for item in headers:
+            if isinstance(item, tuple):
+                m = re.match(rb"\s*(\d+)\s", item[0])
+                if m:
+                    ids[m.group(1)] = (email.message_from_bytes(item[1]).get("Message-ID") or "").strip()
+        return ids
+
+    def fetch(self, uid):
+        status, msg_data = self.conn.fetch(uid, "(RFC822)")
+        if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+            return None
+        return msg_data[0][1]
+
+    def close(self):
+        try:
+            self.conn.logout()
+        except Exception:
+            pass
+
+
+class _Pop3Session:
+    """The same view of a mailbox read over POP3 (free Rediffmail). POP3 has
+    no search, so the newest emails are walked back from the end, reading
+    only their headers (TOP) until they're older than the window. Nothing is
+    ever deleted (no DELE) -- but a few servers remove mail once it has been
+    downloaded, which is a setting on that account ("keep a copy on the
+    server" / "leave messages on the server")."""
+
+    OLDER_STREAK = 5  # stop after this many consecutive older emails (a Date header can lie)
+
+    def __init__(self, address: str, password: str):
+        self.address = address
+        host = POP_HOSTS[address.rsplit("@", 1)[-1].strip().lower()]
+        try:
+            self.conn = poplib.POP3_SSL(host, 995, timeout=20)
+            self.conn.user(address)
+            self.conn.pass_(password)
+        except poplib.error_proto:
+            raise RuntimeError(
+                f"{host} rejected the email / password for POP3 login. Rediffmail has no app passwords — use the "
+                "mailbox's own password — and make sure POP access is enabled in its settings."
+            )
+        except socket.gaierror:
+            raise RuntimeError(f"Could not look up {host} — check this machine's internet/DNS connection.")
+        except OSError as e:
+            raise RuntimeError(f"Could not reach {host} ({e}).")
+        self._ids = {}
+
+    def _headers(self, n: int):
+        try:
+            _, lines, _ = self.conn.top(n, 0)
+        except poplib.error_proto:  # TOP is optional in POP3: fall back to the whole message
+            _, lines, _ = self.conn.retr(n)
+        return email.message_from_bytes(b"\r\n".join(lines))
+
+    def candidates(self, since: date, limit: int) -> list:
+        found, older = [], 0
+        for n in range(len(self.conn.list()[1]), 0, -1):
+            msg = self._headers(n)
+            self._ids[n] = (msg.get("Message-ID") or "").strip()
+            try:
+                received = parsedate_to_datetime(msg.get("Date", "")).date()
+            except (TypeError, ValueError):
+                received = date.today()  # undated: can't be ruled out
+            if received < since:
+                older += 1
+                if older >= self.OLDER_STREAK:
+                    break
+                continue
+            older = 0
+            found.append(n)
+            if len(found) >= limit:
+                break
+        return sorted(found)
+
+    def message_ids(self, ns: list) -> dict:
+        return {n: self._ids[n] for n in ns if n in self._ids}
+
+    def fetch(self, n):
+        _, lines, _ = self.conn.retr(n)
+        return b"\r\n".join(lines)
+
+    def close(self):
+        try:
+            self.conn.quit()
+        except Exception:
+            pass
+
+
+def _open_mail_session(address: str, password: str):
+    return (_Pop3Session if _mail_protocol_for(address) == "pop3" else _ImapSession)(address, password)
 
 
 def _mailboxes_to_scan(db) -> list:
@@ -4728,7 +4853,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
     reset anything. Returns this mailbox's counts. `already_known` is the
     set of transaction dedupe keys, shared across mailboxes so the same
     transaction found in two of them is queued once."""
-    conn = _imap_connect(mailbox["email"], mailbox["password"])
+    session = _open_mail_session(mailbox["email"], mailbox["password"])
     scanned = 0
     rechecked = 0
     queued = 0
@@ -4736,14 +4861,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
     attachments_saved = 0
     skipped_known = 0
     try:
-        conn.select("INBOX", readonly=True)
-        since = (date.today() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-        status, data = conn.search(None, f'(SINCE "{since}")')
-        if status != "OK":
-            raise RuntimeError(f"{mailbox['email']}: the IMAP search didn't succeed.")
-        uids = data[0].split()
-        if len(uids) > MAIL_SCAN_MAX_EMAILS:
-            uids = uids[-MAIL_SCAN_MAX_EMAILS:]  # newest N within the window, not oldest
+        uids = session.candidates(date.today() - timedelta(days=days_back), MAIL_SCAN_MAX_EMAILS)
 
         # Cheap first pass: fetch only each email's Message-ID header (in
         # batches), so mail already handled is skipped without downloading it.
@@ -4752,16 +4870,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
         to_fetch = []
         for i in range(0, len(uids), MAIL_SCAN_HEADER_BATCH):
             chunk = uids[i:i + MAIL_SCAN_HEADER_BATCH]
-            status, headers = conn.fetch(b",".join(chunk).decode(), "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
-            if status != "OK":
-                to_fetch += chunk  # can't pre-check this batch: fall back to fetching it in full
-                continue
-            ids = {}
-            for item in headers:
-                if isinstance(item, tuple):
-                    m = re.match(rb"\s*(\d+)\s", item[0])
-                    if m:
-                        ids[m.group(1)] = (email.message_from_bytes(item[1]).get("Message-ID") or "").strip()
+            ids = session.message_ids(chunk)
             for uid in chunk:
                 mid = ids.get(uid)
                 if mid is None:
@@ -4774,10 +4883,10 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                     to_fetch.append(uid)
 
         for uid in to_fetch:
-            status, msg_data = conn.fetch(uid, "(RFC822)")
-            if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+            raw_email = session.fetch(uid)
+            if raw_email is None:
                 continue
-            msg = email.message_from_bytes(msg_data[0][1])
+            msg = email.message_from_bytes(raw_email)
             message_id = (msg.get("Message-ID") or "").strip()
             if not message_id:
                 continue
@@ -4895,10 +5004,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                         set_attachment_password(db, "mail_scan", email_row_id, fname, hint)
             db.commit()
     finally:
-        try:
-            conn.logout()
-        except Exception:
-            pass
+        session.close()
     return {
         "scanned": scanned, "rechecked": rechecked, "queued": queued, "drafted": drafted,
         "attachments_saved": attachments_saved, "skipped_known": skipped_known,
@@ -5076,7 +5182,7 @@ def mail_scan_page():
         "SELECT COUNT(*) c FROM processed_emails WHERE attachments_saved > 0 AND bank_account_id IS NULL"
     ).fetchone()["c"]
     mailbox_rows = [
-        {"email": mb["email"], "primary": mb["primary"],
+        {"email": mb["email"], "primary": mb["primary"], "protocol": _mail_protocol_for(mb["email"]),
          "accounts": [_account_text(accounts_by_id[i]) for i in mb["account_ids"] if i in accounts_by_id]}
         for mb in _mailboxes_to_scan(db)
     ]

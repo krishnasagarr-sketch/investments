@@ -48,7 +48,7 @@
       <ul style="margin:0 0 16px 18px; padding:0; font-size:13px;">
         {% for m in mailbox_rows %}
           <li><strong>{{ m.email }}</strong>
-            <span class="muted">— {% if m.primary %}Notifications{% else %}bank account{% endif %}{% if m.accounts %}: {{ m.accounts|join("; ") }}{% endif %}</span>
+            <span class="muted">— {% if m.primary %}Notifications{% else %}bank account{% endif %}{% if m.protocol == "pop3" %} · POP3{% endif %}{% if m.accounts %}: {{ m.accounts|join("; ") }}{% endif %}</span>
           </li>
         {% endfor %}
       </ul>

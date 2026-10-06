@@ -540,7 +540,16 @@ Message-ID is its identity everywhere, so the same email reaching two mailboxes 
 from the account's own mailbox, which is scanned before the Notifications one), and a transaction
 seen twice is still queued once. One mailbox failing — a stale app password, say — is reported
 without stopping the others. The host comes from the address (Gmail by default; Outlook/Hotmail,
-Yahoo and iCloud addresses use their own IMAP servers — only Gmail has been exercised for real).
+Yahoo, iCloud and Rediffmail Pro addresses use their own IMAP servers). **Free Rediffmail
+(`@rediffmail.com`) has no IMAP**, so it's read over **POP3** (`pop.rediffmail.com:995`) instead:
+POP3 can't search by date, so the newest emails are walked back from the end reading only their
+headers (`TOP`) until they're older than the window, and only new ones are downloaded — everything
+after that (duplicates, attachments, account matching) is the same. Nothing is ever deleted
+(`DELE` is never sent), but Rediffmail has **no app passwords**, so the account's own mailbox
+password goes in the bank account's password field (plain text, like the others), POP access must
+be on in its settings, and "keep a copy on the server" should be ticked so downloading doesn't
+remove mail. Only Gmail has been exercised for real; the POP3 and other-provider paths are tested
+against stand-in servers.
 
 **Which bank account an email belongs to.** For each email with a saved attachment the sender's
 bank narrows the candidates; if that leaves one account, that's it. Otherwise the email's text is
