@@ -4,9 +4,13 @@ A personal finance web app for an Indian household — built with Flask and SQLi
 as a fixed/recurring deposit tracker and has grown into a broader tool: deposits (including
 NRI accounts), metals, stock/mutual fund investments, retirement savings, income and expense
 logging, and India-specific tax/compliance estimates (TDS, DICGC insurance, an income tax
-estimate, capital gains on sold investments, an Income & Expenditure statement). Runs as a
-local web app, a desktop executable (Windows/Mac), or embedded in native Android/iOS shells —
-same code, same database format, everywhere.
+estimate, capital gains on sold investments, an Income & Expenditure statement). It can also
+read your bank mailboxes (Mail Scan), keep the details each bank has on file for each of your
+accounts, store and automatically unlock password-protected statements, and — with an Anthropic API
+key — read a receipt into a draft deposit. Runs as a local web app, a desktop executable
+(Windows/Mac), or embedded in native Android/iOS shells — same code, same database format,
+everywhere (the mailbox, unlocking and Claude features are desktop-only; see [Mobile
+builds](#mobile-builds)).
 
 All rupee amounts use Indian digit grouping (`₹12,34,567.89`). Foreign-currency (FCNR) amounts
 are shown in their own currency and are **never converted to rupees** — see [FCNR / NRE / NRO
@@ -63,10 +67,27 @@ if their library is missing (checked once at startup, never crashes a page):
 | Excel export (Deposits, Income & Expenditure statement) | `openpyxl` | Export Excel button is hidden |
 | Live stock/mutual fund prices (Investments) | `yfinance` | Investments tab shows a banner; holdings still list, just unpriced |
 | Unlocking password-protected PDF attachments | `pypdf` (+ `cryptography` for AES) | A protected PDF's unlock page says so and offers the file as saved |
-| Reading a bank's password instructions with Claude Haiku | `anthropic` + `ANTHROPIC_API_KEY` | The built-in regex reader is used instead |
+| Claude features: reading a bank's password note (Haiku), drafting a deposit from a receipt (Sonnet) | `anthropic` + `ANTHROPIC_API_KEY` | Unlocking falls back to the built-in regex reader; "Create draft FD" says no key is set |
 
 This matters most on Android/iOS builds, which install a smaller dependency set — see
 [Mobile builds](#mobile-builds).
+
+### Configuration
+
+Nothing here is needed to run the app.
+
+- **`ANTHROPIC_API_KEY`** enables the Claude features. Set it as an environment variable, or in a
+  `.env` file next to `app.py` (in the packaged apps: in the app's data folder —
+  `~/Library/Application Support/FDManager` on Mac, next to the `.exe` on Windows):
+  ```
+  ANTHROPIC_API_KEY=sk-ant-...
+  ```
+  `.env` is gitignored — keep the key out of the repository. What gets sent to Anthropic, and when, is
+  listed under [Login & Security](#login--security).
+- **Switches in `app.py`:** `KEEP_ORIGINAL_LOCKED_FILES` (keep the locked original when a PDF is
+  unlocked — on), `SHOW_GENERATED_PASSWORDS` (testing aid — on until unlocking is signed off; see
+  [Temporary testing mode](#temporary-testing-mode)), `HAIKU_MODEL` (reads password notes) and
+  `EXTRACT_MODEL` (reads receipts into drafts).
 
 ## Deposits
 
@@ -207,6 +228,33 @@ name; each **bank** has a bank ID (IFSC/branch code/anything) and a name. Deposi
 investments all link to a depositor by reference, so renaming one updates everywhere it's used.
 A depositor or bank can't be removed while anything still references it.
 
+## Bank Accounts
+
+The **Bank Accounts** tab keeps what each bank has on file for one of your accounts: first name,
+last name, PAN, date of birth, customer ID, and the email address (with its app password) the bank
+writes to — plus the bank, an optional depositor and an account number/label. It's per account
+because the name (and the rest) can differ from bank to bank. Those details are used to:
+
+- **Rebuild a statement's password without typing** — see [Opening a protected
+  PDF](#opening-a-protected-pdf). On the unlock page a **Saved bank account** picker fills in the
+  details: a deposit's attachment pre-selects the account at its bank (narrowed by its depositor, and
+  by an account label that appears in the deposit number); a Mail Scan attachment uses the account its
+  email was sorted into, or matches by the sender's bank; a bank account's own Statements use that
+  account. Where several accounts match, **Try every matching account** builds the password from each
+  in turn, using whatever you've typed for any detail an account hasn't saved (accounts still missing
+  one are skipped and listed).
+- **Scan each account's mailbox** — [Mail Scan](#mail-scan--draft-deposits) reads every account that
+  has an email and app password saved, and sorts each email into the account it belongs to.
+- **Keep the account's bank statements** — a **Statements** link per account opens the same
+  attachment page as every other holding (password note, document date, automatic unlock, kept
+  original, delete). An account that still has statements can't be deleted.
+
+The PAN and customer ID are masked in the list (Edit shows them in full); a saved app password is never
+shown again on any page. Everything is stored as plain text in the local database — like the
+Notifications app password — and so in its backups; see [Login & Security](#login--security).
+Rediffmail has no app passwords and a free account can't be read at all — see [Mail
+Scan](#mail-scan--draft-deposits).
+
 ## Tags
 
 Cross-cutting purpose/allocation labels (Emergency Fund, Tax-saving, Retirement, Kids'
@@ -219,17 +267,20 @@ the per-tab totals do on their own. This is separate from **Owned by** — a tag
 ## Attachments
 
 Another cross-cutting feature alongside Tags: every deposit, metal holding, investment,
-PPF/EPF/NPS account and — as **Statements**, on the Bank Accounts tab — every bank account has an
-**Attachments** link (with a count once anything's attached) for
-keeping the contract note, allotment advice, demat statement, deposit receipt, or a certificate
-scan against it for future reference. Accepts PDF, JPEG/PNG, and Word documents up to 20 MB each, several
-per upload (they share the password note). (A bank account's statements work exactly the same, including the automatic unlock — the account's
-own saved name, date of birth, PAN etc. rebuild the password — and an account that still has
-statements can't be deleted.) Purely storage — nothing attached is read or acted on, just kept and viewable later
-(a PDF opens inline in a new tab, other types download) or deletable. Stored on disk, one folder
-per holding, under `deposit_attachments/`, `metal_attachments/`, `investment_attachments/`, or
-`retirement_attachments/`, or `bank_account_attachments/` next to the database — all gitignored, since these are real
-personal financial documents.
+PPF/EPF/NPS account and — as **Statements**, on the [Bank Accounts](#bank-accounts) tab — every
+bank account has an **Attachments** link (with a count once anything's attached) for keeping the
+contract note, allotment advice, demat statement, deposit receipt, bank statement or a certificate
+scan against it for future reference. Accepts PDF, JPEG/PNG, and Word documents up to 20 MB each,
+several per upload (they share the password note and document date). A PDF opens inline in a new
+tab, other types download; any file can be deleted (its kept original goes with it). Stored on disk,
+one folder per holding, under `deposit_attachments/`, `metal_attachments/`, `investment_attachments/`,
+`retirement_attachments/` or `bank_account_attachments/` next to the database (and `mail_attachments/`
+for [Mail Scan](#mail-scan--draft-deposits)) — all gitignored, since these are real personal
+financial documents. Files are stored, not analysed — except when you ask: a protected PDF is
+unlocked when you open it ([below](#opening-a-protected-pdf)), and a Mail Scan PDF can be turned into
+a draft deposit ([see Mail Scan](#create-draft-fd-from-an-attachment)).
+
+### Document date
 
 Each attachment can also carry a **document date** — the date the document itself bears (a
 statement's month-end, a receipt's date): set it when uploading (it applies to every file chosen
@@ -251,17 +302,19 @@ Mail Scan handles what was saved earlier — Mail Scan files from their email, a
 page (e.g. statements already moved to a bank account, which no longer have their email) from their
 file names alone.
 
+### Password note
+
 Many bank-issued PDFs are password-protected (a PAN number, a date of birth, an account number),
-so each attachment has its own optional **password field** — set it at upload time or edit it
-later independently of the file itself. Put in the bank's own wording, or the real password:
-either works.
+so each attachment has its own optional **password note** — set it at upload time or edit it later
+independently of the file itself. Put in the bank's own wording ("first four letters of your name
+in capitals followed by your date of birth as DDMM"), or the real password: either works. Mail Scan
+fills it in from the email automatically when the email says how to open the file.
 
 ### Opening a protected PDF
 
 Clicking **View** on a password-protected PDF doesn't just hand it to your browser's viewer to
 ask for a password it can't work out — the app reads the password note and builds the password
-for you. A bank's note is usually a *recipe* ("first four letters of your name in capitals
-followed by your date of birth as DDMM"), so the unlock page shows how it read the note (here:
+for you. A bank's note is usually a *recipe*, so the unlock page shows how it read the note (here:
 1. first 4 letters of name in CAPITALS, 2. date of birth as DDMM) and asks for just the details
 that recipe needs — name, date of birth, PAN, registered mobile number, account number,
 customer ID/CIF, folio or Aadhaar — in the order the note gives them. Type them in, and it
@@ -273,107 +326,55 @@ assembles the password, decrypts the PDF, and opens it.
   likely variants (e.g. a name in upper, lower and as typed; `DDMMYYYY` then `DDMMYY`).
 - If the note can't be read, or the guess is wrong, it says so and takes the password typed
   directly; **Open the file as saved** hands over the untouched file for your own PDF viewer.
-- The details you type are used for that one request and **never stored**, and **no password is
-  stored anywhere** — see the next point for what happens to the file instead. A PDF that's only
-  "encrypted" to restrict printing opens straight away and is left as it is.
+- The details you type are used for that one request and **never stored**, and the app never
+  stores a password it finds. A PDF that's only "encrypted" to restrict printing opens straight away
+  and is left as it is.
 - PDFs only (a protected Word/Excel file isn't unlocked, just shown with its note). Needs `pypdf`,
   and `cryptography` for AES-encrypted PDFs, which is most bank statements — see [Optional
   dependencies](#optional-dependencies). Works identically for [Mail Scan](#mail-scan--draft-deposits)'s
-  saved attachments.
-- **The password comes off the file; the original is kept.** **View** tries, in order: no password,
-  then a **regenerated** one — the note is read as described below, the details come from the saved
-  bank account(s) matching the file (a deposit's bank/depositor, or the account the email was
-  sorted into), and every candidate is tried, all without typing. If that fails you land on the
-  unlock page, which says why and takes the details (or the password) by hand. Whatever opens the
-  file is then **removed from the saved file for good**: an unlocked copy replaces it, so from then
-  on it just opens, in any viewer, with nothing stored. The swap only happens after a check — the
-  copy must open with no password, have the same page count, and carry the same text on every page
-  (the first 200) as the original; if not, the saved file is left untouched and the reason is shown.
-  The **untouched original, still locked, exactly as the bank sent it, is kept** in an `_originals/`
-  folder beside it (switch off with `KEEP_ORIGINAL_LOCKED_FILES = False` in `app.py`), and each
-  file in the attachment lists gets a **View original** link plus a 🔓 line saying what was
-  verified. Text and page count are what's compared; images, layout and digital signatures aren't
-  (a signed original is flagged — the copy no longer carries the signature), which is what the
-  kept original is for. Deleting an attachment deletes its original too, and re-saving the same
-  email attachment later doesn't create a duplicate.
-- **Delete a saved attachment.** Each file under Mail Scan's **Saved attachments** has a **Delete**
-  button (two-step confirm) that removes the file, its kept locked original and its notes. It's
-  refused while a pending draft deposit was made from that file (approve or reject the draft first),
-  an email whose last file goes drops out of the lists and its empty folder is tidied away, and what
-  was deleted is remembered by the hash of the file as received — so scanning the same email again
-  (e.g. after a history reset) doesn't save it back.
-- **Move statements to their bank account.** Each file under Mail Scan's **Saved attachments** has a
-  **Move to bank account…** picker (pre-set to the account its email was sorted into) and a **Move**
-  button. It moves the file — with its kept locked original, password note and unlock status — onto
-  that account's **Statements** (Bank Accounts tab), where it unlocks automatically from the account's
-  own details; an email that wasn't sorted yet gets sorted into the account you chose. It's a real
-  move: the file leaves Mail Scan's list, a same-named statement already there isn't overwritten, and
-  what was moved is remembered (by the hash of the file as received), so scanning the same email again
-  — e.g. after a history reset — doesn't bring it back.
-- **Create draft FD from an attachment.** Next to every saved PDF in Mail Scan's **Saved attachments** is a **Create draft FD** button (not on a
-  holding's own Attachments page — that document already belongs to a record, and drafting from it
-  would duplicate the FD). It opens the PDF the usual way (a locked one is
-  unlocked first, as above), sends its text — up to 12,000 characters of the first 12 pages — to
-  Claude **Sonnet** (`EXTRACT_MODEL` in `app.py` — the password note above stays on the cheaper Haiku) with a JSON-schema structured output, and files what it finds as a **pending draft**
-  on the Draft Deposits tab: amount (or RD instalment), rate, tenure (derived from the start and
-  maturity dates when only those are given — in months when it lands exactly, else days), start
-  date, deposit type (cumulative / payout-simple / recurring), compounding, account category and
-  currency, and the FD number. The bank and depositor are matched by name against your Banks and
-  Depositors only when exactly one fits (a bank the document names that you haven't added is left
-  blank; an email's sorted bank account is only a fallback when the document names none). Implausible
-  values (a rate over 30%, a bad date) are dropped rather than guessed. Many receipts print no
-  rate at all — then it's **worked out from the maturity amount** (compound rate for a cumulative
-  deposit, interest over principal and term for a payout one; kept only if it lands between 1% and
-  15%) and the card says so, as an approximation to check. If neither is available the rate stays
-  blank. Each card has a **What was read from the document** box with the model's raw JSON, to see
-  exactly what it found. The text is taken with the PDF's **layout preserved** (a table's
-  columns stay apart — plain extraction once ran `38063` and `30000` together), and if the read still
-  comes back without the amount, any rate figure or any date, the PDF **itself** (up to 8 MB) is
-  handed to the model so it can see the page, headings and all; the box says which was used. A document that isn't an
-  FD/RD receipt is refused, as is one whose FD number already belongs to a deposit or a pending draft
-  (compared ignoring spaces and dashes — it's probably the same FD), there's one draft per file (re-clicking points to it), and the draft card
-  shows the PDF itself in a **viewer pane on the right** (sticky beside the form, stacked below it on
-  narrow screens; a locked file is unlocked first) so every field can be checked against the document
-  as you edit it, with an *Open in new tab* link — nothing becomes a real deposit until you check it and **Approve**. On
-  approval the PDF is **moved** (not copied) onto the new deposit's own attachments, with its kept
-  locked original, password note and unlock status, so the document stays with the FD for future
-  reference (it then no longer appears in Mail Scan's list); rejecting the draft leaves it where it is. Needs
-  `ANTHROPIC_API_KEY` and, like the password note, **sends the document's text to Anthropic** — only
-  when you click the button. It can misread; check every field against the document.
-- **Haiku reads the instructions; Python builds the password.** If `ANTHROPIC_API_KEY` is set
-  (environment variable, or a `.env` file next to `app.py` — in the packaged apps, in the app's data
-  folder), the unlock page sends the bank's email text (Mail Scan keeps up to 8,000 characters of the
-  body of any email that carried an attachment; other attachments use their saved password note) to
-  Claude Haiku with a JSON-schema structured output and gets back, in order, which details make
-  up the password — `{"fields": [{"type": "date_of_birth", "date_format": "DDMM"},
-  {"type": "first_name", "start_index": 0, "end_index": 3}]}`. A `date_of_birth` entry carries the
-  layout to write the date in (`DDMMYYYY`, `DDMMYY`, `DDMM`, `YYYY`, `MMYYYY`, …); `first_name`,
-  `last_name`, `pan` and `customer_id` entries are 0-based slices, end exclusive (a negative start counts from the
-  end, so "last 3 letters" is `-3..99`). Haiku only ever sees that email text — **never the
-  password and never the name/date of birth/PAN you type in**; plain Python formats and slices
-  those details per the JSON, joins them, and tries the result on the
-  PDF. Capitalisation isn't in the JSON: "capital letters"/"lowercase" in the text decides it,
-  otherwise upper, lower and as-typed are all tried. Without a key, the `anthropic` package, or a
-  working connection, the built-in regex reader takes over and the page says why. `.env` is
-  git-ignored — keep your key out of the repository.
-- **Bank Accounts — the details each bank has on file.** The **Bank Accounts** tab keeps a first
-  name, last name, PAN, date of birth, customer ID and the email address (with its app password)
-  per bank account (bank, plus an optional depositor and account number/label), because the name
-  (and the rest) can differ from bank to bank. On the unlock page a **Saved bank account** picker
-  fills in those details — with everything the note needs saved, nothing has to be typed: a
-  deposit's attachment pre-selects the account at its bank (narrowed by its depositor, and by an
-  account label that appears in the deposit number); a Mail Scan attachment matches by the
-  sender's bank. Where several accounts match, **Try every matching account** builds the password
-  from each in turn, using whatever you've typed for any detail an account hasn't saved (accounts
-  still missing one are skipped and listed). [Mail Scan](#mail-scan--draft-deposits) reads each account's mailbox with its email and app password. The PAN and customer ID are
-  masked in the list; everything is stored, like the Notifications app password, as plain text in
-  the local database — and so in its backups. A saved app password is never shown again on any page.
-- **Temporary testing mode.** While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
-  in `app.py` makes the unlock page *display* the password(s) it built from your details (in the
-  order tried, with the winner marked), offers a "show the generated password(s) only — don't
-  open" preview, and waits for an **Open the PDF now** click after a successful unlock (by then the saved file is already unlocked). This
-  puts a real secret on screen, so set it to `False` (or delete the flag) once signed off — the
-  page then goes back to unlocking and opening in one step with nothing shown.
+  saved attachments and a bank account's Statements.
+
+**The password comes off the file; the original is kept.** **View** tries, in order: no password,
+then a **regenerated** one — the note is read as described below, the details come from the saved
+bank account(s) matching the file (a deposit's bank/depositor, or the account the email was
+sorted into), and every candidate is tried, all without typing. If that fails you land on the
+unlock page, which says why and takes the details (or the password) by hand. Whatever opens the
+file is then **removed from the saved file for good**: an unlocked copy replaces it, so from then
+on it just opens, in any viewer, with nothing stored. The swap only happens after a check — the
+copy must open with no password, have the same page count, and carry the same text on every page
+(the first 200) as the original; if not, the saved file is left untouched and the reason is shown.
+The **untouched original, still locked, exactly as the bank sent it, is kept** in an `_originals/`
+folder beside it (switch off with `KEEP_ORIGINAL_LOCKED_FILES = False` in `app.py`), and each
+file in the attachment lists gets a **View original** link plus a 🔓 line saying what was
+verified. Text and page count are what's compared; images, layout and digital signatures aren't
+(a signed original is flagged — the copy no longer carries the signature), which is what the
+kept original is for. Deleting an attachment deletes its original too, and re-saving the same
+email attachment later doesn't create a duplicate.
+
+### Reading the instructions with Claude Haiku
+
+With an API key set (see [Configuration](#configuration)), the unlock page sends the bank's email text (Mail Scan keeps up to 8,000 characters of the
+body of any email that carried an attachment; other attachments use their saved password note) to
+Claude Haiku with a JSON-schema structured output and gets back, in order, which details make
+up the password — `{"fields": [{"type": "date_of_birth", "date_format": "DDMM"},
+{"type": "first_name", "start_index": 0, "end_index": 3}]}`. A `date_of_birth` entry carries the
+layout to write the date in (`DDMMYYYY`, `DDMMYY`, `DDMM`, `YYYY`, `MMYYYY`, …); `first_name`,
+`last_name`, `pan` and `customer_id` entries are 0-based slices, end exclusive (a negative start counts from the
+end, so "last 3 letters" is `-3..99`). Haiku only ever sees that email text — **never the
+password and never the name/date of birth/PAN you type in**; plain Python formats and slices
+those details per the JSON, joins them, and tries the result on the
+PDF. Capitalisation isn't in the JSON: "capital letters"/"lowercase" in the text decides it,
+otherwise upper, lower and as-typed are all tried. Without a key, the `anthropic` package, or a
+working connection, the built-in regex reader takes over and the page says why.
+
+### Temporary testing mode
+
+While unlocking is being tested, `SHOW_GENERATED_PASSWORDS = True`
+in `app.py` makes the unlock page *display* the password(s) it built from your details (in the
+order tried, with the winner marked), offers a "show the generated password(s) only — don't
+open" preview, and waits for an **Open the PDF now** click after a successful unlock (by then the saved file is already unlocked). This
+puts a real secret on screen, so set it to `False` (or delete the flag) once signed off — the
+page then goes back to unlocking and opening in one step with nothing shown.
 
 ## Metals & Market Prices
 
@@ -544,12 +545,13 @@ that has an email and app password saved** — for bank-transaction-looking emai
 credits and new FD bookings don't have to be typed in by hand. This is a generic keyword/regex heuristic, not a
 per-bank parser — bank alert wording varies a lot and isn't standardised the way a statement
 file is, so expect it to occasionally miss a real email or flag something irrelevant. **Only the
-email's own text is scanned for transactions — attachments aren't read yet**, since parsing a
-PDF/CSV/Excel statement and trusting the result needs real sample statements this app hasn't
-seen. A PDF/CSV/Excel attachment on a bank-looking email (recognised sender domain, or the
+email's own text is scanned for transactions** — statement attachments aren't parsed for transactions,
+since trusting a parsed PDF/CSV/Excel statement needs real sample statements this app hasn't
+seen; instead they're saved, can be unlocked and opened, and an FD receipt can be turned into a
+draft deposit on request (below). A PDF/CSV/Excel attachment on a bank-looking email (recognised sender domain, or the
 email's own text already matched a transaction) is still saved — one subfolder per email, named
-after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost before
-that parsing exists; an irrelevant email's attachment is never saved. A sender is "recognised" by
+after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost;
+an irrelevant email's attachment is never saved. A sender is "recognised" by
 a keyword (e.g. `sbi`, `hdfcbank`, `equitas`) matched against each dot-separated label of its
 domain, not the domain as a whole — real bank transactional mail routinely comes from a
 dedicated ESP/sub-brand domain (`bounce-zem.equitas.bank.in`, `alerts.sbi.bank.in`) that looks
@@ -641,6 +643,59 @@ Nothing found is ever written straight to a real record:
 already queued or accepted — even if it shows up again in a different email, like a resend — is
 recognised by its date/amount/kind and not queued a second time.
 
+### Working with saved attachments
+
+Each file under **Saved attachments** has these actions:
+
+- **Move to bank account.** A **Move to bank account…** picker (pre-set to the account its email was
+  sorted into) and a **Move** button move the file — with its kept locked original, password note,
+  document date and unlock status — onto that account's **Statements** ([Bank
+  Accounts](#bank-accounts) tab), where it unlocks automatically from the account's own details; an
+  email that wasn't sorted yet gets sorted into the account you chose. It's a real move: the file leaves
+  Mail Scan's list, a same-named statement already there isn't overwritten, and what was moved is
+  remembered (by the hash of the file as received), so scanning the same email again — e.g. after a
+  history reset — doesn't bring it back.
+- **Delete.** A **Delete** button (two-step confirm) removes the file, its kept locked original and
+  its notes. It's refused while a pending draft deposit was made from that file (approve or reject the
+  draft first); an email whose last file goes drops out of the lists and its empty folder is tidied
+  away; and what was deleted is remembered by the hash of the file as received, so scanning the same
+  email again (e.g. after a history reset) doesn't save it back.
+- **Document date and password note** — editable per file; see [Attachments](#attachments).
+- **Create draft FD** — see the next section.
+
+### Create draft FD from an attachment
+
+Next to every saved PDF in Mail Scan's **Saved attachments** is a **Create draft FD** button (not on a
+holding's own Attachments page — that document already belongs to a record, and drafting from it
+would duplicate the FD). It opens the PDF the usual way (a locked one is
+unlocked first, as above), sends its text — up to 12,000 characters of the first 12 pages — to
+Claude **Sonnet** (`EXTRACT_MODEL` in `app.py` — the password note above stays on the cheaper Haiku) with a JSON-schema structured output, and files what it finds as a **pending draft**
+on the Draft Deposits tab: amount (or RD instalment), rate, tenure (derived from the start and
+maturity dates when only those are given — in months when it lands exactly, else days), start
+date, deposit type (cumulative / payout-simple / recurring), compounding, account category and
+currency, and the FD number. The bank and depositor are matched by name against your Banks and
+Depositors only when exactly one fits (a bank the document names that you haven't added is left
+blank; an email's sorted bank account is only a fallback when the document names none). Implausible
+values (a rate over 30%, a bad date) are dropped rather than guessed. Many receipts print no
+rate at all — then it's **worked out from the maturity amount** (compound rate for a cumulative
+deposit, interest over principal and term for a payout one; kept only if it lands between 1% and
+15%) and the card says so, as an approximation to check. If neither is available the rate stays
+blank. Each card has a **What was read from the document** box with the model's raw JSON, to see
+exactly what it found. The text is taken with the PDF's **layout preserved** (a table's
+columns stay apart — plain extraction once ran `38063` and `30000` together), and if the read still
+comes back without the amount, any rate figure or any date, the PDF **itself** (up to 8 MB) is
+handed to the model so it can see the page, headings and all; the box says which was used. A document that isn't an
+FD/RD receipt is refused, as is one whose FD number already belongs to a deposit or a pending draft
+(compared ignoring spaces and dashes — it's probably the same FD), there's one draft per file (re-clicking points to it), and the draft card
+shows the PDF itself in a **viewer pane on the right** (sticky beside the form, stacked below it on
+narrow screens; a locked file is unlocked first) so every field can be checked against the document
+as you edit it, with an *Open in new tab* link — nothing becomes a real deposit until you check it and **Approve**. On
+approval the PDF is **moved** (not copied) onto the new deposit's own attachments, with its kept
+locked original, password note and unlock status, so the document stays with the FD for future
+reference (it then no longer appears in Mail Scan's list); rejecting the draft leaves it where it is. Needs
+`ANTHROPIC_API_KEY` and, like the password note, **sends the document's text to Anthropic** — only
+when you click the button. It can misread; check every field against the document.
+
 ## Retirement (PPF / EPF / NPS)
 
 PPF, EPF, and NPS rates are government-notified and change over time, with rules (minimum
@@ -657,6 +712,12 @@ Download the entire SQLite database as a single file, or restore from a previous
 one. Restoring makes an automatic safety copy of whatever was there first, and validates that
 the uploaded file is actually a database with the expected tables before overwriting anything.
 
+The backup is **the database only**. Attachments live in their own folders next to it
+(`deposit_attachments/`, `metal_attachments/`, `investment_attachments/`, `retirement_attachments/`,
+`bank_account_attachments/`, `mail_attachments/`) and are **not** in the download — copy those folders
+separately if you want them backed up. The database *does* hold secrets in plain text (below), so
+treat a backup file as sensitive.
+
 ## Login & Security
 
 The whole app sits behind a single login (one account, set up once on first run). Passwords are
@@ -666,6 +727,23 @@ once on first run and gitignored — don't delete it, or every existing session 
 
 **Forgot your password?** emails a one-time reset link (valid 1 hour), reusing the Gmail sender
 already configured on the Notifications tab.
+
+**Secrets stored in plain text.** The login password is hashed, but this is a single-user local app,
+not a vault: the Notifications Gmail app password, each bank account's PAN, date of birth, customer ID,
+email and app password (or, for Rediffmail, mailbox password), and any password notes are stored as
+plain text in `fixed_deposits.db` — and so in its backups — and the API key sits in `.env`. Keep the
+data folder private. A saved app password is never shown back on any page.
+
+**What leaves your machine.** Nothing, unless you've set an API key and use a Claude feature, or you
+run Mail Scan (which talks to your mail provider directly):
+
+- *Opening a protected PDF* sends Anthropic (Haiku) the bank's **email text** — or the saved password
+  note — up to 6,000 characters. Never the password, and never the name/date of birth/PAN used to build it.
+- *Create draft FD* sends Anthropic (Sonnet) the PDF's **text** (up to 12,000 characters from the first
+  12 pages) and, only if that read comes back missing the essentials, the **PDF itself** (up to 8 MB) — and
+  only when you click the button. A receipt carries your name, address, PAN and account numbers.
+- Both calls go straight from this app to the Anthropic API with your key; nothing is sent without a
+  click or a scan you started.
 
 ## Mobile builds
 
@@ -681,6 +759,10 @@ runs on-device with no server to reach over the network:
   locally-built pure-Python wheel, since Briefcase can't build from source for iOS — see
   `ios/pyproject.toml`).
 
+Neither bundles `pypdf`, `cryptography` or `anthropic`, so on mobile the **PDF unlocking** and the
+**Claude features** (password-note reading, Create draft FD) are unavailable — a protected PDF just
+offers the file as saved. Mail Scan's mailbox reading is part of the same code but is desktop-oriented.
+
 Both are built by GitHub Actions (`.github/workflows/build-android.yml`,
 `build-ios.yml`) alongside the desktop build (`build-apps.yml`, which produces the Windows
 `.exe` and Mac `.app`) whenever `app.py` or `templates/` changes on `main`.
@@ -693,9 +775,11 @@ deposit — see [Reinvesting, closing, and History](#reinvesting-closing-and-his
 `metal_prices`, `investments` + `investment_sales` (realised sales logged against a holding —
 see [Selling a holding, and Capital Gains](#selling-a-holding-and-capital-gains)),
 `retirement_accounts` + `retirement_contributions`, `other_income`, `expenses`, `family_gifts`,
-`portfolio_tags`, `interest_statement_lines` (Interest Check), `processed_emails` +
-`scanned_transactions` + `deposit_drafts` (Mail Scan & Draft Deposits — see above),
-`notification_settings`, and `auth_user`. Schema migrations run automatically on startup, so
+`portfolio_tags`, `interest_statement_lines` (Interest Check), `bank_accounts` ([Bank
+Accounts](#bank-accounts)), `attachment_notes` (per-file password note, document date, unlock status),
+`moved_attachments` (hashes of files moved or deleted out of Mail Scan, so a re-scan doesn't bring
+them back), `processed_emails` + `scanned_transactions` + `deposit_drafts` (Mail Scan & Draft
+Deposits — see above), `notification_settings`, and `auth_user`. Schema migrations run automatically on startup, so
 upgrading from an older version is a normal `git pull` + restart, no manual steps.
 
 ## Notes & limitations
@@ -715,8 +799,14 @@ upgrading from an older version is a normal `git pull` + restart, no manual step
 - Premature-withdrawal penalties and auto-renewal aren't modelled — every deposit is assumed to
   run to its full tenure as entered.
 - Mail Scan is a best-effort keyword scan, not a per-bank parser, and only reads an email's own
-  text for transactions — attachments like PDF e-statements are saved to disk for later, not
-  parsed. It will miss some real transaction emails and occasionally flag something irrelevant;
+  text for transactions — attachments like PDF e-statements are saved, can be unlocked and opened,
+  and (on request) read into a draft deposit, but aren't parsed for transactions. It will miss some real transaction emails and occasionally flag something irrelevant;
   nothing it finds becomes a real record without being reviewed and accepted/approved first (see
   [Mail Scan & Draft Deposits](#mail-scan--draft-deposits)).
+- The Claude features can misread a document or a password note: a draft deposit is always a draft
+  to check against the receipt shown beside it, and a password recipe it gets wrong falls back to
+  asking you. They need an API key and send text to Anthropic (see [Login &
+  Security](#login--security)).
+- Free Rediffmail can't be read by Mail Scan (Rediff reserves POP3 for paid accounts); statements from
+  it are best attached by hand to the account's Statements.
 - All figures are for personal tracking only; confirm exact values with your bank/CA.
