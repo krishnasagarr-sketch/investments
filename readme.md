@@ -585,7 +585,8 @@ seen; instead they're saved, can be unlocked and opened, and an FD receipt can b
 draft deposit on request (below). A PDF/CSV/Excel attachment on a bank-looking email (recognised sender domain, or the
 email's own text already matched a transaction) is still saved — one subfolder per email, named
 after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost;
-an irrelevant email's attachment is never saved. A sender is "recognised" (a bank, or the Income Tax Department — see [Tax Filings](#tax-filings)) by
+an irrelevant email's attachment is never saved. A sender is "recognised" (a bank; the Income Tax Department — see [Tax Filings](#tax-filings); or an NPS / EPF record-keeper —
+Protean, formerly NSDL e-Gov, and EPFO — see [Retirement](#retirement-ppf--epf--nps)) by
 a keyword (e.g. `sbi`, `hdfcbank`, `equitas`) matched against each dot-separated label of its
 domain, not the domain as a whole — real bank transactional mail routinely comes from a
 dedicated ESP/sub-brand domain (`bounce-zem.equitas.bank.in`, `alerts.sbi.bank.in`) that looks
@@ -741,7 +742,11 @@ gain, and a PPF account flags when its contributions in the current financial ye
 **₹1,50,000** annual limit. Each account also has a **remarks** field (e.g. "employer-matched",
 "nominee is spouse"), editable after creation via its own "Update remarks" box. Each account has an
 **Attachments** link (statements, passbook scans) with the same automatic unlocking as everywhere
-else; an account that still has attachments can't be deleted.
+else; an account that still has attachments can't be deleted. Monthly **NPS statements** from Protean
+(`…proteantech…`, also the older `cra-nsdl`) and EPFO mail are recognised by [Mail Scan](#mail-scan--draft-deposits),
+which saves their PDFs; the **Move to…** picker comes pre-set to your retirement account of that type
+when there's exactly one (an NPS statement → your NPS account), and the statement's period in the
+subject becomes its document date.
 
 ## Backup & Restore
 

@@ -208,10 +208,10 @@
                 <form method="POST" action="{{ url_for('move_mail_attachment_to_account', email_id=g.email_id, filename=f.name) }}"
                       style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:4px;">
                   <select name="account" required style="font-size:12px; padding:5px 8px; max-width:300px;">
-                    <option value="" disabled {% if not g.account_id %}selected{% endif %}>Move to…</option>
+                    <option value="" disabled {% if not g.account_id and not g.suggested_target %}selected{% endif %}>Move to…</option>
                     <optgroup label="Bank accounts (Statements)">
                       {% for c in account_choices %}
-                        <option value="bank_accounts:{{ c.id }}" {% if g.account_id == c.id %}selected{% endif %}>{{ c.text }}</option>
+                        <option value="bank_accounts:{{ c.id }}" {% if g.account_id == c.id and not g.suggested_target %}selected{% endif %}>{{ c.text }}</option>
                       {% endfor %}
                     </optgroup>
                     {% if move_targets.investments %}
@@ -225,7 +225,7 @@
                     </optgroup>
                     {% if move_targets.retirement %}
                       <optgroup label="Retirement accounts">
-                        {% for t in move_targets.retirement %}<option value="retirement:{{ t.id }}">{{ t.text }}</option>{% endfor %}
+                        {% for t in move_targets.retirement %}<option value="retirement:{{ t.id }}" {% if g.suggested_target == "retirement:" ~ t.id %}selected{% endif %}>{{ t.text }}</option>{% endfor %}
                       </optgroup>
                     {% endif %}
                   </select>

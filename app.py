@@ -859,6 +859,13 @@ def init_db():
         conn.execute("UPDATE processed_emails SET attachments_checked = 0 WHERE attachments_saved = 0 "
                      "AND (lower(subject) LIKE 'fw:%' OR lower(subject) LIKE 'fwd:%')")
         conn.execute("PRAGMA user_version = 1")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+        # One time: emails from NPS / EPF record-keepers (and the tax department) were skipped before those
+        # senders were recognised; give each one more look so its attachment is saved.
+        for label in ("proteantech", "cra-nsdl", "npscra", "epfindia", "incometax", "incometaxindia", "incometaxindiaefiling"):
+            conn.execute("UPDATE processed_emails SET attachments_checked = 0 WHERE attachments_saved = 0 AND "
+                         "(lower(from_addr) LIKE ? OR lower(from_addr) LIKE ?)", (f"%@{label}.%", f"%.{label}.%"))
+        conn.execute("PRAGMA user_version = 2")
 
     conn.commit()
     conn.close()
@@ -5002,7 +5009,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
             # A forwarded bank email comes From whoever forwarded it: judge it by its original sender.
             from_addr = _forwarded_original_sender(msg) or from_addr
             bank_guess, _ = _guess_bank_from_sender(from_addr, db)
-            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values() or _is_tax_sender(from_addr)
+            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values() or _is_statement_sender(from_addr)
 
             if existing:
                 # A backfill pass: this email's transaction classification
@@ -5193,6 +5200,7 @@ def list_saved_attachments(db) -> list:
             "from_addr": email_row["from_addr"] if email_row else "",
             "source_email": email_row["source_email"] if email_row else "",
             "account_id": email_row["bank_account_id"] if email_row else None,
+            "suggested_target": _suggest_retirement_target(db, email_row["from_addr"]) if email_row else "",
             "account_match": email_row["account_match"] if email_row else "",
             "received_date": email_row["received_date"] if email_row else "",
             "mtime": max(f.stat().st_mtime for f in files),
@@ -7975,9 +7983,33 @@ MAIL_SCAN_TAX_DOMAINS = {"incometax", "incometaxindia", "incometaxindiaefiling"}
 _AY_RE = re.compile(r"(\d{4})-(\d{2})")
 
 
+# Senders of retirement statements, by label of their domain -> the retirement account type they
+# belong to: the NPS record-keeping agencies (Protean, formerly NSDL e-Gov) and EPFO.
+MAIL_SCAN_RETIREMENT_DOMAINS = {"proteantech": "NPS", "cra-nsdl": "NPS", "npscra": "NPS", "epfindia": "EPF"}
+
+
+def _domain_labels(address: str) -> set:
+    return set((address or "").rsplit("@", 1)[-1].lower().split("."))
+
+
 def _is_tax_sender(address: str) -> bool:
-    domain = (address or "").rsplit("@", 1)[-1].lower()
-    return bool(MAIL_SCAN_TAX_DOMAINS & set(domain.split(".")))
+    return bool(MAIL_SCAN_TAX_DOMAINS & _domain_labels(address))
+
+
+def _is_statement_sender(address: str) -> bool:
+    """A non-bank sender whose attachments are worth keeping: the Income Tax Department, or an NPS / EPF record-keeper."""
+    return _is_tax_sender(address) or bool(set(MAIL_SCAN_RETIREMENT_DOMAINS) & _domain_labels(address))
+
+
+def _suggest_retirement_target(db, address: str) -> str:
+    """"retirement:<id>" when the sender is an NPS/EPF record-keeper and exactly one retirement account of
+    that type exists -- the obvious home for its statement -- else ""."""
+    labels = _domain_labels(address)
+    for key, account_type in MAIL_SCAN_RETIREMENT_DOMAINS.items():
+        if key in labels:
+            rows = db.execute("SELECT id FROM retirement_accounts WHERE upper(account_type) = ?", (account_type,)).fetchall()
+            return f"retirement:{rows[0]['id']}" if len(rows) == 1 else ""
+    return ""
 
 
 def _ay_label(start_year: int) -> str:
