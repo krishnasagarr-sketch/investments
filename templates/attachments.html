@@ -35,7 +35,7 @@
       </div>
       <div class="form-group">
         <label for="password_hint">Password to open it <span class="muted">(optional)</span></label>
-        <input type="text" id="password_hint" name="password_hint" placeholder="e.g. PAN number, or DOB as DDMMYYYY">
+        <input type="text" id="password_hint" name="password_hint" value="{{ default_hint|default('') }}" placeholder="e.g. PAN number, or DOB as DDMMYYYY">
         <p class="field-hint">
           Many bank-issued PDFs are password-protected — note the actual password, or just the
           scheme (e.g. "PAN in caps"), so it's not forgotten by the time you need to open this again.

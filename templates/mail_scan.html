@@ -219,6 +219,10 @@
                         {% for t in move_targets.investments %}<option value="investments:{{ t.id }}">{{ t.text }}</option>{% endfor %}
                       </optgroup>
                     {% endif %}
+                    <optgroup label="Income tax">
+                      <option value="new_tax_communication:0">➕ New tax communication from this email</option>
+                      {% for t in move_targets.tax_records %}<option value="tax_records:{{ t.id }}">{{ t.text }}</option>{% endfor %}
+                    </optgroup>
                     {% if move_targets.retirement %}
                       <optgroup label="Retirement accounts">
                         {% for t in move_targets.retirement %}<option value="retirement:{{ t.id }}">{{ t.text }}</option>{% endfor %}

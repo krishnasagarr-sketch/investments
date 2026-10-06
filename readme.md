@@ -268,15 +268,15 @@ the per-tab totals do on their own. This is separate from **Owned by** — a tag
 ## Attachments
 
 Another cross-cutting feature alongside Tags: every deposit, metal holding, investment,
-PPF/EPF/NPS account and — as **Statements**, on the [Bank Accounts](#bank-accounts) tab — every
-bank account has an **Attachments** link (with a count once anything's attached) for keeping the
+PPF/EPF/NPS account, income tax record ([Tax Filings](#tax-filings)) and — as **Statements**, on the
+[Bank Accounts](#bank-accounts) tab — every bank account has an **Attachments** link (with a count once anything's attached) for keeping the
 contract note, allotment advice, demat statement, deposit receipt, bank statement or a certificate
 scan against it for future reference. Accepts PDF, JPEG/PNG, and Word documents up to 20 MB each,
 several per upload (they share the password note and document date). A PDF opens inline in a new
 tab, other types download; any file can be deleted (its kept original goes with it). Stored on disk,
 one folder per holding, under `deposit_attachments/`, `metal_attachments/`, `investment_attachments/`,
-`retirement_attachments/` or `bank_account_attachments/` next to the database (and `mail_attachments/`
-for [Mail Scan](#mail-scan--draft-deposits)) — all gitignored, since these are real personal
+`retirement_attachments/`, `bank_account_attachments/` or `tax_attachments/` next to the database (and
+`mail_attachments/` for [Mail Scan](#mail-scan--draft-deposits)) — all gitignored, since these are real personal
 financial documents. Files are stored, not analysed — except when you ask: a protected PDF is
 unlocked when you open it ([below](#opening-a-protected-pdf)), and a Mail Scan PDF can be turned into
 a draft deposit ([see Mail Scan](#create-draft-fd-from-an-attachment)).
@@ -512,6 +512,34 @@ depositor holds any NRI account, since the Section 87A rebate shown doesn't appl
 non-residents. This is an estimate from what's tracked here — not a substitute for filing
 software or a CA; it doesn't know about salary TDS already deducted or other deductions.
 
+## Tax Filings
+
+The **Tax Filings** tab keeps your income tax paperwork by assessment year: the **returns you filed**
+(ITR form, original/revised/belated/updated, date filed, acknowledgement number, status, refund or
+tax payable) and every **communication from the Income Tax Department** (notice, intimation u/s
+143(1), demand, refund advice, order, rectification, your own reply — with section, reference/DIN,
+date received, respond-by date, status and amount). Records can be filtered by taxpayer (a
+depositor) and assessment year, and are grouped under each year.
+
+- **Open notices are hard to miss.** An open communication with a respond-by date is flagged *Due
+  within 15 days* or *Overdue*, open ones sort first (soonest deadline first), and the nav shows
+  `Tax Filings (n)` for the number still open — mark one *Response filed* or *Closed* (Edit) and it
+  drops out of the count.
+- **Documents on every record.** Each return and communication has a **Documents** page — the same
+  attachment page as everywhere else (several files at once, document date, password note, View
+  original, delete): the ITR-V and computation, Form 26AS / AIS, a notice and your reply. Income Tax
+  PDFs are locked with your **PAN in lowercase followed by your date of birth (DDMMYYYY)**, so that
+  note is pre-filled, and a taxpayer whose [bank account](#bank-accounts) has the PAN and date of
+  birth saved gets them opened automatically. Documents are stored in `tax_attachments/` (gitignored).
+  A record that still has documents can't be deleted.
+- **From Mail Scan.** Email from the department (`…incometax…` addresses, including one you forwarded
+  from another mailbox) has its attachments saved like a bank's. On Mail Scan's **Move to…** picker,
+  choose **➕ New tax communication from this email** to create a communication record from it in one
+  click — type, section, DIN, assessment year, respond-by date (an "on or before" date, or "within N
+  days") and any amount are read from the text, the taxpayer comes from the bank account the email
+  was sorted into — and move the file into it; or pick an existing record to add more documents to.
+  Check the guessed fields on the Tax Filings tab.
+
 ## TDS
 
 Estimates TDS (tax deducted at source) on FD interest, split by the rules that actually apply:
@@ -557,7 +585,7 @@ seen; instead they're saved, can be unlocked and opened, and an FD receipt can b
 draft deposit on request (below). A PDF/CSV/Excel attachment on a bank-looking email (recognised sender domain, or the
 email's own text already matched a transaction) is still saved — one subfolder per email, named
 after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost;
-an irrelevant email's attachment is never saved. A sender is "recognised" by
+an irrelevant email's attachment is never saved. A sender is "recognised" (a bank, or the Income Tax Department — see [Tax Filings](#tax-filings)) by
 a keyword (e.g. `sbi`, `hdfcbank`, `equitas`) matched against each dot-separated label of its
 domain, not the domain as a whole — real bank transactional mail routinely comes from a
 dedicated ESP/sub-brand domain (`bounce-zem.equitas.bank.in`, `alerts.sbi.bank.in`) that looks
@@ -653,12 +681,12 @@ recognised by its date/amount/kind and not queued a second time.
 
 Each file under **Saved attachments** has these actions:
 
-- **Move to…** A **Move to…** picker (grouped: bank accounts, investments, retirement accounts;
+- **Move to…** A **Move to…** picker (grouped: bank accounts, investments, retirement accounts, income tax;
   pre-set to the bank account its email was sorted into) and a **Move** button move the file — with
   its kept locked original, password note, document date and unlock status — onto that record's
   attachments: a bank account's **Statements** ([Bank Accounts](#bank-accounts) tab), an
-  investment's or a retirement account's **Attachments**, where it unlocks automatically from the
-  holder's saved details. Moving to a bank account also sorts an unsorted email into it. It's a real
+  investment's, retirement account's or tax record's **Attachments**, where it unlocks automatically from
+  the holder's saved details. Moving to a bank account also sorts an unsorted email into it. It's a real
   move: the file leaves Mail Scan's list, a same-named file already there isn't overwritten, and what
   was moved is remembered (by the hash of the file as received), so scanning the same email again —
   e.g. after a history reset — doesn't bring it back.
@@ -723,7 +751,7 @@ the uploaded file is actually a database with the expected tables before overwri
 
 The backup is **the database only**. Attachments live in their own folders next to it
 (`deposit_attachments/`, `metal_attachments/`, `investment_attachments/`, `retirement_attachments/`,
-`bank_account_attachments/`, `mail_attachments/`) and are **not** in the download — copy those folders
+`bank_account_attachments/`, `tax_attachments/`, `mail_attachments/`) and are **not** in the download — copy those folders
 separately if you want them backed up. The database *does* hold secrets in plain text (below), so
 treat a backup file as sensitive.
 
@@ -786,7 +814,7 @@ see [Selling a holding, and Capital Gains](#selling-a-holding-and-capital-gains)
 `retirement_accounts` + `retirement_contributions`, `other_income`, `expenses`, `family_gifts`,
 `portfolio_tags`, `interest_statement_lines` (Interest Check), `bank_accounts` ([Bank
 Accounts](#bank-accounts)), `attachment_notes` (per-file password note, document date, unlock status),
-`moved_attachments` (hashes of files moved or deleted out of Mail Scan, so a re-scan doesn't bring
+`tax_records` ([Tax Filings](#tax-filings)), `moved_attachments` (hashes of files moved or deleted out of Mail Scan, so a re-scan doesn't bring
 them back), `processed_emails` + `scanned_transactions` + `deposit_drafts` (Mail Scan & Draft
 Deposits — see above), `notification_settings`, and `auth_user`. Schema migrations run automatically on startup, so
 upgrading from an older version is a normal `git pull` + restart, no manual steps.

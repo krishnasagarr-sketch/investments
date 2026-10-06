@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% block title %}Tax Filings — Fixed Deposit Manager{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:720px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Income tax returns &amp; notices</h2>
+    <p class="field-hint" style="margin:0;">
+      Keep each return you filed and every communication from the Income Tax Department, by assessment year,
+      with their documents attached — the ITR-V and computation, Form 26AS / AIS, a notice and your reply.
+      Income Tax PDFs are locked with your PAN (lowercase) and date of birth; add those to a
+      <a href="{{ url_for('bank_accounts_page') }}">bank account</a> for that taxpayer and they open by themselves.
+      Emails from the department that
+      <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> picks up can be filed here in one click.
+    </p>
+  </div>
+
+  <div class="card" style="max-width:720px;">
+    <h2 style="font-size:16px; margin:0 0 12px;">{% if form.id %}Edit record{% else %}Add a record{% endif %}</h2>
+    {% if error %}<div class="error-box">{{ error }}</div>{% endif %}
+    <form method="POST" action="{{ url_for('tax_filings_page') }}" id="tax-form">
+      <input type="hidden" name="id" value="{{ form.id }}">
+      <div class="form-group">
+        <label>What is it?</label>
+        <div style="display:flex; gap:18px; flex-wrap:wrap;">
+          <label style="font-weight:normal; display:flex; gap:6px; align-items:center;">
+            <input type="radio" name="record_type" value="filing" style="width:auto;" {% if form.record_type != "communication" %}checked{% endif %}>
+            A return I filed
+          </label>
+          <label style="font-weight:normal; display:flex; gap:6px; align-items:center;">
+            <input type="radio" name="record_type" value="communication" style="width:auto;" {% if form.record_type == "communication" %}checked{% endif %}>
+            A communication from the department
+          </label>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="form-group" style="flex:1; min-width:200px;">
+          <label for="depositor_id">Taxpayer</label>
+          <select id="depositor_id" name="depositor_id">
+            <option value="">— not set —</option>
+            {% for d in depositors %}<option value="{{ d.id }}" {% if form.depositor_id == d.id|string %}selected{% endif %}>{{ d.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-group" style="flex:1; min-width:160px;">
+          <label for="assessment_year">Assessment year</label>
+          <select id="assessment_year" name="assessment_year">
+            {% for ay in ay_options %}<option value="{{ ay }}" {% if form.assessment_year == ay %}selected{% endif %}>AY {{ ay }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="t-filing">
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div class="form-group" style="flex:1; min-width:180px;">
+            <label for="f_category">ITR form</label>
+            <select id="f_category" name="f_category">
+              <option value="">Choose…</option>
+              {% for x in filing_forms %}<option value="{{ x }}" {% if form.f_category == x %}selected{% endif %}>{{ x }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-group" style="flex:1; min-width:180px;">
+            <label for="f_subtype">Type of return</label>
+            <select id="f_subtype" name="f_subtype">
+              <option value="">Choose…</option>
+              {% for x in filing_types %}<option value="{{ x }}" {% if form.f_subtype == x %}selected{% endif %}>{{ x }}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div class="form-group" style="flex:1; min-width:160px;">
+            <label for="f_date">Date filed</label>
+            <input type="date" id="f_date" name="f_date" value="{{ form.f_date }}">
+          </div>
+          <div class="form-group" style="flex:1; min-width:200px;">
+            <label for="f_reference">Acknowledgement number <span class="muted">(optional)</span></label>
+            <input type="text" id="f_reference" name="f_reference" value="{{ form.f_reference }}" autocomplete="off">
+          </div>
+        </div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div class="form-group" style="flex:1; min-width:160px;">
+            <label for="f_status">Status</label>
+            <select id="f_status" name="f_status">
+              {% for x in filing_statuses %}<option value="{{ x }}" {% if (form.f_status or "Filed") == x %}selected{% endif %}>{{ x }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-group" style="flex:1; min-width:200px;">
+            <label for="f_amount">Refund (+) / tax payable (−) <span class="muted">(optional)</span></label>
+            <input type="text" inputmode="decimal" id="f_amount" name="f_amount" value="{{ form.f_amount }}" placeholder="e.g. 12500 or -4000">
+          </div>
+        </div>
+      </div>
+
+      <div class="t-communication">
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div class="form-group" style="flex:1; min-width:200px;">
+            <label for="c_category">Type</label>
+            <select id="c_category" name="c_category">
+              <option value="">Choose…</option>
+              {% for x in comm_types %}<option value="{{ x }}" {% if form.c_category == x %}selected{% endif %}>{{ x }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-group" style="flex:1; min-width:140px;">
+            <label for="c_section">Section <span class="muted">(optional)</span></label>
+            <input type="text" id="c_section" name="c_section" value="{{ form.c_section }}" placeholder="e.g. 143(1), 142(1)" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="c_reference">Reference / DIN <span class="muted">(optional)</span></label>
+          <input type="text" id="c_reference" name="c_reference" value="{{ form.c_reference }}" autocomplete="off">
+        </div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div class="form-group" style="flex:1; min-width:160px;">
+            <label for="c_date">Date received</label>
+            <input type="date" id="c_date" name="c_date" value="{{ form.c_date }}">
+          </div>
+          <div class="form-group" style="flex:1; min-width:160px;">
+            <label for="c_due">Respond by <span class="muted">(optional)</span></label>
+            <input type="date" id="c_due" name="c_due" value="{{ form.c_due }}">
+          </div>
+        </div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div class="form-group" style="flex:1; min-width:160px;">
+            <label for="c_status">Status</label>
+            <select id="c_status" name="c_status">
+              {% for x in comm_statuses %}<option value="{{ x }}" {% if (form.c_status or "Open") == x %}selected{% endif %}>{{ x }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-group" style="flex:1; min-width:200px;">
+            <label for="c_amount">Amount demanded / refunded <span class="muted">(optional)</span></label>
+            <input type="text" inputmode="decimal" id="c_amount" name="c_amount" value="{{ form.c_amount }}">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="remarks">Notes <span class="muted">(optional)</span></label>
+        <textarea id="remarks" name="remarks" rows="2">{{ form.remarks }}</textarea>
+      </div>
+      <button type="submit" class="btn" style="width:100%;">{% if form.id %}Save changes{% else %}Add record{% endif %}</button>
+      {% if form.id %}<a href="{{ url_for('tax_filings_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center; display:block; box-sizing:border-box;">Cancel</a>{% endif %}
+    </form>
+  </div>
+
+  <form method="GET" class="card" style="max-width:720px; display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+    <div class="form-group" style="margin:0; flex:1; min-width:160px;">
+      <label for="taxpayer">Taxpayer</label>
+      <select id="taxpayer" name="taxpayer" onchange="this.form.submit()">
+        <option value="">Everyone</option>
+        {% for d in depositors %}<option value="{{ d.id }}" {% if f_depositor == d.id %}selected{% endif %}>{{ d.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin:0; flex:1; min-width:160px;">
+      <label for="ay">Assessment year</label>
+      <select id="ay" name="ay" onchange="this.form.submit()">
+        <option value="">All years</option>
+        {% for ay in ay_options %}<option value="{{ ay }}" {% if f_ay == ay %}selected{% endif %}>AY {{ ay }}</option>{% endfor %}
+      </select>
+    </div>
+  </form>
+
+  {% for ay, g in groups %}
+    <div class="card">
+      <h2 style="font-size:16px; margin:0 0 12px;">Assessment year {{ ay }}</h2>
+
+      <h3 style="font-size:13px; margin:0 0 6px;" class="muted">Returns filed</h3>
+      {% if g.filing %}
+        <div class="table-scroll">
+        <table>
+          <thead><tr><th>Taxpayer</th><th>Form</th><th>Type</th><th>Filed</th><th>Acknowledgement</th><th>Status</th><th>Refund / payable</th><th></th></tr></thead>
+          <tbody>
+            {% for r in g.filing %}
+            <tr>
+              <td>{{ r.depositor_name or "—" }}</td>
+              <td><strong>{{ r.category }}</strong></td>
+              <td>{{ r.subtype }}</td>
+              <td>{{ r.record_date }}</td>
+              <td>{{ r.reference or "—" }}</td>
+              <td><span class="badge type">{{ r.status }}</span></td>
+              <td>{% if r.amount is not none %}<span class="{{ 'positive' if r.amount >= 0 else 'negative' }}">{{ (r.amount)|money }}</span>{% else %}—{% endif %}</td>
+              <td style="white-space:nowrap;">
+                <a href="{{ attachments_url('tax_records', r.id) }}" class="btn secondary">Documents{% if r.attachments %} ({{ r.attachments }}){% endif %}</a>
+                <a href="{{ url_for('tax_filings_page', edit=r.id) }}" class="btn link">Edit</a>
+                <form class="inline" method="POST" action="{{ url_for('delete_tax_record', record_id=r.id) }}">
+                  <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% if r.remarks %}<tr><td colspan="8" class="muted" style="font-size:12px; padding-top:0;">{{ r.remarks }}</td></tr>{% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      {% else %}<p class="muted" style="margin:0 0 10px; font-size:13px;">None recorded.</p>{% endif %}
+
+      <h3 style="font-size:13px; margin:16px 0 6px;" class="muted">Communications from the department</h3>
+      {% if g.communication %}
+        <div class="table-scroll">
+        <table>
+          <thead><tr><th>Taxpayer</th><th>Type</th><th>Section</th><th>Reference</th><th>Received</th><th>Respond by</th><th>Status</th><th>Amount</th><th></th></tr></thead>
+          <tbody>
+            {% for r in g.communication %}
+            <tr>
+              <td>{{ r.depositor_name or "—" }}</td>
+              <td><strong>{{ r.category }}</strong></td>
+              <td>{{ r.subtype or "—" }}</td>
+              <td>{{ r.reference or "—" }}</td>
+              <td>{{ r.record_date }}</td>
+              <td>
+                {% if r.due_date %}{{ r.due_date }}
+                  {% if r.due_state == "overdue" %}<div><span class="badge" style="background:#fbe3e1; color:var(--red, #b3261e);">Overdue</span></div>
+                  {% elif r.due_state == "soon" %}<div><span class="badge" style="background:#fff2e0; color:var(--amber);">Due within {{ due_soon_days }} days</span></div>{% endif %}
+                {% else %}—{% endif %}
+              </td>
+              <td><span class="badge {{ 'active' if r.status == 'Open' else 'type' }}">{{ r.status }}</span></td>
+              <td>{% if r.amount is not none %}{{ (r.amount)|money }}{% else %}—{% endif %}</td>
+              <td style="white-space:nowrap;">
+                <a href="{{ attachments_url('tax_records', r.id) }}" class="btn secondary">Documents{% if r.attachments %} ({{ r.attachments }}){% endif %}</a>
+                <a href="{{ url_for('tax_filings_page', edit=r.id) }}" class="btn link">Edit</a>
+                <form class="inline" method="POST" action="{{ url_for('delete_tax_record', record_id=r.id) }}">
+                  <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% if r.remarks %}<tr><td colspan="9" class="muted" style="font-size:12px; padding-top:0;">{{ r.remarks }}</td></tr>{% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      {% else %}<p class="muted" style="margin:0; font-size:13px;">None recorded.</p>{% endif %}
+    </div>
+  {% else %}
+    <div class="card"><div class="empty-state"><p>Nothing recorded yet. Add the first return or notice above.</p></div></div>
+  {% endfor %}
+
+  <script>
+    (function () {
+      var form = document.getElementById("tax-form");
+      function sync() {
+        var type = form.querySelector('input[name="record_type"]:checked').value;
+        form.querySelector(".t-filing").style.display = type === "filing" ? "" : "none";
+        form.querySelector(".t-communication").style.display = type === "communication" ? "" : "none";
+      }
+      form.querySelectorAll('input[name="record_type"]').forEach(function (r) { r.addEventListener("change", sync); });
+      sync();
+    })();
+  </script>
+
+{% endblock %}

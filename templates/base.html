@@ -342,6 +342,7 @@
     <a href="{{ url_for('gifts_page') }}" class="{% if active_tab == 'gifts' %}active{% endif %}">Gifts</a>
     <a href="{{ url_for('statement_page') }}" class="{% if active_tab == 'statement' %}active{% endif %}">I&amp;E Statement</a>
     <a href="{{ url_for('tax_page') }}" class="{% if active_tab == 'tax' %}active{% endif %}">Tax</a>
+    <a href="{{ url_for('tax_filings_page') }}" class="{% if active_tab == 'tax_filings' %}active{% endif %}">Tax Filings{% if open_tax_notice_count %} ({{ open_tax_notice_count }}){% endif %}</a>
     <a href="{{ url_for('tds_page') }}" class="{% if active_tab == 'tds' %}active{% endif %}">TDS</a>
     <a href="{{ url_for('dicgc_page') }}" class="{% if active_tab == 'dicgc' %}active{% endif %}">DICGC</a>
     <a href="{{ url_for('reconcile_interest_page') }}" class="{% if active_tab == 'reconcile_interest' %}active{% endif %}">Interest Check</a>

@@ -327,7 +327,13 @@ def _inject_pending_draft_count():
         ).fetchone()["c"]
     except sqlite3.OperationalError:
         count = 0  # table not migrated in yet (e.g. mid-upgrade) -- don't break every page over it
-    return {"pending_draft_count": count}
+    try:
+        open_notices = get_db().execute(
+            "SELECT COUNT(*) AS c FROM tax_records WHERE record_type = 'communication' AND status = 'Open'"
+        ).fetchone()["c"]
+    except sqlite3.OperationalError:
+        open_notices = 0
+    return {"pending_draft_count": count, "open_tax_notice_count": open_notices}
 
 
 def init_db():
@@ -799,6 +805,30 @@ def init_db():
         # What happened when this file's password was removed (see
         # permanently_unlock_pdf): verified identical, or why it was left alone.
         conn.execute("ALTER TABLE attachment_notes ADD COLUMN unlock_status TEXT NOT NULL DEFAULT ''")
+
+    # Income tax: returns filed and communications from the Income Tax Department, one row each
+    # (record_type 'filing' | 'communication'), with their documents as attachments. Generic
+    # columns serve both: category = ITR form | communication type; subtype = filing type |
+    # section; reference = acknowledgement number | notice number / DIN; record_date = date filed
+    # | date received; due_date = respond-by (communications); amount = refund (+) / payable (-)
+    # on a return, or the amount demanded/refunded on a communication.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tax_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_type TEXT NOT NULL CHECK(record_type IN ('filing', 'communication')),
+            depositor_id INTEGER REFERENCES depositors(id),
+            assessment_year TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            subtype TEXT NOT NULL DEFAULT '',
+            reference TEXT NOT NULL DEFAULT '',
+            record_date TEXT NOT NULL,
+            due_date TEXT NOT NULL DEFAULT '',
+            amount REAL,
+            status TEXT NOT NULL DEFAULT '',
+            remarks TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
 
     # The name(s), PAN, date of birth, customer ID and mailbox (email + app
     # password, plain text like the Notifications one) a bank holds for one of your accounts there -- they
@@ -4972,7 +5002,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
             # A forwarded bank email comes From whoever forwarded it: judge it by its original sender.
             from_addr = _forwarded_original_sender(msg) or from_addr
             bank_guess, _ = _guess_bank_from_sender(from_addr, db)
-            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values()
+            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values() or _is_tax_sender(from_addr)
 
             if existing:
                 # A backfill pass: this email's transaction classification
@@ -6428,6 +6458,7 @@ ATTACHMENT_DIRS = {
     "investments": data_path("investment_attachments"),
     "retirement": data_path("retirement_attachments"),
     "bank_accounts": data_path("bank_account_attachments"),
+    "tax_records": data_path("tax_attachments"),
 }
 ATTACHMENT_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx"}
 ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -6441,6 +6472,7 @@ ATTACHMENT_ROUTES = {
     "investments": ("investment_attachments_page", "investment_id"),
     "retirement": ("retirement_attachments_page", "account_id"),
     "bank_accounts": ("bank_account_attachments_page", "account_id"),
+    "tax_records": ("tax_attachments_page", "record_id"),
 }
 
 
@@ -7690,9 +7722,11 @@ def move_mail_attachment_to_account(email_id, filename):
     if dest_id.isdigit() and dest_kind == "bank_accounts":
         account = next((a for a in list_bank_accounts(db) if str(a["id"]) == dest_id), None)
         label = _account_text(account) + " — it's now under that account's Statements" if account else None
-    elif dest_id.isdigit() and dest_kind in ("investments", "retirement"):
+    elif dest_id.isdigit() and dest_kind in ("investments", "retirement", "tax_records"):
         label = next((t["text"] for t in _move_targets(db)[dest_kind] if str(t["id"]) == dest_id), None)
         label = f"{label} — it's now under that record's Attachments" if label else None
+    elif dest_kind == "new_tax_communication":
+        return _new_tax_communication_from_email(db, email_id, filename, back)
     if label is None:
         flash("Choose where to move it to.", "error")
         return redirect(back)
@@ -7711,6 +7745,32 @@ def move_mail_attachment_to_account(email_id, filename):
     return redirect(back)
 
 
+def _new_tax_communication_from_email(db, email_id: int, filename: str, back: str):
+    """Makes a new communication record from an Income Tax Department email (type, section,
+    reference, assessment year, respond-by date guessed from its text; the taxpayer from the
+    bank account the email was sorted into) and moves the chosen file into it."""
+    row = db.execute("SELECT * FROM processed_emails WHERE id = ?", (email_id,)).fetchone()
+    if row is None or _attachment_file_path(db, "mail_scan", email_id, filename) is None:
+        flash(f"Couldn't move “{filename}” — it's no longer where it was saved.", "error")
+        return redirect(back)
+    g = _guess_tax_communication(row["subject"], row["body_text"] or "", row["received_date"] or "")
+    depositor_id = None
+    if row["bank_account_id"]:
+        acct = db.execute("SELECT depositor_id FROM bank_accounts WHERE id = ?", (row["bank_account_id"],)).fetchone()
+        depositor_id = acct["depositor_id"] if acct else None
+    cur = db.execute(
+        """INSERT INTO tax_records (record_type, depositor_id, assessment_year, category, subtype, reference,
+           record_date, due_date, amount, status, remarks, created_at)
+           VALUES ('communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (depositor_id, g["assessment_year"], g["category"], g["subtype"], g["reference"], g["record_date"],
+         g["due_date"], g["amount"], g["status"], g["remarks"], date.today().isoformat()))
+    moved = move_attachment(db, "mail_scan", email_id, filename, "tax_records", cur.lastrowid)
+    flash(f"Created tax communication #{cur.lastrowid} — {g['category']}, AY {g['assessment_year']}"
+          + (f", respond by {g['due_date']}" if g["due_date"] else "") + f" — and moved “{moved}” into it. "
+          "Check the details on the Tax Filings tab.", "info")
+    return redirect(back)
+
+
 def _move_targets(db) -> dict:
     """The records a Mail Scan file can be moved to, by kind, each {id, text}."""
     return {
@@ -7719,6 +7779,12 @@ def _move_targets(db) -> dict:
             for r in db.execute(
                 "SELECT i.id, i.ticker, i.purchase_date, d.name AS depositor_name FROM investments i "
                 "LEFT JOIN depositors d ON d.id = i.depositor_id ORDER BY i.ticker COLLATE NOCASE, i.purchase_date")],
+        "tax_records": [
+            {"id": r["id"], "text": f"AY {r['assessment_year']} · {r['category']} — {r['depositor_name'] or 'no taxpayer'}"
+                                    f" ({r['record_date']})"}
+            for r in db.execute(
+                "SELECT t.id, t.assessment_year, t.category, t.record_date, d.name AS depositor_name FROM tax_records t "
+                "LEFT JOIN depositors d ON d.id = t.depositor_id ORDER BY t.assessment_year DESC, t.record_date DESC")],
         "retirement": [
             {"id": r["id"], "text": f"{r['account_type']} — {r['depositor_name'] or '—'}"
                                     + (f" · {r['institution']}" if r["institution"] else "")}
@@ -7894,6 +7960,300 @@ def raw_attachment(kind, item_id, filename):
 
 
 # ---------------------------------------------------------------------------
+# Income tax: returns filed and communications from the Income Tax Department
+# ---------------------------------------------------------------------------
+
+TAX_FILING_FORMS = ["ITR-1 (Sahaj)", "ITR-2", "ITR-3", "ITR-4 (Sugam)", "ITR-5", "ITR-6", "ITR-7", "ITR-U (updated return)"]
+TAX_FILING_TYPES = ["Original", "Revised", "Belated", "Updated (ITR-U)", "In response to a notice"]
+TAX_FILING_STATUSES = ["Filed", "E-verified", "Processed", "Refund issued", "Demand raised", "Under scrutiny"]
+TAX_COMM_TYPES = ["Notice", "Intimation u/s 143(1)", "Demand notice", "Refund advice", "Order", "Rectification",
+                  "Email / letter", "Our response", "Other"]
+TAX_COMM_STATUSES = ["Open", "Response filed", "Closed"]
+TAX_DEFAULT_PASSWORD_NOTE = "Your PAN in lowercase followed by your date of birth as DDMMYYYY"  # how IT-department PDFs are locked
+TAX_DUE_SOON_DAYS = 15
+MAIL_SCAN_TAX_DOMAINS = {"incometax", "incometaxindia", "incometaxindiaefiling"}  # labels of the department's mail domains
+_AY_RE = re.compile(r"(\d{4})-(\d{2})")
+
+
+def _is_tax_sender(address: str) -> bool:
+    domain = (address or "").rsplit("@", 1)[-1].lower()
+    return bool(MAIL_SCAN_TAX_DOMAINS & set(domain.split(".")))
+
+
+def _ay_label(start_year: int) -> str:
+    return f"{start_year}-{str(start_year + 1)[-2:]}"
+
+
+def assessment_year_options() -> list:
+    """Assessment years (newest first), from the one for the financial year just ended."""
+    y = current_fy_start_year()
+    return [_ay_label(y - i) for i in range(0, 11)]
+
+
+def _valid_assessment_year(ay: str) -> bool:
+    m = _AY_RE.fullmatch(ay or "")
+    return bool(m) and (int(m[1]) + 1) % 100 == int(m[2]) and 2000 <= int(m[1]) <= date.today().year + 1
+
+
+def _tax_due_state(record) -> str:
+    """"overdue" / "soon" for an open communication with a respond-by date, else ""."""
+    if record["record_type"] != "communication" or record["status"] != "Open" or not record["due_date"]:
+        return ""
+    days = (date.fromisoformat(record["due_date"]) - date.today()).days
+    return "overdue" if days < 0 else "soon" if days <= TAX_DUE_SOON_DAYS else ""
+
+
+def list_tax_records(db, depositor_id=None, assessment_year=None) -> list:
+    sql = ("SELECT t.*, d.name AS depositor_name FROM tax_records t LEFT JOIN depositors d ON d.id = t.depositor_id WHERE 1=1")
+    args = []
+    if depositor_id:
+        sql += " AND t.depositor_id = ?"; args.append(depositor_id)
+    if assessment_year:
+        sql += " AND t.assessment_year = ?"; args.append(assessment_year)
+    rows = db.execute(sql + " ORDER BY t.assessment_year DESC, t.record_type, t.record_date DESC, t.id DESC", args).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["due_state"] = _tax_due_state(r)
+        d["attachments"] = attachment_count("tax_records", r["id"])
+        out.append(d)
+    return out
+
+
+_TAX_FORM_FIELDS = ["id", "record_type", "depositor_id", "assessment_year", "remarks",
+                    "f_category", "f_subtype", "f_reference", "f_date", "f_amount", "f_status",
+                    "c_category", "c_section", "c_reference", "c_date", "c_due", "c_amount", "c_status"]
+
+
+def _tax_form_from_row(r) -> dict:
+    f = {k: "" for k in _TAX_FORM_FIELDS}
+    f.update({"id": str(r["id"]), "record_type": r["record_type"],
+              "depositor_id": "" if r["depositor_id"] is None else str(r["depositor_id"]),
+              "assessment_year": r["assessment_year"], "remarks": r["remarks"]})
+    amount = "" if r["amount"] is None else f"{r['amount']:g}"
+    if r["record_type"] == "filing":
+        f.update({"f_category": r["category"], "f_subtype": r["subtype"], "f_reference": r["reference"],
+                  "f_date": r["record_date"], "f_amount": amount, "f_status": r["status"]})
+    else:
+        f.update({"c_category": r["category"], "c_section": r["subtype"], "c_reference": r["reference"],
+                  "c_date": r["record_date"], "c_due": r["due_date"], "c_amount": amount, "c_status": r["status"]})
+    return f
+
+
+def _clean_tax_record(db, form: dict) -> dict:
+    """Validates the add/edit form -> the columns to store. Raises ValueError (with a message for the page)."""
+    rtype = form["record_type"]
+    if rtype not in ("filing", "communication"):
+        raise ValueError("Choose whether this is a return you filed or a communication from the department.")
+    ay = form["assessment_year"].strip()
+    if not _valid_assessment_year(ay):
+        raise ValueError("Choose the assessment year.")
+    depositor_id = None
+    if form["depositor_id"]:
+        if not db.execute("SELECT 1 FROM depositors WHERE id = ?", (form["depositor_id"],)).fetchone():
+            raise ValueError("That taxpayer doesn't exist.")
+        depositor_id = int(form["depositor_id"])
+    p = "f_" if rtype == "filing" else "c_"
+    category = form[p + "category"].strip()
+    if category not in (TAX_FILING_FORMS if rtype == "filing" else TAX_COMM_TYPES):
+        raise ValueError("Choose the " + ("ITR form." if rtype == "filing" else "type of communication."))
+    subtype = form["f_subtype"].strip() if rtype == "filing" else form["c_section"].strip()
+    if rtype == "filing" and subtype not in TAX_FILING_TYPES:
+        raise ValueError("Choose the type of return (original, revised, …).")
+    if len(subtype) > 60 or len(form[p + "reference"].strip()) > 80 or len(form["remarks"]) > 1500:
+        raise ValueError("One of the text fields is too long.")
+    status = form[p + "status"].strip() or ("Filed" if rtype == "filing" else "Open")
+    if status not in (TAX_FILING_STATUSES if rtype == "filing" else TAX_COMM_STATUSES):
+        raise ValueError("Choose a valid status.")
+    try:
+        record_date = clean_document_date(form[p + "date"])
+    except ValueError:
+        raise ValueError("Enter a valid " + ("filing date." if rtype == "filing" else "date received."))
+    if not record_date:
+        raise ValueError("Enter the " + ("date the return was filed." if rtype == "filing" else "date it was received."))
+    due_date = ""
+    if rtype == "communication" and form["c_due"].strip():
+        try:
+            due = date.fromisoformat(form["c_due"].strip())
+        except ValueError:
+            raise ValueError("Enter a valid respond-by date.")
+        if due < date.fromisoformat(record_date):
+            raise ValueError("The respond-by date can't be before the date received.")
+        due_date = due.isoformat()
+    amount_raw = form[p + "amount"].strip().replace(",", "")
+    amount = None
+    if amount_raw:
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            raise ValueError("Enter the amount as a number.")
+    return {"record_type": rtype, "depositor_id": depositor_id, "assessment_year": ay, "category": category,
+            "subtype": subtype, "reference": form[p + "reference"].strip(), "record_date": record_date,
+            "due_date": due_date, "amount": amount, "status": status, "remarks": form["remarks"].strip()}
+
+
+@app.route("/tax-filings", methods=["GET", "POST"])
+def tax_filings_page():
+    db = get_db()
+    error = None
+    form = {k: "" for k in _TAX_FORM_FIELDS}
+    form.update({"record_type": "filing", "assessment_year": assessment_year_options()[0]})
+    edit_id = request.args.get("edit", type=int)
+    if request.method == "GET" and edit_id:
+        row = db.execute("SELECT * FROM tax_records WHERE id = ?", (edit_id,)).fetchone()
+        if row:
+            form = _tax_form_from_row(row)
+    if request.method == "POST":
+        form = {k: request.form.get(k, "") for k in _TAX_FORM_FIELDS}
+        try:
+            c = _clean_tax_record(db, form)
+            if form["id"].isdigit():
+                db.execute(
+                    """UPDATE tax_records SET record_type=:record_type, depositor_id=:depositor_id,
+                       assessment_year=:assessment_year, category=:category, subtype=:subtype, reference=:reference,
+                       record_date=:record_date, due_date=:due_date, amount=:amount, status=:status, remarks=:remarks
+                       WHERE id=:id""", {**c, "id": int(form["id"])})
+            else:
+                db.execute(
+                    """INSERT INTO tax_records (record_type, depositor_id, assessment_year, category, subtype, reference,
+                       record_date, due_date, amount, status, remarks, created_at)
+                       VALUES (:record_type, :depositor_id, :assessment_year, :category, :subtype, :reference,
+                       :record_date, :due_date, :amount, :status, :remarks, :created_at)""",
+                    {**c, "created_at": date.today().isoformat()})
+            db.commit()
+            return redirect(url_for("tax_filings_page"))
+        except ValueError as e:
+            error = str(e)
+    f_depositor = request.args.get("taxpayer", type=int)
+    f_ay = request.args.get("ay", "")
+    records = list_tax_records(db, f_depositor, f_ay if _valid_assessment_year(f_ay) else None)
+    groups = {}
+    for r in records:
+        groups.setdefault(r["assessment_year"], {"filing": [], "communication": []})[r["record_type"]].append(r)
+    for g in groups.values():  # open notices first, by respond-by date
+        g["communication"].sort(key=lambda r: (r["status"] != "Open", r["due_date"] or "9999", r["record_date"]))
+    return render_template(
+        "tax_filings.html", active_tab="tax_filings", wide_page=True, error=error, form=form,
+        groups=sorted(groups.items(), reverse=True),
+        depositors=db.execute("SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
+        ay_options=assessment_year_options(), f_depositor=f_depositor, f_ay=f_ay,
+        filing_forms=TAX_FILING_FORMS, filing_types=TAX_FILING_TYPES, filing_statuses=TAX_FILING_STATUSES,
+        comm_types=TAX_COMM_TYPES, comm_statuses=TAX_COMM_STATUSES, due_soon_days=TAX_DUE_SOON_DAYS,
+    )
+
+
+@app.route("/tax-filings/<int:record_id>/delete", methods=["POST"])
+def delete_tax_record(record_id):
+    db = get_db()
+    if attachment_count("tax_records", record_id):
+        flash("This record still has documents attached — delete those first (they'd be left behind otherwise).", "error")
+        return redirect(url_for("tax_filings_page"))
+    db.execute("DELETE FROM tax_records WHERE id = ?", (record_id,))
+    db.commit()
+    return redirect(url_for("tax_filings_page"))
+
+
+@app.route("/tax-filings/<int:record_id>/attachments", methods=["GET", "POST"])
+def tax_attachments_page(record_id):
+    """The documents of one return or communication -- ITR-V, computation, 26AS/AIS, a notice and
+    our reply -- on the shared attachment page (password note, document date, automatic unlock
+    from the taxpayer's saved PAN / date of birth, View original, delete)."""
+    db = get_db()
+    r = db.execute("SELECT t.*, d.name AS depositor_name FROM tax_records t "
+                   "LEFT JOIN depositors d ON d.id = t.depositor_id WHERE t.id = ?", (record_id,)).fetchone()
+    if r is None:
+        return redirect(url_for("tax_filings_page"))
+    error = None
+    if request.method == "POST":
+        error = save_attachments(db, "tax_records", record_id, request.files.getlist("attachment"),
+                                 request.form.get("password_hint", ""), request.form.get("document_date", ""))
+        if error is None:
+            return redirect(url_for("tax_attachments_page", record_id=record_id))
+    verb = "Filed" if r["record_type"] == "filing" else "Received"
+    return render_template(
+        "attachments.html", active_tab="tax_filings",
+        title=f"{r['category']} — {r['depositor_name'] or 'taxpayer not set'}",
+        subtitle=f"Assessment year {r['assessment_year']} · {verb} {r['record_date']}"
+                 + (f" · {r['reference']}" if r["reference"] else ""),
+        back_url=url_for("tax_filings_page"),
+        view_url=lambda name: url_for("view_tax_attachment", record_id=record_id, filename=name),
+        delete_url=lambda name: url_for("delete_tax_attachment", record_id=record_id, filename=name),
+        password_url=lambda name: url_for("update_attachment_password", kind="tax_records", item_id=record_id, filename=name),
+        attachments=list_attachments(db, "tax_records", record_id),
+        extensions=sorted(ATTACHMENT_EXTENSIONS), error=error, default_hint=TAX_DEFAULT_PASSWORD_NOTE,
+    )
+
+
+@app.route("/tax-filings/<int:record_id>/attachments/<filename>")
+def view_tax_attachment(record_id, filename):
+    return _serve_attachment("tax_records", record_id, filename)
+
+
+@app.route("/tax-filings/<int:record_id>/attachments/<filename>/delete", methods=["POST"])
+def delete_tax_attachment(record_id, filename):
+    return _delete_attachment(get_db(), "tax_records", record_id, filename)
+
+
+def _guess_tax_communication(subject: str, body: str, received_iso: str) -> dict:
+    """Best-effort fields for a new communication record from an Income Tax Department email:
+    its type, section, reference (DIN / notice number), assessment year, respond-by date and any
+    amount demanded or refunded. Anything not found is left blank for the person to fill in."""
+    text = html.unescape(f"{subject}\n{body}")[:6000]
+    low = text.lower()
+    if re.search(r"143\s*\(\s*1\s*\)", low):
+        category = "Intimation u/s 143(1)"
+    elif "demand" in low and "notice" in low or "demand notice" in low:
+        category = "Demand notice"
+    elif "refund" in low:
+        category = "Refund advice"
+    elif re.search(r"\brectification\b|\bsection\s*154\b", low):
+        category = "Rectification"
+    elif re.search(r"\border\b", low) and not re.search(r"in order to", low):
+        category = "Order"
+    elif re.search(r"\bnotice\b|142\s*\(\s*1\s*\)|\b148\b|139\s*\(\s*9\s*\)", low):
+        category = "Notice"
+    else:
+        category = "Email / letter"
+    section = ""
+    if m := re.search(r"(?:section|sec\.?|u/s|under section)\s*(\d{1,3}[A-Z]{0,2}(?:\s*\(\s*\w+\s*\))?)", text, re.I):
+        section = re.sub(r"\s+", "", m[1]).upper()
+    reference = ""
+    if m := re.search(r"\bDIN\s*(?:No\.?|Number)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-()]{9,60})", text):
+        reference = m[1]
+    elif m := re.search(r"\bITBA[/\-][A-Z0-9/\-()]{6,60}", text):
+        reference = m[0]
+    elif m := re.search(r"(?:notice|communication)\s*(?:no\.?|number|ref(?:erence)?)\s*[:\-]?\s*([A-Z0-9][A-Z0-9/\-]{5,40})", text, re.I):
+        reference = m[1]
+    ay = assessment_year_options()[0]
+    if m := re.search(r"\bA\.?\s?Y\.?\s*[:\-]?\s*(20\d{2})\s*[-–/]\s*(\d{2,4})", text, re.I) or \
+            re.search(r"assessment\s+year\s*[:\-]?\s*(20\d{2})\s*[-–/]\s*(\d{2,4})", text, re.I):
+        cand = f"{m[1]}-{m[2][-2:]}"
+        if _valid_assessment_year(cand):
+            ay = cand
+    elif m := re.search(r"/(20\d{2})-(\d{2})/", text):
+        if _valid_assessment_year(f"{m[1]}-{m[2]}"):
+            ay = f"{m[1]}-{m[2]}"
+    received = received_iso or date.today().isoformat()
+    due = ""
+    if m := re.search(rf"(?:on or before|latest by|due date|respond(?:ed)? by|before)\s*[:\-]?\s*({_DATE_TOKEN})", text, re.I):
+        d = _parse_loose_date(m[1])
+        if d and date.fromisoformat(received) <= d <= date.fromisoformat(received) + timedelta(days=400):
+            due = d.isoformat()
+    if not due and (m := re.search(r"within\s+(\d{1,3})\s+days", low)):
+        if 7 <= int(m[1]) <= 90:
+            due = (date.fromisoformat(received) + timedelta(days=int(m[1]))).isoformat()
+    amount = None
+    if m := re.search(r"(?:demand|refund)[^.\n]{0,80}?(?:rs\.?|₹|inr)\s*([\d,]+(?:\.\d{1,2})?)", text, re.I):
+        try:
+            amount = float(m[1].replace(",", ""))
+        except ValueError:
+            pass
+    return {"record_type": "communication", "assessment_year": ay, "category": category, "subtype": section,
+            "reference": reference, "record_date": received, "due_date": due, "amount": amount,
+            "status": "Closed" if category in ("Our response",) else "Open", "remarks": subject.strip()[:300]}
+
+
+# ---------------------------------------------------------------------------
 # Bank accounts: the first name / last name / PAN each bank has on file
 # ---------------------------------------------------------------------------
 
@@ -7963,6 +8323,10 @@ def accounts_for_attachment(db, kind: str, item_id: int):
         r = db.execute("SELECT bank_ref_id, depositor_id, deposit_number FROM deposits WHERE id = ?", (item_id,)).fetchone()
         if r and r["bank_ref_id"]:
             bank_ids, depositor_id, number = {r["bank_ref_id"]}, r["depositor_id"], (r["deposit_number"] or "")
+    elif kind == "tax_records":
+        r = db.execute("SELECT depositor_id FROM tax_records WHERE id = ?", (item_id,)).fetchone()
+        own = [a for a in accounts if r and r["depositor_id"] is not None and a["depositor_id"] == r["depositor_id"]]
+        return own, [a for a in accounts if a not in own]
     elif kind in ("investments", "retirement"):
         # No bank on an investment; a retirement account names its institution in free text.
         # Either way the holder's own saved accounts are the natural source of the details.
