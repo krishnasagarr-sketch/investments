@@ -4556,8 +4556,9 @@ IMAP_HOSTS = {
     "icloud.com": "imap.mail.me.com", "me.com": "imap.mail.me.com",
     "rediffmailpro.com": "imap.rediffmailpro.com",  # Rediffmail Pro (paid) has IMAP
 }
-# Providers read over POP3 instead: free Rediffmail has no IMAP (and no app passwords --
-# the mailbox's own password is used).
+# Providers read over POP3 instead: Rediffmail has no IMAP outside Pro, and POP3 access on it is a
+# paid feature (a free account gets "Login Not Allowed"); it has no app passwords, so the mailbox's
+# own password is used.
 POP_HOSTS = {"rediffmail.com": "pop.rediffmail.com"}
 
 
@@ -4655,6 +4656,7 @@ class _Pop3Session:
         # part before the "@". Try the full address, then the short form (two attempts, no more).
         logins = [address, address.split("@", 1)[0]]
         self.conn = None
+        replies = []
         for login in logins:
             try:
                 conn = poplib.POP3_SSL(host, 995, timeout=20)
@@ -4665,7 +4667,10 @@ class _Pop3Session:
             try:
                 conn.user(login)
                 conn.pass_(password)
-            except poplib.error_proto:
+            except poplib.error_proto as e:
+                reply = (e.args[0].decode(errors="replace") if e.args and isinstance(e.args[0], bytes)
+                         else str(e)).strip()
+                replies.append(f"“{login}”: {reply[:120]}")
                 try:
                     conn.quit()
                 except Exception:
@@ -4675,9 +4680,16 @@ class _Pop3Session:
                 raise RuntimeError(f"Lost the connection to {host} while logging in ({e}).")
             self.conn = conn
             break
+        if self.conn is None and any("login not allowed" in r.lower() for r in replies):
+            raise RuntimeError(
+                f"{host} says “Login Not Allowed” for {address} — the password isn't the problem: Rediffmail "
+                "sells POP3 access as a paid feature, and a free account isn't allowed to use it. Options: buy "
+                "POP3 access (or Rediffmail Pro, which has IMAP), forward this mailbox to Gmail and scan the Gmail "
+                "one, or attach the statements by hand."
+            )
         if self.conn is None:
             raise RuntimeError(
-                f"{host} rejected the login (tried “{logins[0]}” and “{logins[1]}”). Rediffmail has no app "
+                f"{host} rejected the login — its replies: " + "; ".join(replies) + ". Rediffmail has no app "
                 "passwords — use the mailbox's own password, check it by signing in on the Rediffmail website, "
                 "and make sure POP access is switched on in its settings."
             )
