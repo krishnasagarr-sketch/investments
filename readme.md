@@ -238,9 +238,10 @@ because the name (and the rest) can differ from bank to bank. Those details are 
 - **Rebuild a statement's password without typing** — see [Opening a protected
   PDF](#opening-a-protected-pdf). On the unlock page a **Saved bank account** picker fills in the
   details: a deposit's attachment pre-selects the account at its bank (narrowed by its depositor, and
-  by an account label that appears in the deposit number); a Mail Scan attachment uses the account its
-  email was sorted into, or matches by the sender's bank; a bank account's own Statements use that
-  account. Where several accounts match, **Try every matching account** builds the password from each
+  by an account label that appears in the deposit number); an investment's attachment, the holder's
+  own accounts; a retirement account's, the account at the bank its institution names (else the
+  holder's accounts); a Mail Scan attachment uses the account its email was sorted into, or matches by
+  the sender's bank; a bank account's own Statements use that account. Where several accounts match, **Try every matching account** builds the password from each
   in turn, using whatever you've typed for any detail an account hasn't saved (accounts still missing
   one are skipped and listed).
 - **Scan each account's mailbox** — [Mail Scan](#mail-scan--draft-deposits) reads every account that
@@ -336,8 +337,9 @@ assembles the password, decrypts the PDF, and opens it.
 
 **The password comes off the file; the original is kept.** **View** tries, in order: no password,
 then a **regenerated** one — the note is read as described below, the details come from the saved
-bank account(s) matching the file (a deposit's bank/depositor, or the account the email was
-sorted into), and every candidate is tried, all without typing. If that fails you land on the
+bank account(s) matching the file (a deposit's bank/depositor; an investment's or retirement
+account's holder — a retirement account's institution also picks the account at that bank; the
+account the email was sorted into; a bank account's own statements use that account), and every candidate is tried, all without typing. If that fails you land on the
 unlock page, which says why and takes the details (or the password) by hand. Whatever opens the
 file is then **removed from the saved file for good**: an unlocked copy replaces it, so from then
 on it just opens, in any viewer, with nothing stored. The swap only happens after a check — the
@@ -433,6 +435,10 @@ threshold, different rates), and pre-31-Jan-2018 grandfathering — this app can
 those apart from a ticker string, so treat the estimate as equity-only. Losses aren't carried
 forward to a later year, and (a narrow edge case specific to the transition year) a loss on one
 side of 23 Jul 2024 isn't netted against a gain on the other side within FY2024-25.
+
+An investment drops off the Investments tab once every share is sold, so each sale row on the Capital
+Gains tab links to that holding's **Attachments** (contract notes, statements) — they stay reachable.
+A holding that still has attachments can't be deleted.
 
 ## Calculator
 
@@ -647,14 +653,15 @@ recognised by its date/amount/kind and not queued a second time.
 
 Each file under **Saved attachments** has these actions:
 
-- **Move to bank account.** A **Move to bank account…** picker (pre-set to the account its email was
-  sorted into) and a **Move** button move the file — with its kept locked original, password note,
-  document date and unlock status — onto that account's **Statements** ([Bank
-  Accounts](#bank-accounts) tab), where it unlocks automatically from the account's own details; an
-  email that wasn't sorted yet gets sorted into the account you chose. It's a real move: the file leaves
-  Mail Scan's list, a same-named statement already there isn't overwritten, and what was moved is
-  remembered (by the hash of the file as received), so scanning the same email again — e.g. after a
-  history reset — doesn't bring it back.
+- **Move to…** A **Move to…** picker (grouped: bank accounts, investments, retirement accounts;
+  pre-set to the bank account its email was sorted into) and a **Move** button move the file — with
+  its kept locked original, password note, document date and unlock status — onto that record's
+  attachments: a bank account's **Statements** ([Bank Accounts](#bank-accounts) tab), an
+  investment's or a retirement account's **Attachments**, where it unlocks automatically from the
+  holder's saved details. Moving to a bank account also sorts an unsorted email into it. It's a real
+  move: the file leaves Mail Scan's list, a same-named file already there isn't overwritten, and what
+  was moved is remembered (by the hash of the file as received), so scanning the same email again —
+  e.g. after a history reset — doesn't bring it back.
 - **Delete.** A **Delete** button (two-step confirm) removes the file, its kept locked original and
   its notes. It's refused while a pending draft deposit was made from that file (approve or reject the
   draft first); an email whose last file goes drops out of the lists and its empty folder is tidied
@@ -704,7 +711,9 @@ balance is entered by hand** from the account's own passbook or portal, the same
 for metals' market price. Contributions are logged individually (date, amount, note) to compute
 gain, and a PPF account flags when its contributions in the current financial year exceed the
 **₹1,50,000** annual limit. Each account also has a **remarks** field (e.g. "employer-matched",
-"nominee is spouse"), editable after creation via its own "Update remarks" box.
+"nominee is spouse"), editable after creation via its own "Update remarks" box. Each account has an
+**Attachments** link (statements, passbook scans) with the same automatic unlocking as everywhere
+else; an account that still has attachments can't be deleted.
 
 ## Backup & Restore
 

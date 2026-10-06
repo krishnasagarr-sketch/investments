@@ -3738,6 +3738,7 @@ def compute_capital_gains_rows(db, fy_start_year: int):
 
         details.append({
             "id": s["id"],
+            "investment_id": s["investment_id"],
             "ticker": s["ticker"],
             "depositor_name": depositor_name,
             "shares_sold": s["shares_sold"],
@@ -4081,6 +4082,9 @@ def update_retirement_remarks(account_id):
 @app.route("/retirement/<int:account_id>/delete", methods=["POST"])
 def delete_retirement_account(account_id):
     db = get_db()
+    if attachment_count("retirement", account_id):
+        flash("This account still has attachments — delete those first (they'd be left behind otherwise).", "error")
+        return redirect(url_for("retirement_page"))
     db.execute("DELETE FROM retirement_contributions WHERE account_id = ?", (account_id,))
     db.execute("DELETE FROM retirement_accounts WHERE id = ?", (account_id,))
     db.commit()
@@ -5358,6 +5362,7 @@ def mail_scan_page():
         mailbox_rows=mailbox_rows, unassigned_count=unassigned_count,
         undated_count=len(pending_document_date_fills(db)),
         account_choices=[{"id": a["id"], "text": _account_text(a)} for a in all_accounts],
+        move_targets=_move_targets(db),
         pending=pending,
         depositors=list_depositors(db), banks=list_banks(db),
         scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
@@ -7672,28 +7677,55 @@ def move_attachment_to_deposit(db, kind: str, item_id: int, filename: str, depos
 
 @app.route("/mail-scan/attachments/<int:email_id>/<filename>/move-to-account", methods=["POST"])
 def move_mail_attachment_to_account(email_id, filename):
-    """Moves a Mail Scan attachment (typically a bank statement) onto a bank
-    account's own Statements. An email not yet tied to an account gets tied to
-    the one chosen here."""
+    """Moves a Mail Scan attachment onto another record's own attachments: a bank
+    account's Statements (the default -- a plain id, or "bank_accounts:<id>"), or an
+    investment's or retirement account's ("investments:<id>", "retirement:<id>"). An email
+    not yet tied to a bank account gets tied to the one chosen when that's the destination."""
     db = get_db()
     back = url_for("mail_scan_page") + "#attachments"
-    account = next((a for a in list_bank_accounts(db)
-                    if str(a["id"]) == request.form.get("account", "")), None)
-    if account is None:
-        flash("Choose the bank account to move it to.", "error")
+    choice = request.form.get("account", "")
+    dest_kind, _, dest_id = choice.rpartition(":")
+    dest_kind = dest_kind or "bank_accounts"
+    label = None
+    if dest_id.isdigit() and dest_kind == "bank_accounts":
+        account = next((a for a in list_bank_accounts(db) if str(a["id"]) == dest_id), None)
+        label = _account_text(account) + " — it's now under that account's Statements" if account else None
+    elif dest_id.isdigit() and dest_kind in ("investments", "retirement"):
+        label = next((t["text"] for t in _move_targets(db)[dest_kind] if str(t["id"]) == dest_id), None)
+        label = f"{label} — it's now under that record's Attachments" if label else None
+    if label is None:
+        flash("Choose where to move it to.", "error")
         return redirect(back)
     try:
-        moved = move_attachment(db, "mail_scan", email_id, filename, "bank_accounts", account["id"])
+        moved = move_attachment(db, "mail_scan", email_id, filename, dest_kind, int(dest_id))
     except OSError:
         moved = None
     if moved is None:
         flash(f"Couldn't move “{filename}” — it's no longer where it was saved.", "error")
         return redirect(back)
-    db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = 'manual' "
-               "WHERE id = ? AND bank_account_id IS NULL", (account["id"], email_id))
-    db.commit()
-    flash(f"Moved “{moved}” to {_account_text(account)} — it's now under that account's Statements.", "info")
+    if dest_kind == "bank_accounts":
+        db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = 'manual' "
+                   "WHERE id = ? AND bank_account_id IS NULL", (int(dest_id), email_id))
+        db.commit()
+    flash(f"Moved “{moved}” to {label}.", "info")
     return redirect(back)
+
+
+def _move_targets(db) -> dict:
+    """The records a Mail Scan file can be moved to, by kind, each {id, text}."""
+    return {
+        "investments": [
+            {"id": r["id"], "text": f"{r['ticker']} — {r['depositor_name'] or '—'} (bought {r['purchase_date']})"}
+            for r in db.execute(
+                "SELECT i.id, i.ticker, i.purchase_date, d.name AS depositor_name FROM investments i "
+                "LEFT JOIN depositors d ON d.id = i.depositor_id ORDER BY i.ticker COLLATE NOCASE, i.purchase_date")],
+        "retirement": [
+            {"id": r["id"], "text": f"{r['account_type']} — {r['depositor_name'] or '—'}"
+                                    + (f" · {r['institution']}" if r["institution"] else "")}
+            for r in db.execute(
+                "SELECT a.id, a.account_type, a.institution, d.name AS depositor_name FROM retirement_accounts a "
+                "LEFT JOIN depositors d ON d.id = a.depositor_id ORDER BY a.account_type, d.name COLLATE NOCASE")],
+    }
 
 
 @app.route("/attachments/original/<kind>/<int:item_id>/<filename>")
@@ -7931,6 +7963,21 @@ def accounts_for_attachment(db, kind: str, item_id: int):
         r = db.execute("SELECT bank_ref_id, depositor_id, deposit_number FROM deposits WHERE id = ?", (item_id,)).fetchone()
         if r and r["bank_ref_id"]:
             bank_ids, depositor_id, number = {r["bank_ref_id"]}, r["depositor_id"], (r["deposit_number"] or "")
+    elif kind in ("investments", "retirement"):
+        # No bank on an investment; a retirement account names its institution in free text.
+        # Either way the holder's own saved accounts are the natural source of the details.
+        table = "investments" if kind == "investments" else "retirement_accounts"
+        r = db.execute(f"SELECT depositor_id{', institution' if kind == 'retirement' else ''} FROM {table} WHERE id = ?",
+                       (item_id,)).fetchone()
+        if r:
+            depositor_id = r["depositor_id"]
+            if kind == "retirement":
+                named_bank = _match_bank_by_name(db, r["institution"] or "")
+                if named_bank:
+                    bank_ids = {named_bank}
+        if not bank_ids:
+            own = [a for a in accounts if depositor_id is not None and a["depositor_id"] == depositor_id]
+            return own, [a for a in accounts if a not in own]
     elif kind == "mail_scan":
         r = db.execute("SELECT from_addr, bank_account_id FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
         if r:
@@ -7947,6 +7994,9 @@ def accounts_for_attachment(db, kind: str, item_id: int):
         labelled = [a for a in matched if a["account_label"] and a["account_label"] in number]
         if labelled:
             matched = labelled
+    if not matched and kind == "retirement" and depositor_id is not None:
+        # the named institution isn't one of the saved banks: fall back to the holder's own accounts
+        matched = [a for a in accounts if a["depositor_id"] == depositor_id]
     ids = {a["id"] for a in matched}
     return matched, [a for a in accounts if a["id"] not in ids]
 
@@ -8678,6 +8728,11 @@ def delete_investment(investment_id):
     has_sales = db.execute(
         "SELECT 1 FROM investment_sales WHERE investment_id = ? LIMIT 1", (investment_id,)
     ).fetchone()
+    if attachment_count("investments", investment_id):
+        session["investment_notice"] = (
+            "Can't remove this holding — it still has attachments. Delete those first (they'd be left behind otherwise)."
+        )
+        return redirect(url_for("investments_page"))
     if has_sales:
         session["investment_notice"] = (
             "Can't remove this holding — it has recorded sale(s) on the Capital Gains tab, "

@@ -132,6 +132,9 @@
               {% endif %}
             </td>
             <td>
+              <a href="{{ attachments_url('investments', d.investment_id) }}" class="btn link">
+                Attachments{% if attachment_count('investments', d.investment_id) %} ({{ attachment_count('investments', d.investment_id) }}){% endif %}
+              </a>
               <form class="inline" method="POST" action="{{ url_for('delete_investment_sale', sale_id=d.id) }}">
                 <button type="submit" class="btn link" data-confirm data-confirm-label="Delete this sale?">Delete</button>
               </form>
