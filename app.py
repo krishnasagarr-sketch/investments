@@ -791,6 +791,10 @@ def init_db():
         # The date the document itself is dated (a statement's month-end, a receipt's date, ...),
         # ISO YYYY-MM-DD, or '' if not given.
         conn.execute("ALTER TABLE attachment_notes ADD COLUMN document_date TEXT NOT NULL DEFAULT ''")
+    if "document_date_source" not in {r[1] for r in conn.execute("PRAGMA table_info(attachment_notes)")}:
+        # How document_date was set: "" (not set / cleared), "entered by you", or what the
+        # scan read it from ("the statement period in the email", ...).
+        conn.execute("ALTER TABLE attachment_notes ADD COLUMN document_date_source TEXT NOT NULL DEFAULT ''")
     if "unlock_status" not in {r[1] for r in conn.execute("PRAGMA table_info(attachment_notes)")}:
         # What happened when this file's password was removed (see
         # permanently_unlock_pdf): verified identical, or why it was left alone.
@@ -5002,6 +5006,8 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                         for fname in saved_files:
                             if not get_attachment_password(db, "mail_scan", existing["id"], fname):
                                 set_attachment_password(db, "mail_scan", existing["id"], fname, hint)
+                    autofill_document_dates(db, existing["id"], existing["subject"], recheck_body,
+                                            existing["received_date"] or "", saved_files)
                 else:
                     db.execute(
                         "UPDATE processed_emails SET attachments_checked = 1 WHERE message_id = ?",
@@ -5071,10 +5077,11 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
             )
             if saved_files:
                 hint = _extract_password_hint_from_text(f"{subject}\n{body}")
+                email_row_id = cur.lastrowid
                 if hint:
-                    email_row_id = cur.lastrowid
                     for fname in saved_files:
                         set_attachment_password(db, "mail_scan", email_row_id, fname, hint)
+                autofill_document_dates(db, email_row_id, subject, body, received_on.isoformat(), saved_files)
             db.commit()
     finally:
         session.close()
@@ -5162,6 +5169,7 @@ def list_saved_attachments(db) -> list:
                     "password_hint": get_attachment_password(db, "mail_scan", email_id, f.name) if email_id else "",
                     "unlock_status": get_attachment_unlock_status(db, "mail_scan", email_id, f.name) if email_id else "",
                     "document_date": get_attachment_document_date(db, "mail_scan", email_id, f.name) if email_id else "",
+                    "date_source": get_attachment_document_date_source(db, "mail_scan", email_id, f.name) if email_id else "",
                     "original_url": _original_url(db, "mail_scan", email_id, f.name) if email_id else None,
                     "draft_url": url_for("draft_deposit_from_attachment", kind="mail_scan", item_id=email_id, filename=f.name)
                                  if email_id and f.suffix.lower() == ".pdf" else None,
@@ -5215,6 +5223,48 @@ def set_mail_email_account(email_id):
     return redirect(url_for("mail_scan_page") + "#attachments")
 
 
+def pending_document_date_fills(db) -> list:
+    """Every saved attachment with no document date for which one can be worked out:
+    [(kind, item_id, filename, iso_date, how)]. A Mail Scan file is judged from its email
+    (subject, text, file name, the email's date); a file on any other page -- e.g. a statement
+    already moved to a bank account, which no longer has its email -- from its file name alone."""
+    out = []
+    for row in db.execute("SELECT * FROM processed_emails WHERE attachments_saved > 0 AND attachments_dir != ''").fetchall():
+        base = _attachment_base_dir(db, "mail_scan", row["id"])
+        if base is None or not base.is_dir():
+            continue
+        for f in sorted(base.iterdir()):
+            if f.is_file() and not get_attachment_document_date(db, "mail_scan", row["id"], f.name):
+                iso, why = guess_document_date(row["subject"], row["body_text"] or "", f.name, row["received_date"] or "")
+                if iso:
+                    out.append(("mail_scan", row["id"], f.name, iso, why))
+    for kind, root in ATTACHMENT_DIRS.items():
+        if not root.is_dir():
+            continue
+        for folder in sorted(root.iterdir()):
+            if not (folder.is_dir() and folder.name.isdigit()):
+                continue
+            for f in sorted(folder.iterdir()):
+                if f.is_file() and not get_attachment_document_date(db, kind, int(folder.name), f.name):
+                    iso, why = guess_document_date("", "", f.name, "")
+                    if iso:
+                        out.append((kind, int(folder.name), f.name, iso, why))
+    return out
+
+
+@app.route("/mail-scan/fill-dates", methods=["POST"])
+def fill_mail_document_dates():
+    """Fills in a document date for every saved attachment that has none and for which one can
+    be worked out (see pending_document_date_fills). Never replaces a date that's already there."""
+    db = get_db()
+    fills = pending_document_date_fills(db)
+    for kind, item_id, filename, iso, why in fills:
+        set_attachment_document_date(db, kind, item_id, filename, iso, why)
+    session["mail_scan_result"] = (f"Filled in a document date for {len(fills)} attachment(s)." if fills else
+                                   "Every attachment already has a date, or none could be worked out.")
+    return redirect(url_for("mail_scan_page") + "#attachments")
+
+
 @app.route("/mail-scan/rematch", methods=["POST"])
 def rematch_mail_accounts():
     n = rematch_unassigned_emails(get_db())
@@ -5233,11 +5283,7 @@ def update_mail_attachment_password(email_id, filename):
     guess was wrong or incomplete."""
     db = get_db()
     set_attachment_password(db, "mail_scan", email_id, filename, request.form.get("password_hint", ""))
-    if "document_date" in request.form:
-        try:
-            set_attachment_document_date(db, "mail_scan", email_id, filename, clean_document_date(request.form["document_date"]))
-        except ValueError:
-            flash("That document date isn't valid, so it wasn't saved.", "error")
+    _save_document_date_from_form(db, "mail_scan", email_id, filename)
     return redirect(url_for("mail_scan_page") + "#attachments")
 
 
@@ -5256,6 +5302,7 @@ def mail_scan_page():
     total_attachments = db.execute(
         "SELECT COALESCE(SUM(attachments_saved), 0) c FROM processed_emails"
     ).fetchone()["c"]
+    attachment_groups = list_saved_attachments(db)
     all_accounts = list_bank_accounts(db)
     accounts_by_id = {a["id"]: a for a in all_accounts}
     unassigned_count = db.execute(
@@ -5270,13 +5317,14 @@ def mail_scan_page():
         "mail_scan.html", active_tab="mail_scan",
         mail_configured=bool(mailbox_rows),
         mailbox_rows=mailbox_rows, unassigned_count=unassigned_count,
+        undated_count=len(pending_document_date_fills(db)),
         account_choices=[{"id": a["id"], "text": _account_text(a)} for a in all_accounts],
         pending=pending,
         depositors=list_depositors(db), banks=list_banks(db),
         scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
         total_attachments=total_attachments,
         attachments_dir=str(MAIL_ATTACHMENTS_DIR),
-        attachment_groups=list_saved_attachments(db),
+        attachment_groups=attachment_groups,
         result=session.pop("mail_scan_result", None),
         error=session.pop("mail_scan_error", None),
     )
@@ -6393,13 +6441,129 @@ def get_attachment_document_date(db, kind: str, item_id: int, filename: str) -> 
     return row["document_date"] if row else ""
 
 
-def set_attachment_document_date(db, kind: str, item_id: int, filename: str, document_date: str) -> None:
+def set_attachment_document_date(db, kind: str, item_id: int, filename: str, document_date: str,
+                                 source: str = "entered by you") -> None:
+    """Saves (or, with "", clears) a document date and where it came from."""
     db.execute(
-        """INSERT INTO attachment_notes (kind, item_id, filename, document_date) VALUES (?, ?, ?, ?)
-           ON CONFLICT(kind, item_id, filename) DO UPDATE SET document_date = excluded.document_date""",
-        (kind, item_id, filename, document_date),
+        """INSERT INTO attachment_notes (kind, item_id, filename, document_date, document_date_source)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(kind, item_id, filename) DO UPDATE SET document_date = excluded.document_date,
+                                                            document_date_source = excluded.document_date_source""",
+        (kind, item_id, filename, document_date, source if document_date else ""),
     )
     db.commit()
+
+
+def get_attachment_document_date_source(db, kind: str, item_id: int, filename: str) -> str:
+    row = db.execute(
+        "SELECT document_date_source FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
+        (kind, item_id, filename),
+    ).fetchone()
+    return row["document_date_source"] if row else ""
+
+
+_MONTH_NAMES = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+_DATE_TOKEN = (rf"(?:\d{{4}}-\d{{2}}-\d{{2}}"
+               rf"|\d{{1,2}}(?:st|nd|rd|th)?[-/ .]+{_MONTH_NAMES}[-/ ,.]+\d{{4}}"
+               rf"|{_MONTH_NAMES}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}"
+               rf"|\d{{1,2}}[-/.]\d{{1,2}}[-/.]\d{{4}})")
+_MONTH_NUM = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def _parse_loose_date(token: str):
+    """A date as written in bank mail ("30-Sep-2026", "September 30, 2026", "30/09/2026" -- day first --
+    or ISO), or None."""
+    t = token.strip()
+    try:
+        if m := re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", t):
+            return date(int(m[1]), int(m[2]), int(m[3]))
+        if m := re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", t):
+            return date(int(m[3]), int(m[2]), int(m[1]))
+        if m := re.fullmatch(rf"(\d{{1,2}})(?:st|nd|rd|th)?[-/ .]+({_MONTH_NAMES})[-/ ,.]+(\d{{4}})", t, re.I):
+            return date(int(m[3]), _MONTH_NUM[m[2][:3].lower()], int(m[1]))
+        if m := re.fullmatch(rf"({_MONTH_NAMES})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})", t, re.I):
+            return date(int(m[3]), _MONTH_NUM[m[1][:3].lower()], int(m[2]))
+    except ValueError:
+        return None
+    return None
+
+
+def _month_end(year: int, month: int):
+    try:
+        return date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+    except ValueError:
+        return None
+
+
+def guess_document_date(subject: str, body: str, filename: str, received_iso: str = ""):
+    """(ISO date, where it came from) for a statement/receipt attachment, or ("", "").
+    The date the document is ABOUT is preferred to the day it was emailed: the end of a
+    statement period named in the subject/text, an "as on"/"ended" date, the month named
+    ("Statement for September-2026" -> its last day), a date in the file name, and only
+    then the email's own date. Anything in the future or older than ~3 years is ignored."""
+    today = date.today()
+    ok = lambda d: d is not None and today - timedelta(days=1100) <= d <= today + timedelta(days=1)
+    text = html.unescape(f"{subject}\n{body}")[:6000]
+
+    for m in re.finditer(rf"({_DATE_TOKEN})\s*(?:to|till|until|through|-|–|—)\s*({_DATE_TOKEN})", text, re.I):
+        start, end = _parse_loose_date(m[1]), _parse_loose_date(m[2])
+        if ok(end) and start and start <= end and (end - start).days <= 400:
+            return end.isoformat(), "the statement period in the email"
+    m = re.search(rf"(?:as\s+(?:on|of|at)|(?:month|period|quarter|year)\s+end(?:ed|ing)|ended?|ending)\s*[:\-]?\s*({_DATE_TOKEN})", text, re.I)
+    if m and ok(_parse_loose_date(m[1])):
+        return _parse_loose_date(m[1]).isoformat(), "an 'as on' date in the email"
+    for pat in (rf"\b(?:for|of)\s+(?:the\s+)?(?:month\s+(?:of\s+)?)?({_MONTH_NAMES})[a-z]*[\s,\-/]*(\d{{4}})\b",
+                rf"\b({_MONTH_NAMES})[a-z]*[\s,\-/]*(\d{{4}})\s+(?:e-?)?statement"):
+        m = re.search(pat, text, re.I)
+        if m:
+            d = _month_end(int(m[2]), _MONTH_NUM[m[1][:3].lower()])
+            if ok(d):
+                return d.isoformat(), "the month named in the email"
+    stem = Path(filename).stem
+    for pat, build in ((r"(?<!\d)(\d{4})MTH(\d{2})(?!\d)", lambda g: _month_end(int(g[0]), int(g[1]))),
+                       (r"(?<!\d)(20\d{2})[-_]?(\d{2})[-_]?(\d{2})(?!\d)", lambda g: date(int(g[0]), int(g[1]), int(g[2]))),
+                       (r"(?<!\d)(\d{2})(\d{2})(20\d{2})(?!\d)", lambda g: date(int(g[2]), int(g[1]), int(g[0])))):
+        m = re.search(pat, stem)
+        if m:
+            try:
+                d = build(m.groups())
+            except ValueError:
+                continue
+            if ok(d):
+                return d.isoformat(), "a date in the file name"
+    d = _parse_loose_date(received_iso or "")
+    if ok(d):
+        return d.isoformat(), "the email's own date"
+    return "", ""
+
+
+def autofill_document_dates(db, email_id: int, subject: str, body: str, received_iso: str, filenames) -> int:
+    """Gives each of a Mail Scan email's attachments that has no document date one,
+    guessed from the email (never replacing a date already there). Returns how many."""
+    filled = 0
+    for fname in filenames:
+        if get_attachment_document_date(db, "mail_scan", email_id, fname):
+            continue
+        guess, why = guess_document_date(subject, body, fname, received_iso)
+        if guess:
+            set_attachment_document_date(db, "mail_scan", email_id, fname, guess, why)
+            filled += 1
+    return filled
+
+
+def _save_document_date_from_form(db, kind: str, item_id: int, filename: str) -> None:
+    """Applies the per-file "document date" box of an attachment form: nothing if the form had
+    none or it's unchanged (so a note-only Save doesn't relabel an auto-filled date as typed),
+    else the new date -- or a clear -- marked as entered by you."""
+    if "document_date" not in request.form:
+        return
+    try:
+        new = clean_document_date(request.form["document_date"])
+    except ValueError:
+        flash("That document date isn't valid, so it wasn't saved.", "error")
+        return
+    if new != get_attachment_document_date(db, kind, item_id, filename):
+        set_attachment_document_date(db, kind, item_id, filename, new)
 
 
 def get_attachment_unlock_status(db, kind: str, item_id: int, filename: str) -> str:
@@ -6436,6 +6600,7 @@ def list_attachments(db, kind: str, item_id: int) -> list:
             "unlock_status": get_attachment_unlock_status(db, kind, item_id, f.name),
             "original_url": _original_url(db, kind, item_id, f.name),
             "document_date": get_attachment_document_date(db, kind, item_id, f.name),
+            "date_source": get_attachment_document_date_source(db, kind, item_id, f.name),
         }
         for f in sorted(folder.iterdir())
         if f.is_file()
@@ -6495,7 +6660,7 @@ def save_attachment(db, kind: str, item_id: int, file, password_hint: str = "", 
     if password_hint.strip():
         set_attachment_password(db, kind, item_id, dest.name, password_hint)
     if document_date:
-        set_attachment_document_date(db, kind, item_id, dest.name, document_date)
+        set_attachment_document_date(db, kind, item_id, dest.name, document_date, "entered by you")
     return None
 
 
@@ -6534,11 +6699,7 @@ def update_attachment_password(kind, item_id, filename):
         return redirect(url_for("dashboard"))
     db = get_db()
     set_attachment_password(db, kind, item_id, filename, request.form.get("password_hint", ""))
-    if "document_date" in request.form:
-        try:
-            set_attachment_document_date(db, kind, item_id, filename, clean_document_date(request.form["document_date"]))
-        except ValueError:
-            flash("That document date isn't valid, so it wasn't saved.", "error")
+    _save_document_date_from_form(db, kind, item_id, filename)
     return redirect(_attachments_page_url(kind, item_id))
 
 
@@ -7443,16 +7604,19 @@ def move_attachment(db, kind: str, item_id: int, filename: str, dest_kind: str, 
         (folder / ORIGINALS_DIRNAME).mkdir(exist_ok=True)
         shutil.move(str(original), str(folder / ORIGINALS_DIRNAME / dest.name))
     note = db.execute(
-        "SELECT password_hint, unlock_status, document_date FROM attachment_notes "
+        "SELECT password_hint, unlock_status, document_date, document_date_source FROM attachment_notes "
         "WHERE kind = ? AND item_id = ? AND filename = ?", (kind, item_id, filename)).fetchone()
     if note:
         db.execute(
-            """INSERT INTO attachment_notes (kind, item_id, filename, password_hint, unlock_status, document_date)
-               VALUES (?, ?, ?, ?, ?, ?)
+            """INSERT INTO attachment_notes (kind, item_id, filename, password_hint, unlock_status, document_date,
+                                            document_date_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(kind, item_id, filename) DO UPDATE SET password_hint = excluded.password_hint,
                                                                 unlock_status = excluded.unlock_status,
-                                                                document_date = excluded.document_date""",
-            (dest_kind, dest_id, dest.name, note["password_hint"], note["unlock_status"], note["document_date"]))
+                                                                document_date = excluded.document_date,
+                                                                document_date_source = excluded.document_date_source""",
+            (dest_kind, dest_id, dest.name, note["password_hint"], note["unlock_status"], note["document_date"],
+             note["document_date_source"]))
         db.execute("DELETE FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
                    (kind, item_id, filename))
     if kind == "mail_scan":

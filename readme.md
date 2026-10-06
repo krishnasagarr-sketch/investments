@@ -239,6 +239,18 @@ Saved attachments. It's shown beside the file name, files with a date are listed
 (undated ones after, by name), it travels with the file when it's moved (to a deposit, or to a
 bank account's Statements), and it must be a real date between 1990 and a year from now.
 
+**Auto-filled from the mailbox.** When Mail Scan saves an attachment it gives it a document date
+itself — preferring the date the document is *about* over the day it was emailed: the end of a
+statement period named in the subject or text ("from September 01, 2026 to September 30, 2026"), an
+"as on"/"ended" date, the month named ("Statement for September-2026" → its last day), a date in the
+file name (`…30092026…`, `…2026MTH09…`, `…20260930…`), and only then the email's own date. Dates in the
+future, older than ~3 years or in reversed ranges are ignored. Each carries where it came from (shown
+as "(auto)", with the reason as a tooltip), a date you type is marked "entered by you" and is never
+overwritten, and saving a note without touching the date doesn't change that. **Fill in the dates** on
+Mail Scan handles what was saved earlier — Mail Scan files from their email, and files on any other
+page (e.g. statements already moved to a bank account, which no longer have their email) from their
+file names alone.
+
 Many bank-issued PDFs are password-protected (a PAN number, a date of birth, an account number),
 so each attachment has its own optional **password field** — set it at upload time or edit it
 later independently of the file itself. Put in the bank's own wording, or the real password:
