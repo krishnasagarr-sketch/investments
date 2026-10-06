@@ -5199,6 +5199,45 @@ def view_mail_attachment(folder, filename):
     return send_file(target, as_attachment=False)
 
 
+@app.route("/mail-scan/attachments/<int:email_id>/<filename>/delete", methods=["POST"])
+def delete_mail_attachment(email_id, filename):
+    """Deletes a saved Mail Scan attachment: the file, its kept locked original and its notes.
+    What was deleted is remembered by the hash of the file as received, so a later re-scan of
+    the same email (after a history reset) doesn't save it again. Refused while a pending draft
+    deposit was made from it -- reject or approve that draft first."""
+    db = get_db()
+    back = url_for("mail_scan_page") + "#attachments"
+    target = _attachment_file_path(db, "mail_scan", email_id, filename)
+    if target is None:
+        flash(f"“{filename}” is no longer there.", "error")
+        return redirect(back)
+    draft = db.execute("SELECT id FROM deposit_drafts WHERE status = 'pending' AND source_kind = 'mail_scan' "
+                       "AND source_item_id = ? AND source_filename = ?", (email_id, filename)).fetchone()
+    if draft:
+        flash(f"Draft deposit #{draft['id']} was made from “{filename}” — approve or reject that draft before "
+              "deleting the file.", "error")
+        return redirect(back)
+    original = _original_path(db, "mail_scan", email_id, filename)
+    as_received = hashlib.sha256((original or target).read_bytes()).hexdigest()
+    target.unlink()
+    if original is not None:
+        original.unlink(missing_ok=True)
+    base = target.parent
+    for folder in (base / ORIGINALS_DIRNAME, base):  # tidy up emptied folders
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+    db.execute("DELETE FROM attachment_notes WHERE kind = 'mail_scan' AND item_id = ? AND filename = ?",
+               (email_id, filename))
+    db.execute("INSERT OR REPLACE INTO moved_attachments (sha256, dest_kind, dest_id, filename, moved_at) "
+               "VALUES (?, 'deleted', 0, ?, ?)", (as_received, filename, date.today().isoformat()))
+    db.execute("UPDATE processed_emails SET attachments_saved = MAX(attachments_saved - 1, 0) WHERE id = ?", (email_id,))
+    db.commit()
+    flash(f"Deleted “{filename}”.", "info")
+    return redirect(back)
+
+
 @app.route("/mail-scan/emails/<int:email_id>/account", methods=["POST"])
 def set_mail_email_account(email_id):
     """Sorts an email into a bank account by hand: a specific account, "none"
@@ -7622,6 +7661,7 @@ def move_attachment(db, kind: str, item_id: int, filename: str, dest_kind: str, 
     if kind == "mail_scan":
         db.execute("INSERT OR REPLACE INTO moved_attachments (sha256, dest_kind, dest_id, filename, moved_at) "
                    "VALUES (?, ?, ?, ?, ?)", (as_received, dest_kind, dest_id, dest.name, date.today().isoformat()))
+        db.execute("UPDATE processed_emails SET attachments_saved = MAX(attachments_saved - 1, 0) WHERE id = ?", (item_id,))
     db.commit()
     return dest.name
 

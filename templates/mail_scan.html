@@ -196,6 +196,12 @@
                   <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;" title="Read this PDF with Claude Haiku and create a draft deposit to review">Create draft FD</button>
                 </form>
               {% endif %}
+              {% if g.email_id %}
+                <form class="inline" method="POST" action="{{ url_for('delete_mail_attachment', email_id=g.email_id, filename=f.name) }}" style="margin-left:8px;">
+                  <button type="submit" class="btn link" style="font-size:12px;" data-confirm data-confirm-label="Delete?"
+                          title="Deletes this file, its kept original and its notes">Delete</button>
+                </form>
+              {% endif %}
               {% if f.original_url %}<a href="{{ f.original_url }}" target="_blank" class="muted" style="font-size:12px; margin-left:8px;" title="The file exactly as received (still password-locked)">View original</a>{% endif %}
               {% if f.unlock_status %}<div class="muted" style="font-size:12px; margin-top:2px;">🔓 {{ f.unlock_status }}</div>{% endif %}
               {% if g.email_id and account_choices %}

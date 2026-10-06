@@ -296,6 +296,12 @@ assembles the password, decrypts the PDF, and opens it.
   (a signed original is flagged — the copy no longer carries the signature), which is what the
   kept original is for. Deleting an attachment deletes its original too, and re-saving the same
   email attachment later doesn't create a duplicate.
+- **Delete a saved attachment.** Each file under Mail Scan's **Saved attachments** has a **Delete**
+  button (two-step confirm) that removes the file, its kept locked original and its notes. It's
+  refused while a pending draft deposit was made from that file (approve or reject the draft first),
+  an email whose last file goes drops out of the lists and its empty folder is tidied away, and what
+  was deleted is remembered by the hash of the file as received — so scanning the same email again
+  (e.g. after a history reset) doesn't save it back.
 - **Move statements to their bank account.** Each file under Mail Scan's **Saved attachments** has a
   **Move to bank account…** picker (pre-set to the account its email was sorted into) and a **Move**
   button. It moves the file — with its kept locked original, password note and unlock status — onto
