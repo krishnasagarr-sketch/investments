@@ -544,7 +544,8 @@ Yahoo, iCloud and Rediffmail Pro addresses use their own IMAP servers). **Free R
 (`@rediffmail.com`) has no IMAP**, so it's read over **POP3** (`pop.rediffmail.com:995`) instead:
 POP3 can't search by date, so the newest emails are walked back from the end reading only their
 headers (`TOP`) until they're older than the window, and only new ones are downloaded — everything
-after that (duplicates, attachments, account matching) is the same. Nothing is ever deleted
+after that (duplicates, attachments, account matching) is the same. It signs in with the full address and, if that's rejected, the short form (the part before the
+`@`) — two attempts at most. Nothing is ever deleted
 (`DELE` is never sent), but Rediffmail has **no app passwords**, so the account's own mailbox
 password goes in the bank account's password field (plain text, like the others), POP access must
 be on in its settings, and "keep a copy on the server" should be ticked so downloading doesn't

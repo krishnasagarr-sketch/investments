@@ -4651,19 +4651,36 @@ class _Pop3Session:
     def __init__(self, address: str, password: str):
         self.address = address
         host = POP_HOSTS[address.rsplit("@", 1)[-1].strip().lower()]
-        try:
-            self.conn = poplib.POP3_SSL(host, 995, timeout=20)
-            self.conn.user(address)
-            self.conn.pass_(password)
-        except poplib.error_proto:
+        # Rediff's current guides say the full address is the login name; older ones said just the
+        # part before the "@". Try the full address, then the short form (two attempts, no more).
+        logins = [address, address.split("@", 1)[0]]
+        self.conn = None
+        for login in logins:
+            try:
+                conn = poplib.POP3_SSL(host, 995, timeout=20)
+            except socket.gaierror:
+                raise RuntimeError(f"Could not look up {host} — check this machine's internet/DNS connection.")
+            except OSError as e:
+                raise RuntimeError(f"Could not reach {host} ({e}).")
+            try:
+                conn.user(login)
+                conn.pass_(password)
+            except poplib.error_proto:
+                try:
+                    conn.quit()
+                except Exception:
+                    pass
+                continue
+            except OSError as e:
+                raise RuntimeError(f"Lost the connection to {host} while logging in ({e}).")
+            self.conn = conn
+            break
+        if self.conn is None:
             raise RuntimeError(
-                f"{host} rejected the email / password for POP3 login. Rediffmail has no app passwords — use the "
-                "mailbox's own password — and make sure POP access is enabled in its settings."
+                f"{host} rejected the login (tried “{logins[0]}” and “{logins[1]}”). Rediffmail has no app "
+                "passwords — use the mailbox's own password, check it by signing in on the Rediffmail website, "
+                "and make sure POP access is switched on in its settings."
             )
-        except socket.gaierror:
-            raise RuntimeError(f"Could not look up {host} — check this machine's internet/DNS connection.")
-        except OSError as e:
-            raise RuntimeError(f"Could not reach {host} ({e}).")
         self._ids = {}
 
     def _headers(self, n: int):
