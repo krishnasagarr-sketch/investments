@@ -586,7 +586,8 @@ draft deposit on request (below). A PDF/CSV/Excel attachment on a bank-looking e
 email's own text already matched a transaction) is still saved — one subfolder per email, named
 after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost;
 an irrelevant email's attachment is never saved. A sender is "recognised" (a bank; the Income Tax Department — see [Tax Filings](#tax-filings); or an NPS / EPF record-keeper —
-Protean, formerly NSDL e-Gov, and EPFO — see [Retirement](#retirement-ppf--epf--nps)) by
+Protean, formerly NSDL e-Gov, and EPFO — see [Retirement](#retirement-ppf--epf--nps)); or anyone you add
+under **Recognised senders** (below) by
 a keyword (e.g. `sbi`, `hdfcbank`, `equitas`) matched against each dot-separated label of its
 domain, not the domain as a whole — real bank transactional mail routinely comes from a
 dedicated ESP/sub-brand domain (`bounce-zem.equitas.bank.in`, `alerts.sbi.bank.in`) that looks
@@ -620,6 +621,17 @@ account's own mailbox password goes in the bank account's password field (plain 
 others), and "keep a copy on the server" should be ticked so downloading doesn't remove mail.
 Only Gmail has been exercised for real; the POP3 and other-provider paths are tested against
 stand-in servers.
+
+**Recognised senders — add your own.** The **Recognised senders** card on the Mail Scan tab lists who
+Mail Scan saves attachments for, beyond the built-in banks, Income Tax Department and NPS/EPF
+record-keepers (open *Built-in senders* to see them). Add a mutual-fund registrar, an insurer or an
+advisor as a **full address** (`cas@kfintech.com` — exact match), a **domain** (`kfintech.com` — it
+and its subdomains) or a **word** from the sender's domain (`kfintech` — any domain with that whole
+label, like the built-in bank keywords), with an optional note; **Remove** stops it (attachments
+already saved stay). Public mail providers (`gmail.com`, `yahoo.com`, `rediffmail.com`…) and generic
+words are refused as domains or words, since that would save every friend's attachment — a specific
+address at Gmail is fine. Adding a sender makes the next scan look again at emails from it that were
+skipped earlier, and a forwarded email counts by its *original* sender.
 
 **Forwarded bank emails.** A bank email you forward to the scanned mailbox (say from a Rediffmail you
 can't scan directly) arrives *from you*, so it used to look like personal mail and its PDF was skipped.
@@ -819,7 +831,7 @@ see [Selling a holding, and Capital Gains](#selling-a-holding-and-capital-gains)
 `retirement_accounts` + `retirement_contributions`, `other_income`, `expenses`, `family_gifts`,
 `portfolio_tags`, `interest_statement_lines` (Interest Check), `bank_accounts` ([Bank
 Accounts](#bank-accounts)), `attachment_notes` (per-file password note, document date, unlock status),
-`tax_records` ([Tax Filings](#tax-filings)), `moved_attachments` (hashes of files moved or deleted out of Mail Scan, so a re-scan doesn't bring
+`tax_records` ([Tax Filings](#tax-filings)), `mail_sender_rules` (your recognised senders), `moved_attachments` (hashes of files moved or deleted out of Mail Scan, so a re-scan doesn't bring
 them back), `processed_emails` + `scanned_transactions` + `deposit_drafts` (Mail Scan & Draft
 Deposits — see above), `notification_settings`, and `auth_user`. Schema migrations run automatically on startup, so
 upgrading from an older version is a normal `git pull` + restart, no manual steps.

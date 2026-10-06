@@ -150,6 +150,49 @@
     {% endif %}
   </div>
 
+  <div class="card" id="senders" style="max-width:720px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Recognised senders</h2>
+    <p class="field-hint" style="margin:0 0 12px;">
+      Mail Scan only saves the attachments of emails from senders it recognises. Built in: banks, the Income Tax
+      Department, and NPS / EPF record-keepers. Add anyone else whose statements you want kept — an advisor, a
+      mutual-fund registrar, an insurer. Emails you forward to this mailbox count by their <em>original</em> sender.
+    </p>
+    <form method="POST" action="{{ url_for('add_mail_sender') }}" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+      <div class="form-group" style="margin:0; flex:2; min-width:220px;">
+        <label for="sender_pattern">Email address, domain or name</label>
+        <input type="text" id="sender_pattern" name="pattern" placeholder="cas@kfintech.com · kfintech.com · kfintech" autocomplete="off" required>
+      </div>
+      <div class="form-group" style="margin:0; flex:1; min-width:140px;">
+        <label for="sender_note">Note <span class="muted">(optional)</span></label>
+        <input type="text" id="sender_note" name="note" placeholder="e.g. KFintech CAS" maxlength="100" autocomplete="off">
+      </div>
+      <button type="submit" class="btn secondary">Add sender</button>
+    </form>
+    {% if sender_rules %}
+      <table style="margin-top:12px;">
+        <thead><tr><th>Recognised</th><th>Note</th><th></th></tr></thead>
+        <tbody>
+          {% for r in sender_rules %}
+          <tr>
+            <td><code>{{ r.pattern }}</code></td>
+            <td>{{ r.note or "—" }}</td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('delete_mail_sender', rule_id=r.id) }}">
+                <button type="submit" class="btn link" data-confirm data-confirm-label="Remove?" title="Stops saving new attachments from it; ones already saved stay">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+    <details style="margin-top:10px;">
+      <summary class="field-hint" style="cursor:pointer;">Built-in senders</summary>
+      <p class="field-hint" style="margin:6px 0 0;"><strong>Banks:</strong> {{ builtin_banks|join(", ") }}.</p>
+      <p class="field-hint" style="margin:4px 0 0;"><strong>Income Tax Department</strong> (incometax…) · <strong>Retirement:</strong> {{ builtin_retirement|join(", ") }}.</p>
+    </details>
+  </div>
+
   <div class="card">
     <h2 id="attachments" style="font-size:16px; margin:0 0 4px;">Saved attachments</h2>
     <p class="field-hint" style="margin-bottom:16px;">

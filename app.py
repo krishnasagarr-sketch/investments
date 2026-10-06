@@ -806,6 +806,18 @@ def init_db():
         # permanently_unlock_pdf): verified identical, or why it was left alone.
         conn.execute("ALTER TABLE attachment_notes ADD COLUMN unlock_status TEXT NOT NULL DEFAULT ''")
 
+    # Senders you've told Mail Scan to treat as recognised (so their attachments are saved), on top of
+    # the built-in banks / tax department / NPS-EPF record-keepers. pattern is an email address, a
+    # domain, or one word of a domain -- see _sender_matches_rule.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mail_sender_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern TEXT NOT NULL UNIQUE,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+
     # Income tax: returns filed and communications from the Income Tax Department, one row each
     # (record_type 'filing' | 'communication'), with their documents as attachments. Generic
     # columns serve both: category = ITR form | communication type; subtype = filing type |
@@ -5009,7 +5021,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
             # A forwarded bank email comes From whoever forwarded it: judge it by its original sender.
             from_addr = _forwarded_original_sender(msg) or from_addr
             bank_guess, _ = _guess_bank_from_sender(from_addr, db)
-            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values() or _is_statement_sender(from_addr)
+            is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values() or _is_statement_sender(from_addr, db)
 
             if existing:
                 # A backfill pass: this email's transaction classification
@@ -5398,6 +5410,9 @@ def mail_scan_page():
         "mail_scan.html", active_tab="mail_scan",
         mail_configured=bool(mailbox_rows),
         mailbox_rows=mailbox_rows, unassigned_count=unassigned_count,
+        sender_rules=db.execute("SELECT * FROM mail_sender_rules ORDER BY pattern").fetchall(),
+        builtin_banks=sorted(set(MAIL_SCAN_BANK_DOMAINS.values())),
+        builtin_retirement=sorted(f"{k} ({v})" for k, v in MAIL_SCAN_RETIREMENT_DOMAINS.items()),
         undated_count=len(pending_document_date_fills(db)),
         account_choices=[{"id": a["id"], "text": _account_text(a)} for a in all_accounts],
         move_targets=_move_targets(db),
@@ -7996,9 +8011,92 @@ def _is_tax_sender(address: str) -> bool:
     return bool(MAIL_SCAN_TAX_DOMAINS & _domain_labels(address))
 
 
-def _is_statement_sender(address: str) -> bool:
-    """A non-bank sender whose attachments are worth keeping: the Income Tax Department, or an NPS / EPF record-keeper."""
-    return _is_tax_sender(address) or bool(set(MAIL_SCAN_RETIREMENT_DOMAINS) & _domain_labels(address))
+_PUBLIC_MAIL_LABELS = {"gmail", "googlemail", "yahoo", "ymail", "outlook", "hotmail", "live", "msn", "icloud", "me",
+                       "rediffmail", "rediffmailpro", "aol", "proton", "protonmail", "zoho"}
+_GENERIC_SENDER_LABELS = {"com", "in", "org", "net", "gov", "edu", "co", "bank", "www", "mail", "email", "mailer",
+                          "alerts", "alert", "info", "noreply", "no-reply", "support", "service", "services"}
+
+
+def clean_sender_pattern(raw: str) -> str:
+    """A tidy, safe pattern from what was typed (an address, a domain, or one word of a domain), or ValueError.
+    A domain or word can't be a public mail provider or something generic -- that would save the attachments
+    of every friend's email; a full address (even at Gmail) is fine."""
+    p = (raw or "").strip().lower()
+    if m := re.search(r"<([^>]+)>", p):          # "Name <addr@domain>"
+        p = m.group(1)
+    p = p.replace("mailto:", "").strip().lstrip("@").strip(". ")
+    if not re.fullmatch(r"[a-z0-9._+\-@]{3,100}", p) or p.count("@") > 1:
+        raise ValueError("Enter an email address (cas@kfintech.com), a domain (kfintech.com), or a word from the "
+                         "sender's domain (kfintech).")
+    if "@" in p:
+        local, domain = p.split("@")
+        if not local or "." not in domain:
+            raise ValueError("That doesn't look like a full email address.")
+        return p
+    labels = [l for l in p.split(".") if l]
+    if not labels or any(l in _PUBLIC_MAIL_LABELS for l in labels):
+        raise ValueError("That's a public mail provider — its mail comes from everyone. Use the sender's full "
+                         "address instead (name@gmail.com).")
+    if all(l in _GENERIC_SENDER_LABELS for l in labels) or ("." not in p and len(p) < 4):
+        raise ValueError("That's too general — it would match unrelated senders. Use the sender's own name or domain.")
+    return p
+
+
+def _sender_matches_rule(address: str, pattern: str) -> bool:
+    """A full address matches exactly; a domain matches itself and its subdomains; a single word matches any
+    whole label of the sender's domain (the same way the built-in bank keywords work)."""
+    a = (address or "").lower()
+    if "@" in pattern:
+        return a == pattern
+    domain = a.rsplit("@", 1)[-1]
+    if "." in pattern:
+        return domain == pattern or domain.endswith("." + pattern)
+    return pattern in domain.split(".")
+
+
+def _is_statement_sender(address: str, db=None) -> bool:
+    """A non-bank sender whose attachments are worth keeping: the Income Tax Department, an NPS / EPF
+    record-keeper, or anyone you've added under Recognised senders."""
+    if _is_tax_sender(address) or bool(set(MAIL_SCAN_RETIREMENT_DOMAINS) & _domain_labels(address)):
+        return True
+    return db is not None and any(_sender_matches_rule(address, r["pattern"])
+                                  for r in db.execute("SELECT pattern FROM mail_sender_rules"))
+
+
+@app.route("/mail-scan/senders", methods=["POST"])
+def add_mail_sender():
+    """Adds a recognised sender; emails from it that were skipped before get another look on the next scan."""
+    db = get_db()
+    back = url_for("mail_scan_page") + "#senders"
+    try:
+        pattern = clean_sender_pattern(request.form.get("pattern", ""))
+    except ValueError as e:
+        flash(str(e), "error")
+        return redirect(back)
+    if db.execute("SELECT 1 FROM mail_sender_rules WHERE pattern = ?", (pattern,)).fetchone():
+        flash(f"“{pattern}” is already on the list.", "info")
+        return redirect(back)
+    db.execute("INSERT INTO mail_sender_rules (pattern, note, created_at) VALUES (?, ?, ?)",
+               (pattern, request.form.get("note", "").strip()[:100], date.today().isoformat()))
+    skipped = [r["id"] for r in db.execute(
+        "SELECT id, from_addr FROM processed_emails WHERE attachments_saved = 0 AND attachments_checked = 1").fetchall()
+        if _sender_matches_rule(r["from_addr"], pattern)]
+    for i in range(0, len(skipped), 500):
+        chunk = skipped[i:i + 500]
+        db.execute(f"UPDATE processed_emails SET attachments_checked = 0 WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+    db.commit()
+    flash(f"Mail from “{pattern}” will now have its attachments saved."
+          + (f" {len(skipped)} earlier email(s) from it will be looked at again on the next scan." if skipped else ""), "info")
+    return redirect(back)
+
+
+@app.route("/mail-scan/senders/<int:rule_id>/delete", methods=["POST"])
+def delete_mail_sender(rule_id):
+    """Stops recognising a sender you added. Attachments already saved stay where they are."""
+    db = get_db()
+    db.execute("DELETE FROM mail_sender_rules WHERE id = ?", (rule_id,))
+    db.commit()
+    return redirect(url_for("mail_scan_page") + "#senders")
 
 
 def _suggest_retirement_target(db, address: str) -> str:
