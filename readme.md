@@ -222,8 +222,8 @@ Another cross-cutting feature alongside Tags: every deposit, metal holding, inve
 PPF/EPF/NPS account and — as **Statements**, on the Bank Accounts tab — every bank account has an
 **Attachments** link (with a count once anything's attached) for
 keeping the contract note, allotment advice, demat statement, deposit receipt, or a certificate
-scan against it for future reference. Accepts PDF, JPEG/PNG, and Word documents up to 20 MB, one
-per upload. (A bank account's statements work exactly the same, including the automatic unlock — the account's
+scan against it for future reference. Accepts PDF, JPEG/PNG, and Word documents up to 20 MB each, several
+per upload (they share the password note). (A bank account's statements work exactly the same, including the automatic unlock — the account's
 own saved name, date of birth, PAN etc. rebuild the password — and an account that still has
 statements can't be deleted.) Purely storage — nothing attached is read or acted on, just kept and viewable later
 (a PDF opens inline in a new tab, other types download) or deletable. Stored on disk, one folder
@@ -544,7 +544,10 @@ Yahoo, iCloud and Rediffmail Pro addresses use their own IMAP servers). **Rediff
 (`@rediffmail.com`) has no IMAP** (only Rediffmail Pro does), so it's read over **POP3**
 (`pop.rediffmail.com:995`) instead — **but Rediff sells POP3 access as a paid feature, and a free
 account is refused with "Login Not Allowed"** (the app says so rather than blaming the password).
-For a free account, forward the mailbox to Gmail and scan that, or attach statements by hand.
+For a free account, the realistic options are: ask the bank to use a Gmail address, attach statements
+by hand (several files at once, on the account's **Statements** page), or pay for POP3 access / Rediffmail Pro
+(free accounts reportedly can't auto-forward either; Gmail's own "check other accounts" would need POP3
+too). Clearing the account's password stops the scan trying that mailbox.
 POP3 can't search by date, so the newest emails are walked back from the end reading only their
 headers (`TOP`) until they're older than the window, and only new ones are downloaded — everything
 after that (duplicates, attachments, account matching) is the same. It signs in with the full

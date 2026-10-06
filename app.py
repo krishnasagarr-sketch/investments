@@ -4684,8 +4684,9 @@ class _Pop3Session:
             raise RuntimeError(
                 f"{host} says “Login Not Allowed” for {address} — the password isn't the problem: Rediffmail "
                 "sells POP3 access as a paid feature, and a free account isn't allowed to use it. Options: buy "
-                "POP3 access (or Rediffmail Pro, which has IMAP), forward this mailbox to Gmail and scan the Gmail "
-                "one, or attach the statements by hand."
+                "POP3 access (or Rediffmail Pro, which has IMAP and forwarding), ask the bank to use a Gmail address "
+                "instead, or attach the statements by hand (several files at once) on the account's Statements page. "
+                "To stop this message, clear the password on that bank account."
             )
         if self.conn is None:
             raise RuntimeError(
@@ -6357,6 +6358,25 @@ def list_attachments(db, kind: str, item_id: int) -> list:
     ]
 
 
+def save_attachments(db, kind: str, item_id: int, files, password_hint: str = "") -> str:
+    """save_attachment for each of several chosen files, with the same
+    password note on all of them. A file that can't be saved doesn't stop the
+    others: returns None if every file was saved, else one message naming
+    each one that wasn't (and, if some were saved, how many)."""
+    files = [f for f in files if f is not None and f.filename]
+    if not files:
+        return "Choose a file to attach."
+    problems = []
+    for f in files:
+        error = save_attachment(db, kind, item_id, f, password_hint)
+        if error:
+            problems.append(f"{f.filename}: {error}")
+    if not problems:
+        return None
+    saved = len(files) - len(problems)
+    return ("; ".join(problems)) + (f" ({saved} other file{'s' if saved != 1 else ''} attached.)" if saved else "")
+
+
 def save_attachment(db, kind: str, item_id: int, file, password_hint: str = "") -> str:
     """Validates and saves an uploaded file against this holding, along
     with the password/PIN (or a hint, like "PAN number") needed to open it,
@@ -7736,7 +7756,7 @@ def bank_account_attachments_page(account_id):
         return redirect(url_for("bank_accounts_page"))
     error = None
     if request.method == "POST":
-        error = save_attachment(db, "bank_accounts", account_id, request.files.get("attachment"),
+        error = save_attachments(db, "bank_accounts", account_id, request.files.getlist("attachment"),
                                 request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("bank_account_attachments_page", account_id=account_id))
@@ -8196,7 +8216,7 @@ def investment_attachments_page(investment_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment(db, "investments", investment_id, request.files.get("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "investments", investment_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("investment_attachments_page", investment_id=investment_id))
 
@@ -8235,7 +8255,7 @@ def deposit_attachments_page(deposit_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment(db, "deposits", deposit_id, request.files.get("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "deposits", deposit_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("deposit_attachments_page", deposit_id=deposit_id))
 
@@ -8277,7 +8297,7 @@ def metal_attachments_page(metal_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment(db, "metals", metal_id, request.files.get("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "metals", metal_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("metal_attachments_page", metal_id=metal_id))
 
@@ -8320,7 +8340,7 @@ def retirement_attachments_page(account_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachment(db, "retirement", account_id, request.files.get("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "retirement", account_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
         if error is None:
             return redirect(url_for("retirement_attachments_page", account_id=account_id))
 
