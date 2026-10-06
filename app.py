@@ -815,6 +815,13 @@ def init_db():
         if col not in {r[1] for r in conn.execute("PRAGMA table_info(bank_accounts)")}:
             conn.execute(f"ALTER TABLE bank_accounts ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+        # One time: forwarded emails scanned before the original sender was read were judged by
+        # whoever forwarded them and dismissed. Make them eligible for another look.
+        conn.execute("UPDATE processed_emails SET attachments_checked = 0 WHERE attachments_saved = 0 "
+                     "AND (lower(subject) LIKE 'fw:%' OR lower(subject) LIKE 'fwd:%')")
+        conn.execute("PRAGMA user_version = 1")
+
     conn.commit()
     conn.close()
 
@@ -4227,13 +4234,13 @@ MAIL_SCAN_ATTACHMENT_EXTENSIONS = {".pdf", ".csv", ".xls", ".xlsx"}
 # matching an unrelated same-group domain, like HDFC Life's hdfclife.com.
 MAIL_SCAN_BANK_DOMAINS = {
     "sbi": "State Bank of India", "onlinesbi": "State Bank of India",
-    "hdfcbank": "HDFC Bank",
-    "icicibank": "ICICI Bank",
-    "axisbank": "Axis Bank",
+    "hdfcbank": "HDFC Bank", "hdfc": "HDFC Bank",
+    "icicibank": "ICICI Bank", "icici": "ICICI Bank",
+    "axisbank": "Axis Bank", "axis": "Axis Bank",
     "kotak": "Kotak Mahindra Bank",
-    "pnbindia": "Punjab National Bank", "netpnb": "Punjab National Bank",
+    "pnbindia": "Punjab National Bank", "netpnb": "Punjab National Bank", "pnb": "Punjab National Bank",
     "bankofbaroda": "Bank of Baroda", "bobibanking": "Bank of Baroda",
-    "canarabank": "Canara Bank",
+    "canarabank": "Canara Bank", "canara": "Canara Bank",
     "unionbankofindia": "Union Bank of India",
     "indianbank": "Indian Bank",
     "idbibank": "IDBI Bank",
@@ -4324,6 +4331,28 @@ def _extract_password_hint_from_text(text: str) -> str:
     for sentence in re.split(r"(?<=[.!?])\s+", normalized):
         if MAIL_SCAN_PASSWORD_RE.search(sentence):
             return sentence.strip()[:300]
+    return ""
+
+
+FORWARD_SUBJECT_RE = re.compile(r"^\s*(?:fw|fwd)\s*:", re.I)
+FORWARD_FROM_RE = re.compile(r"(?im)^\s*(?:from|sender)\s*:\s*(.+)$")
+
+
+def _forwarded_original_sender(msg) -> str:
+    """For a forwarded email ("Fw:"/"Fwd:" subject), the address of the ORIGINAL
+    sender, read from the "From:" line of the forwarded header block at the top
+    of its text ("From: x@bank.in / Sent: ... / To: ... / Subject: ..."), as
+    Rediffmail, Gmail and Outlook all write it. The real From header of such
+    an email is just whoever forwarded it, which says nothing about the bank.
+    Returns "" if it isn't a forward or no original sender can be found."""
+    subject = _decode_mime_header(msg.get("Subject", ""))
+    if not FORWARD_SUBJECT_RE.match(subject):
+        return ""
+    head = html.unescape(_extract_email_text(msg))[:3000]
+    for m in FORWARD_FROM_RE.finditer(head):
+        found = re.search(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+", m.group(1))
+        if found:
+            return found.group(0).lower()
     return ""
 
 
@@ -4928,6 +4957,8 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                 continue  # fully handled in an earlier scan -- nothing left to do
 
             from_addr = parseaddr(msg.get("From", ""))[1].lower()
+            # A forwarded bank email comes From whoever forwarded it: judge it by its original sender.
+            from_addr = _forwarded_original_sender(msg) or from_addr
             bank_guess, _ = _guess_bank_from_sender(from_addr, db)
             is_bank_sender = bank_guess in MAIL_SCAN_BANK_DOMAINS.values()
 
@@ -4950,8 +4981,16 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                         (len(saved_files), _safe_message_id_folder(message_id), message_id),
                     )
                     recheck_body = _extract_email_text(msg)
-                    db.execute("UPDATE processed_emails SET body_text = ? WHERE message_id = ?",
-                               (recheck_body[:MAIL_BODY_STORE_CHARS], message_id))
+                    db.execute("UPDATE processed_emails SET body_text = ?, from_addr = ?, source_email = ? "
+                               "WHERE message_id = ?",
+                               (recheck_body[:MAIL_BODY_STORE_CHARS], from_addr, mailbox["email"], message_id))
+                    if not existing["account_match"] == "manual":
+                        account_id, account_why = match_bank_account(
+                            db, mailbox["email"], from_addr, f"{existing['subject']}\n{recheck_body}",
+                            dedicated=not mailbox["primary"])
+                        if account_id:
+                            db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = ? WHERE id = ?",
+                                       (account_id, account_why, existing["id"]))
                     hint = _extract_password_hint_from_text(
                         f"{existing['subject']}\n{recheck_body}"
                     )

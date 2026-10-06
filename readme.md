@@ -558,6 +558,15 @@ others), and "keep a copy on the server" should be ticked so downloading doesn't
 Only Gmail has been exercised for real; the POP3 and other-provider paths are tested against
 stand-in servers.
 
+**Forwarded bank emails.** A bank email you forward to the scanned mailbox (say from a Rediffmail you
+can't scan directly) arrives *from you*, so it used to look like personal mail and its PDF was skipped.
+For a subject starting `Fw:`/`Fwd:`, the original sender is now read from the forwarded header block at
+the top of the text (`From: …`, as Rediffmail, Gmail and Outlook write it) and used for bank
+recognition, attachment saving and account matching — that sender is what's shown as the email's
+sender. Newer bank addresses of the form `name.bank.in` (`icici.bank.in`, `hdfcbank.bank.in`) are
+recognised too. A forward with no such block, or an ordinary email from you, is left alone. Forwards
+scanned before this existed get one fresh look on the next scan.
+
 **Which bank account an email belongs to.** For each email with a saved attachment the sender's
 bank narrows the candidates; if that leaves one account, that's it. Otherwise the email's text is
 checked against each candidate's account number/label (also masked, like `XXXX1234` or "ending
