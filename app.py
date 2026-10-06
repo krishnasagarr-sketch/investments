@@ -787,6 +787,10 @@ def init_db():
             UNIQUE(kind, item_id, filename)
         )
     """)
+    if "document_date" not in {r[1] for r in conn.execute("PRAGMA table_info(attachment_notes)")}:
+        # The date the document itself is dated (a statement's month-end, a receipt's date, ...),
+        # ISO YYYY-MM-DD, or '' if not given.
+        conn.execute("ALTER TABLE attachment_notes ADD COLUMN document_date TEXT NOT NULL DEFAULT ''")
     if "unlock_status" not in {r[1] for r in conn.execute("PRAGMA table_info(attachment_notes)")}:
         # What happened when this file's password was removed (see
         # permanently_unlock_pdf): verified identical, or why it was left alone.
@@ -5157,6 +5161,7 @@ def list_saved_attachments(db) -> list:
                     "size": _human_file_size(f.stat().st_size),
                     "password_hint": get_attachment_password(db, "mail_scan", email_id, f.name) if email_id else "",
                     "unlock_status": get_attachment_unlock_status(db, "mail_scan", email_id, f.name) if email_id else "",
+                    "document_date": get_attachment_document_date(db, "mail_scan", email_id, f.name) if email_id else "",
                     "original_url": _original_url(db, "mail_scan", email_id, f.name) if email_id else None,
                     "draft_url": url_for("draft_deposit_from_attachment", kind="mail_scan", item_id=email_id, filename=f.name)
                                  if email_id and f.suffix.lower() == ".pdf" else None,
@@ -5226,8 +5231,14 @@ def update_mail_attachment_password(email_id, filename):
     from the email's own text at scan time (see
     _extract_password_hint_from_text), but editable here in case that
     guess was wrong or incomplete."""
-    set_attachment_password(get_db(), "mail_scan", email_id, filename, request.form.get("password_hint", ""))
-    return redirect(url_for("mail_scan_page"))
+    db = get_db()
+    set_attachment_password(db, "mail_scan", email_id, filename, request.form.get("password_hint", ""))
+    if "document_date" in request.form:
+        try:
+            set_attachment_document_date(db, "mail_scan", email_id, filename, clean_document_date(request.form["document_date"]))
+        except ValueError:
+            flash("That document date isn't valid, so it wasn't saved.", "error")
+    return redirect(url_for("mail_scan_page") + "#attachments")
 
 
 @app.route("/mail-scan")
@@ -6363,6 +6374,34 @@ def set_attachment_password(db, kind: str, item_id: int, filename: str, password
     db.commit()
 
 
+def clean_document_date(value) -> str:
+    """A valid ISO date from a form value, "" for a blank one, or raises ValueError."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    d = date.fromisoformat(value)  # ValueError if it isn't a real date
+    if not date(1990, 1, 1) <= d <= date.today() + timedelta(days=366):
+        raise ValueError("That document date doesn't look right.")
+    return d.isoformat()
+
+
+def get_attachment_document_date(db, kind: str, item_id: int, filename: str) -> str:
+    row = db.execute(
+        "SELECT document_date FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
+        (kind, item_id, filename),
+    ).fetchone()
+    return row["document_date"] if row else ""
+
+
+def set_attachment_document_date(db, kind: str, item_id: int, filename: str, document_date: str) -> None:
+    db.execute(
+        """INSERT INTO attachment_notes (kind, item_id, filename, document_date) VALUES (?, ?, ?, ?)
+           ON CONFLICT(kind, item_id, filename) DO UPDATE SET document_date = excluded.document_date""",
+        (kind, item_id, filename, document_date),
+    )
+    db.commit()
+
+
 def get_attachment_unlock_status(db, kind: str, item_id: int, filename: str) -> str:
     row = db.execute(
         "SELECT unlock_status FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
@@ -6380,24 +6419,33 @@ def set_attachment_unlock_status(db, kind: str, item_id: int, filename: str, sta
     db.commit()
 
 
+def _neg_date(iso: str) -> int:
+    """A sort key that puts later dates first."""
+    return -date.fromisoformat(iso).toordinal()
+
+
 def list_attachments(db, kind: str, item_id: int) -> list:
     folder = ATTACHMENT_DIRS[kind] / str(item_id)
     if not folder.exists():
         return []
-    return [
+    items = [
         {
             "name": f.name,
             "size": _human_file_size(f.stat().st_size),
             "password_hint": get_attachment_password(db, kind, item_id, f.name),
             "unlock_status": get_attachment_unlock_status(db, kind, item_id, f.name),
             "original_url": _original_url(db, kind, item_id, f.name),
+            "document_date": get_attachment_document_date(db, kind, item_id, f.name),
         }
         for f in sorted(folder.iterdir())
         if f.is_file()
     ]
+    # newest dated documents first, then the undated ones by name
+    items.sort(key=lambda x: (x["document_date"] == "", "" if not x["document_date"] else _neg_date(x["document_date"]), x["name"]))
+    return items
 
 
-def save_attachments(db, kind: str, item_id: int, files, password_hint: str = "") -> str:
+def save_attachments(db, kind: str, item_id: int, files, password_hint: str = "", document_date: str = "") -> str:
     """save_attachment for each of several chosen files, with the same
     password note on all of them. A file that can't be saved doesn't stop the
     others: returns None if every file was saved, else one message naming
@@ -6405,9 +6453,13 @@ def save_attachments(db, kind: str, item_id: int, files, password_hint: str = ""
     files = [f for f in files if f is not None and f.filename]
     if not files:
         return "Choose a file to attach."
+    try:
+        document_date = clean_document_date(document_date)
+    except ValueError as e:
+        return "Document date: " + ("that isn't a valid date." if "isoformat" in str(e) or "Invalid" in str(e) else str(e))
     problems = []
     for f in files:
-        error = save_attachment(db, kind, item_id, f, password_hint)
+        error = save_attachment(db, kind, item_id, f, password_hint, document_date)
         if error:
             problems.append(f"{f.filename}: {error}")
     if not problems:
@@ -6416,7 +6468,7 @@ def save_attachments(db, kind: str, item_id: int, files, password_hint: str = ""
     return ("; ".join(problems)) + (f" ({saved} other file{'s' if saved != 1 else ''} attached.)" if saved else "")
 
 
-def save_attachment(db, kind: str, item_id: int, file, password_hint: str = "") -> str:
+def save_attachment(db, kind: str, item_id: int, file, password_hint: str = "", document_date: str = "") -> str:
     """Validates and saves an uploaded file against this holding, along
     with the password/PIN (or a hint, like "PAN number") needed to open it,
     if one was given -- many bank-issued PDFs are password-protected, and
@@ -6442,6 +6494,8 @@ def save_attachment(db, kind: str, item_id: int, file, password_hint: str = "") 
     file.save(dest)
     if password_hint.strip():
         set_attachment_password(db, kind, item_id, dest.name, password_hint)
+    if document_date:
+        set_attachment_document_date(db, kind, item_id, dest.name, document_date)
     return None
 
 
@@ -6480,6 +6534,11 @@ def update_attachment_password(kind, item_id, filename):
         return redirect(url_for("dashboard"))
     db = get_db()
     set_attachment_password(db, kind, item_id, filename, request.form.get("password_hint", ""))
+    if "document_date" in request.form:
+        try:
+            set_attachment_document_date(db, kind, item_id, filename, clean_document_date(request.form["document_date"]))
+        except ValueError:
+            flash("That document date isn't valid, so it wasn't saved.", "error")
     return redirect(_attachments_page_url(kind, item_id))
 
 
@@ -7384,14 +7443,16 @@ def move_attachment(db, kind: str, item_id: int, filename: str, dest_kind: str, 
         (folder / ORIGINALS_DIRNAME).mkdir(exist_ok=True)
         shutil.move(str(original), str(folder / ORIGINALS_DIRNAME / dest.name))
     note = db.execute(
-        "SELECT password_hint, unlock_status FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
-        (kind, item_id, filename)).fetchone()
+        "SELECT password_hint, unlock_status, document_date FROM attachment_notes "
+        "WHERE kind = ? AND item_id = ? AND filename = ?", (kind, item_id, filename)).fetchone()
     if note:
         db.execute(
-            """INSERT INTO attachment_notes (kind, item_id, filename, password_hint, unlock_status) VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO attachment_notes (kind, item_id, filename, password_hint, unlock_status, document_date)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(kind, item_id, filename) DO UPDATE SET password_hint = excluded.password_hint,
-                                                                unlock_status = excluded.unlock_status""",
-            (dest_kind, dest_id, dest.name, note["password_hint"], note["unlock_status"]))
+                                                                unlock_status = excluded.unlock_status,
+                                                                document_date = excluded.document_date""",
+            (dest_kind, dest_id, dest.name, note["password_hint"], note["unlock_status"], note["document_date"]))
         db.execute("DELETE FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
                    (kind, item_id, filename))
     if kind == "mail_scan":
@@ -7796,7 +7857,7 @@ def bank_account_attachments_page(account_id):
     error = None
     if request.method == "POST":
         error = save_attachments(db, "bank_accounts", account_id, request.files.getlist("attachment"),
-                                request.form.get("password_hint", ""))
+                                request.form.get("password_hint", ""), request.form.get("document_date", ""))
         if error is None:
             return redirect(url_for("bank_account_attachments_page", account_id=account_id))
     return render_template(
@@ -8255,7 +8316,7 @@ def investment_attachments_page(investment_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachments(db, "investments", investment_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "investments", investment_id, request.files.getlist("attachment"), request.form.get("password_hint", ""), request.form.get("document_date", ""))
         if error is None:
             return redirect(url_for("investment_attachments_page", investment_id=investment_id))
 
@@ -8294,7 +8355,7 @@ def deposit_attachments_page(deposit_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachments(db, "deposits", deposit_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "deposits", deposit_id, request.files.getlist("attachment"), request.form.get("password_hint", ""), request.form.get("document_date", ""))
         if error is None:
             return redirect(url_for("deposit_attachments_page", deposit_id=deposit_id))
 
@@ -8336,7 +8397,7 @@ def metal_attachments_page(metal_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachments(db, "metals", metal_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "metals", metal_id, request.files.getlist("attachment"), request.form.get("password_hint", ""), request.form.get("document_date", ""))
         if error is None:
             return redirect(url_for("metal_attachments_page", metal_id=metal_id))
 
@@ -8379,7 +8440,7 @@ def retirement_attachments_page(account_id):
 
     error = None
     if request.method == "POST":
-        error = save_attachments(db, "retirement", account_id, request.files.getlist("attachment"), request.form.get("password_hint", ""))
+        error = save_attachments(db, "retirement", account_id, request.files.getlist("attachment"), request.form.get("password_hint", ""), request.form.get("document_date", ""))
         if error is None:
             return redirect(url_for("retirement_attachments_page", account_id=account_id))
 

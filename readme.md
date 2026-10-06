@@ -231,6 +231,14 @@ per holding, under `deposit_attachments/`, `metal_attachments/`, `investment_att
 `retirement_attachments/`, or `bank_account_attachments/` next to the database — all gitignored, since these are real
 personal financial documents.
 
+Each attachment can also carry a **document date** — the date the document itself bears (a
+statement's month-end, a receipt's date): set it when uploading (it applies to every file chosen
+together), or change or clear it per file next to the password note, on every attachments page
+(deposits, metals, investments, retirement, a bank account's Statements) and under Mail Scan's
+Saved attachments. It's shown beside the file name, files with a date are listed newest first
+(undated ones after, by name), it travels with the file when it's moved (to a deposit, or to a
+bank account's Statements), and it must be a real date between 1990 and a year from now.
+
 Many bank-issued PDFs are password-protected (a PAN number, a date of birth, an account number),
 so each attachment has its own optional **password field** — set it at upload time or edit it
 later independently of the file itself. Put in the bank's own wording, or the real password:
