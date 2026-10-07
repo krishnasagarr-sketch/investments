@@ -762,15 +762,35 @@ subject becomes its document date.
 
 ## Backup & Restore
 
-Download the entire SQLite database as a single file, or restore from a previously downloaded
-one. Restoring makes an automatic safety copy of whatever was there first, and validates that
-the uploaded file is actually a database with the expected tables before overwriting anything.
+**Download full backup (.zip)** is one file holding a consistent snapshot of the database *and every
+saved document* — each holding's attachments, bank statements, tax documents, the kept locked
+originals (`_originals/`) and Mail Scan's saved attachments. **Download the database (.db)** is the
+records only, if you don't want the documents. Either contains personal financial information (and
+the plain-text secrets described under [Login & Security](#login--security)) — keep it private.
 
-The backup is **the database only**. Attachments live in their own folders next to it
-(`deposit_attachments/`, `metal_attachments/`, `investment_attachments/`, `retirement_attachments/`,
-`bank_account_attachments/`, `tax_attachments/`, `mail_attachments/`) and are **not** in the download — copy those folders
-separately if you want them backed up. The database *does* hold secrets in plain text (below), so
-treat a backup file as sensitive.
+**Restore** accepts either: a full backup brings back the records and the documents; a database-only
+`.db` brings back just the records and leaves the documents alone. Before anything is replaced, what's
+in the app now is kept — a dated folder `fd-manager-before-restore-…` next to the database (database copy
+plus the old document folders) for a zip, or a `….db` copy for a database-only restore. A zip is checked
+before it's unpacked: it must contain a valid FD Manager database, and any file name that is absolute, uses
+`..` or backslashes, or points outside the known document folders gets the whole restore refused with
+nothing changed.
+
+### Reset — clear all data and start again
+
+For when the app has been built and tested and the test data should be replaced with real data. The
+card at the bottom of the Backup tab shows what's there now (record counts, number and size of saved
+documents) and, once you give your **login password** and type `RESET`, empties every table and removes
+every saved document, with ids starting again at 1 (so new records never pick up an old record's
+files). **Keep these** — ticked by default, since they're settings rather than data — are your login
+account, the notification settings (Gmail sender and app password) and your recognised senders;
+untick any to clear it too (without the login you land on the first-run setup page). **Keep a safety
+copy** (ticked by default) moves the old records and documents into a dated folder
+`fd-manager-before-reset-…` beside the database — a snapshot `fixed_deposits.db` plus the old document
+folders and a README on putting them back — instead of deleting them; untick it for a permanent wipe
+(a second confirmation reminds you). Download a full backup first if the data matters. After a reset,
+Mail Scan has forgotten what it has seen, so its next scan re-reads the mail in its window. The backup,
+safety and upload files are gitignored.
 
 ## Login & Security
 

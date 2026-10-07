@@ -6,30 +6,88 @@
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Backup</h2>
     <p class="field-hint" style="margin-bottom:16px;">
-      Everything lives in one local file on this device, with no server or cloud copy —
-      losing the device loses the data. Download a backup regularly, especially before
-      a phone reset, app reinstall, or OS update.
+      Everything lives on this device, with no server or cloud copy — losing the device loses the data.
+      The <strong>full backup</strong> is one .zip holding your records <em>and every attached document</em>
+      (statements, receipts, notices, the kept locked originals, Mail Scan's saved attachments).
+      Download one regularly, especially before a phone reset, app reinstall, OS update, or a reset below.
+      It contains personal financial information — keep it somewhere private.
     </p>
-    <a href="{{ url_for('backup_database') }}" class="btn" style="display:inline-block;text-decoration:none;text-align:center;">Download Backup</a>
+    <a href="{{ url_for('backup_full') }}" class="btn" style="display:inline-block;text-decoration:none;text-align:center;">Download full backup (.zip)</a>
+    <p class="field-hint" style="margin:10px 0 0;">
+      Records only, no documents:
+      <a href="{{ url_for('backup_database') }}">download the database (.db)</a>.
+    </p>
   </div>
 
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">Restore</h2>
     <p class="field-hint" style="margin-bottom:16px;">
-      Replaces everything currently in the app with the contents of the backup file.
-      A safety copy of what's here now is made automatically before restoring, in case
-      this wasn't what you meant to do.
+      Replaces everything currently in the app with the contents of the backup file — a full backup (.zip)
+      brings back the records and the documents; a database-only (.db) file brings back just the records.
+      What's here now is kept automatically before restoring (a dated safety copy next to the database), in
+      case this wasn't what you meant to do.
     </p>
     <div id="restore-error" class="error-box" style="display:none;"></div>
     <div class="form-group">
-      <label for="restore-file">Backup file (.db)</label>
-      <input type="file" id="restore-file" accept=".db">
+      <label for="restore-file">Backup file (.zip or .db)</label>
+      <input type="file" id="restore-file" accept=".zip,.db">
     </div>
     <button type="button" class="btn secondary" id="restore-submit" style="width:100%;">Restore from Backup</button>
     <p id="restore-msg" class="field-hint" style="display:none;"></p>
   </div>
 
+  <div class="card" id="reset" style="max-width:520px; border:1px solid #e0b4b0;">
+    <h2 style="font-size:16px; margin:0 0 4px; color:var(--red, #b3261e);">Reset — clear all data and start again</h2>
+    <p class="field-hint" style="margin-bottom:12px;">
+      For when you've finished building and testing and want to replace the test data with real data. This
+      empties every record and removes every saved document, and numbering starts again at 1.
+      <strong>It can't be undone</strong> unless you keep the safety copy below — so
+      <a href="{{ url_for('backup_full') }}">download a full backup</a> first.
+    </p>
+    <div style="margin:0 0 12px; font-size:13px;">
+      <strong>What's here now and would be removed:</strong>
+      {% if summary.records or summary.other_records or summary.files %}
+        <ul style="margin:6px 0 0 18px; padding:0;">
+          {% for label, n in summary.records %}<li>{{ label }}: {{ n }}</li>{% endfor %}
+          {% if summary.other_records %}<li>Other records: {{ summary.other_records }}</li>{% endif %}
+          <li>Saved documents: {{ summary.files }} file(s), {{ summary.size }}</li>
+        </ul>
+      {% else %}<span class="muted"> nothing — it's already empty.</span>{% endif %}
+    </div>
+    <form method="POST" action="{{ url_for('reset_everything') }}" id="reset-form">
+      <div class="form-group" style="margin-bottom:8px;">
+        <label style="font-weight:600;">Keep these (settings, not data)</label>
+        <label style="font-weight:normal; display:flex; gap:6px; align-items:center;"><input type="checkbox" name="keep_login" value="1" checked style="width:auto;"> My login account</label>
+        <label style="font-weight:normal; display:flex; gap:6px; align-items:center;"><input type="checkbox" name="keep_notifications" value="1" checked style="width:auto;"> Notification settings (Gmail sender and app password)</label>
+        <label style="font-weight:normal; display:flex; gap:6px; align-items:center;"><input type="checkbox" name="keep_senders" value="1" checked style="width:auto;"> My recognised senders (Mail Scan)</label>
+      </div>
+      <div class="form-group" style="margin-bottom:8px;">
+        <label style="font-weight:normal; display:flex; gap:6px; align-items:flex-start;">
+          <input type="checkbox" name="safety_copy" value="1" checked style="width:auto; margin-top:3px;">
+          <span><strong>Keep a safety copy</strong> of the old records and documents in a dated folder next to the
+          database, instead of deleting them. Untick to delete everything permanently.</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="reset_password">Your login password</label>
+        <input type="password" id="reset_password" name="password" autocomplete="current-password" required>
+      </div>
+      <div class="form-group">
+        <label for="reset_phrase">Type <strong>{{ reset_phrase }}</strong> to confirm</label>
+        <input type="text" id="reset_phrase" name="confirm_phrase" autocomplete="off" required>
+      </div>
+      <button type="submit" class="btn danger" style="width:100%;">Clear all data and start again</button>
+    </form>
+  </div>
+
   <script>
+    document.getElementById('reset-form').addEventListener('submit', (e) => {
+      const permanent = !document.querySelector('#reset-form input[name=safety_copy]').checked;
+      const msg = permanent
+        ? 'This PERMANENTLY deletes all your records and documents (no safety copy). Continue?'
+        : 'This clears all your records and documents (a safety copy is kept). Continue?';
+      if (!confirm(msg)) e.preventDefault();
+    });
     document.getElementById('restore-submit').addEventListener('click', async () => {
       const errorBox = document.getElementById('restore-error');
       const msg = document.getElementById('restore-msg');
@@ -51,7 +109,7 @@
         const res = await fetch('{{ url_for("restore_database") }}', { method: 'POST', body: formData });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Restore failed');
-        msg.textContent = `Restored. A safety copy of your previous data was saved as ${data.safety_copy}. Reloading...`;
+        msg.textContent = `Restored. What was here before is kept as ${data.safety_copy} next to the database. Reloading...`;
         msg.style.display = 'block';
         setTimeout(() => window.location.reload(), 1500);
       } catch (e) {

@@ -18,7 +18,9 @@ import socket
 import sqlite3
 import sys
 import threading
+import tempfile
 import time
+import zipfile
 from datetime import date, datetime, timedelta
 from email.header import decode_header as _decode_email_header
 from email.mime.text import MIMEText
@@ -9240,7 +9242,8 @@ def delete_investment(investment_id):
 
 @app.route("/backup")
 def backup_page():
-    return render_template("backup.html", active_tab="backup", error=None)
+    return render_template("backup.html", active_tab="backup", error=None, summary=data_summary(get_db()),
+                           reset_phrase=RESET_PHRASE)
 
 
 @app.route("/api/backup")
@@ -9255,36 +9258,238 @@ def backup_database():
     )
 
 
+def _attachment_roots() -> list:
+    """Every folder of saved documents: each holding's attachments plus Mail Scan's."""
+    return [*ATTACHMENT_DIRS.values(), MAIL_ATTACHMENTS_DIR]
+
+
+def _validate_backup_db(path: Path):
+    """None if `path` is a usable FD Manager database, else a message for the user."""
+    try:
+        conn = sqlite3.connect(path)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        conn.close()
+    except sqlite3.Error:
+        return "That file isn't a valid database."
+    if not {"depositors", "deposits", "auth_user"}.issubset(tables):
+        return "That file doesn't look like an FD Manager backup (missing expected tables)."
+    return None
+
+
+@app.route("/api/backup/full")
+def backup_full():
+    """Everything in one .zip: a consistent snapshot of the database plus every attachment folder
+    (the unlocked files, their kept locked originals, Mail Scan's saved attachments)."""
+    get_db().commit()
+    fd, zip_path = tempfile.mkstemp(prefix="fdm-backup-", suffix=".zip")
+    os.close(fd)
+    snapshot = zip_path + ".db"
+    src, dst = sqlite3.connect(DB_PATH), sqlite3.connect(snapshot)
+    src.backup(dst)
+    dst.close(); src.close()
+    files = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        z.write(snapshot, "fixed_deposits.db")
+        for root in _attachment_roots():
+            if root.is_dir():
+                for f in sorted(root.rglob("*")):
+                    if f.is_file() and not f.name.startswith("."):  # skip half-written temp files
+                        z.write(f, f"{root.name}/{f.relative_to(root).as_posix()}")
+                        files += 1
+        z.writestr("manifest.json", json.dumps({"app": "fd-manager", "created": date.today().isoformat(),
+                                                "attachment_files": files}))
+    os.unlink(snapshot)
+    resp = send_file(zip_path, as_attachment=True, mimetype="application/zip",
+                     download_name=f"fd-manager-full-backup-{date.today().isoformat()}.zip")
+    resp.call_on_close(lambda: Path(zip_path).unlink(missing_ok=True))
+    return resp
+
+
+RESTORE_MAX_UNPACKED_BYTES = 8 * 1024 ** 3  # refuse a zip that would unpack to more than this
+
+
+def _restore_from_zip(upload: Path):
+    """Restores a full backup .zip -> (safety folder name, None) or (None, error message).
+    Every member name is checked first, so a crafted zip can't write outside the data folders;
+    what's in the app now is moved aside into a dated safety folder before anything is replaced."""
+    roots = {r.name: r for r in _attachment_roots()}
+    try:
+        z = zipfile.ZipFile(upload)
+    except zipfile.BadZipFile:
+        return None, "That file isn't a valid backup (.zip or .db)."
+    with z:
+        infos = z.infolist()
+        names = {i.filename for i in infos}
+        if "fixed_deposits.db" not in names:
+            return None, "That zip doesn't contain fixed_deposits.db — it isn't an FD Manager backup."
+        total = 0
+        for i in infos:
+            n = i.filename
+            parts = n.split("/")
+            unsafe = n.startswith("/") or "\\" in n or ".." in parts or ":" in parts[0]
+            if unsafe or (n not in ("fixed_deposits.db", "manifest.json") and parts[0] not in roots):
+                return None, "That zip contains unexpected paths, so it wasn't restored."
+            total += i.file_size
+        if total > RESTORE_MAX_UNPACKED_BYTES:
+            return None, "That backup is unreasonably large, so it wasn't restored."
+        tmp_db = DB_PATH.parent / f".restore-upload-{secrets.token_hex(8)}.db"
+        with z.open("fixed_deposits.db") as src, open(tmp_db, "wb") as out:
+            shutil.copyfileobj(src, out)
+        problem = _validate_backup_db(tmp_db)
+        if problem:
+            tmp_db.unlink(missing_ok=True)
+            return None, problem
+        safety = DB_PATH.parent / f"fd-manager-before-restore-{date.today().isoformat()}-{secrets.token_hex(4)}"
+        safety.mkdir()
+        if DB_PATH.exists():
+            shutil.copy2(DB_PATH, safety / "fixed_deposits.db")
+        for root in roots.values():
+            if root.exists():
+                shutil.move(str(root), str(safety / root.name))
+        for i in infos:
+            parts = i.filename.split("/")
+            if i.is_dir() or parts[0] not in roots:
+                continue
+            target = (roots[parts[0]] / "/".join(parts[1:])).resolve()
+            if not target.is_relative_to(roots[parts[0]].resolve()):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(i) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+        shutil.move(str(tmp_db), str(DB_PATH))
+    return safety.name, None
+
+
 @app.route("/api/restore", methods=["POST"])
 def restore_database():
+    """Restores a backup: a full .zip (database + attachments) or a database-only .db."""
     file = request.files.get("backup_file")
     if file is None or file.filename == "":
         return jsonify({"error": "Choose a backup file to restore."}), 400
 
-    tmp_path = DB_PATH.parent / f".restore-upload-{secrets.token_hex(8)}.db"
+    tmp_path = DB_PATH.parent / f".restore-upload-{secrets.token_hex(8)}.upload"
     file.save(tmp_path)
-
     try:
-        test_conn = sqlite3.connect(tmp_path)
-        tables = {r[0] for r in test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        test_conn.close()
-    except sqlite3.Error:
+        if file.filename.lower().endswith(".zip") or zipfile.is_zipfile(tmp_path):
+            safety, problem = _restore_from_zip(tmp_path)
+            if problem:
+                return jsonify({"error": problem}), 400
+        else:
+            problem = _validate_backup_db(tmp_path)
+            if problem:
+                return jsonify({"error": problem}), 400
+            safety = f"fd-manager-before-restore-{date.today().isoformat()}-{secrets.token_hex(4)}.db"
+            if DB_PATH.exists():
+                shutil.copy2(DB_PATH, DB_PATH.parent / safety)
+            shutil.move(str(tmp_path), str(DB_PATH))
+    finally:
         tmp_path.unlink(missing_ok=True)
-        return jsonify({"error": "That file isn't a valid database."}), 400
-
-    required = {"depositors", "deposits", "auth_user"}
-    if not required.issubset(tables):
-        tmp_path.unlink(missing_ok=True)
-        return jsonify({"error": "That file doesn't look like an FD Manager backup (missing expected tables)."}), 400
-
-    safety_copy = DB_PATH.parent / f"fd-manager-before-restore-{date.today().isoformat()}-{secrets.token_hex(4)}.db"
-    if DB_PATH.exists():
-        shutil.copy2(DB_PATH, safety_copy)
-    shutil.move(str(tmp_path), str(DB_PATH))
-
+    _HAIKU_PLAN_CACHE.clear()
     init_db()
+    return jsonify({"ok": True, "safety_copy": safety})
 
-    return jsonify({"ok": True, "safety_copy": safety_copy.name})
+
+# ---------- Reset: clear all data and start again ----------
+RESET_PHRASE = "RESET"
+_RESET_LABELS = {
+    "deposits": "Deposits", "metals": "Metal holdings", "investments": "Investments",
+    "retirement_accounts": "Retirement accounts", "depositors": "Depositors", "banks": "Banks",
+    "bank_accounts": "Bank accounts", "tax_records": "Tax records", "processed_emails": "Mail Scan emails looked at",
+    "deposit_drafts": "Draft deposits", "other_income": "Other income entries", "expenses": "Expenses",
+    "family_gifts": "Gifts", "portfolio_tags": "Tags", "interest_statement_lines": "Interest Check lines",
+}
+_RESET_KEEPABLE = {"keep_login": "auth_user", "keep_notifications": "notification_settings", "keep_senders": "mail_sender_rules"}
+
+
+def data_summary(db) -> dict:
+    """What a reset would remove: record counts (non-empty tables) and the saved document files."""
+    tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    kept = set(_RESET_KEEPABLE.values())
+    named, other = [], 0
+    for t in tables:
+        if t in kept:
+            continue
+        n = db.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+        if n and t in _RESET_LABELS:
+            named.append((_RESET_LABELS[t], n))
+        elif n:
+            other += n
+    files = size = 0
+    for root in _attachment_roots():
+        if root.is_dir():
+            for f in root.rglob("*"):
+                if f.is_file():
+                    files += 1
+                    size += f.stat().st_size
+    return {"records": sorted(named), "other_records": other, "files": files, "size": _human_file_size(size)}
+
+
+def reset_all_data(db, keep: set, safety_copy: bool) -> dict:
+    """Empties every table except those in `keep` (ids start again from 1) and clears every attachment
+    folder. With a safety copy, a consistent snapshot of the database and the attachment folders are
+    kept in a dated folder next to the database instead of being deleted. Returns a summary."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    holding = DB_PATH.parent / f"fd-manager-before-reset-{stamp}-{secrets.token_hex(2)}"
+    if safety_copy:
+        holding.mkdir()
+        snap = sqlite3.connect(holding / "fixed_deposits.db")
+        db.commit()
+        db.backup(snap)
+        snap.close()
+        (holding / "README.txt").write_text(
+            "Safety copy made just before 'Reset all data'.\n"
+            "To undo it: stop the app, copy fixed_deposits.db from here over the one in the app's data folder, and "
+            "move the attachment folders in here back next to it. Delete this folder once you're sure.\n")
+    tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    deleted = 0
+    try:
+        for t in tables:
+            if t in keep:
+                continue
+            deleted += db.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+            db.execute(f'DELETE FROM "{t}"')
+            db.execute("DELETE FROM sqlite_sequence WHERE name = ?", (t,))  # numbering starts again at 1
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.execute("VACUUM")
+    files = 0
+    for root in _attachment_roots():
+        if root.is_dir():
+            files += sum(1 for f in root.rglob("*") if f.is_file())
+            if safety_copy:
+                shutil.move(str(root), str(holding / root.name))
+            else:
+                shutil.rmtree(root)
+    _HAIKU_PLAN_CACHE.clear()
+    init_db()  # puts back any default rows (e.g. the notification settings row)
+    return {"records": deleted, "files": files, "safety": holding.name if safety_copy else ""}
+
+
+@app.route("/backup/reset", methods=["POST"])
+def reset_everything():
+    db = get_db()
+    back = url_for("backup_page") + "#reset"
+    if request.form.get("confirm_phrase", "").strip() != RESET_PHRASE:
+        flash(f"Type {RESET_PHRASE} exactly to confirm — nothing was deleted.", "error")
+        return redirect(back)
+    user = db.execute("SELECT password_hash FROM auth_user WHERE id = 1").fetchone()
+    if not user or not check_password_hash(user["password_hash"], request.form.get("password", "")):
+        flash("That password isn't right — nothing was deleted.", "error")
+        return redirect(back)
+    keep = {table for field, table in _RESET_KEEPABLE.items() if request.form.get(field)}
+    try:
+        result = reset_all_data(db, keep, safety_copy=bool(request.form.get("safety_copy")))
+    except (OSError, sqlite3.Error) as e:
+        flash(f"The reset didn't complete ({type(e).__name__}). Check the Backup page and your data folder before trying again.", "error")
+        return redirect(back)
+    if "auth_user" not in keep:
+        session.clear()
+    flash(f"Cleared {result['records']} record(s) and {result['files']} file(s) — starting from a clean slate."
+          + (f" A safety copy of the old data is in the folder “{result['safety']}” next to the database; delete it once "
+             "you're sure." if result["safety"] else " Nothing was kept."), "info")
+    return redirect(url_for("backup_page") if "auth_user" in keep else url_for("setup_page"))
 
 
 def main():
