@@ -628,6 +628,19 @@ def init_db():
         )
     """)
 
+    # Which statement files have had their transactions read (so the buttons can say so).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS statement_reads (
+            source_kind TEXT NOT NULL,
+            source_item_id INTEGER NOT NULL,
+            source_filename TEXT NOT NULL,
+            read_at TEXT NOT NULL,
+            lines_found INTEGER NOT NULL DEFAULT 0,
+            lines_added INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (source_kind, source_item_id, source_filename)
+        )
+    """)
+
     # Mail Scan: every email the scanner has ever looked at, keyed by its
     # globally-unique Message-ID header, so re-running a scan never
     # reprocesses the same mail twice -- see scan_mailboxes().
@@ -960,6 +973,12 @@ def init_db():
                     if found:
                         conn.execute(f"UPDATE depositors SET {col} = ? WHERE id = ?", (found[0], dep["id"]))
         conn.execute("PRAGMA user_version = 9")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 10:
+        # One time: statements read before reads were recorded.
+        conn.execute("""INSERT OR IGNORE INTO statement_reads (source_kind, source_item_id, source_filename, read_at, lines_found, lines_added)
+                        SELECT source_kind, source_item_id, source_filename, MIN(created_at), COUNT(*), COUNT(*)
+                        FROM statement_entries WHERE source_filename != '' GROUP BY source_kind, source_item_id, source_filename""")
+        conn.execute("PRAGMA user_version = 10")
 
     conn.commit()
     conn.close()
@@ -5337,6 +5356,7 @@ def list_saved_attachments(db) -> list:
                                  if email_id and f.suffix.lower() == ".pdf" else None,
                     "statement_url": url_for("read_statement_from_attachment", kind="mail_scan", item_id=email_id, filename=f.name)
                                      if email_id and f.suffix.lower() == ".pdf" else None,
+                    "statement_read": statement_read_info(db, "mail_scan", email_id, f.name) if email_id else None,
                 }
                 for f in files
             ],
@@ -6747,6 +6767,7 @@ def list_attachments(db, kind: str, item_id: int) -> list:
             "original_url": _original_url(db, kind, item_id, f.name),
             "document_date": get_attachment_document_date(db, kind, item_id, f.name),
             "date_source": get_attachment_document_date_source(db, kind, item_id, f.name),
+            "statement_read": statement_read_info(db, kind, item_id, f.name) if kind == "bank_accounts" else None,
         }
         for f in sorted(folder.iterdir())
         if f.is_file()
@@ -7853,6 +7874,16 @@ def _fix_statement_directions(rows: list) -> int:
     return fixed
 
 
+def statement_read_info(db, kind: str, item_id, filename: str):
+    """{"read_at", "lines_found", "lines_added", "text"} if transactions were read from this file, else None."""
+    r = db.execute("SELECT * FROM statement_reads WHERE source_kind = ? AND source_item_id = ? AND source_filename = ?",
+                   (kind, item_id, filename)).fetchone()
+    if r is None:
+        return None
+    return {"read_at": r["read_at"], "lines_found": r["lines_found"], "lines_added": r["lines_added"],
+            "text": f"Transactions already read on {r['read_at']} ({r['lines_found']} line(s) found)"}
+
+
 def read_statement_transactions(pdf_bytes: bytes, hint: str):
     """(rows, notes, None) read from a statement PDF, or (None, None, reason). Each row is
     {date, description, amount, direction, balance, category}."""
@@ -7935,6 +7966,10 @@ def read_statement_from_attachment(kind, item_id, filename):
                   "AND source_filename = ?", (kind, item_id, filename)).fetchone():
         flash("Transactions from this file are already waiting on the Statement Entries tab.", "info")
         return redirect(url_for("statement_entries_page"))
+    done = statement_read_info(db, kind, item_id, filename)
+    if done and not request.form.get("again"):
+        flash(f"{done['text']} — {done['lines_added']} added to the Statement Entries tab. Use “Read again” if you really want another reading.", "info")
+        return redirect(back)
 
     text, pdf_bytes, why = _attachment_content(db, kind, item_id, filename, target)
     if text is None:
@@ -7967,7 +8002,13 @@ def read_statement_from_attachment(kind, item_id, filename):
             (account_id, kind, item_id, filename, r["date"], r["description"], r["amount"], r["direction"],
              r["balance"], r["category"], now))
         added += 1
+    db.execute("INSERT OR REPLACE INTO statement_reads (source_kind, source_item_id, source_filename, read_at, lines_found, lines_added) "
+               "VALUES (?, ?, ?, ?, ?, ?)", (kind, item_id, filename, now, len(rows), added))
     db.commit()
+    if added == 0 and skipped:
+        flash(f"No new transactions in {filename}: all {skipped} line(s) had already been read earlier."
+              + (" Note: " + "; ".join(notes) + "." if notes else ""), "info")
+        return redirect(url_for("statement_entries_page") + f"?account_id={account_id}")
     msg = f"Read {added} transaction(s) from {filename}"
     if skipped:
         msg += f" ({skipped} already read from an earlier statement were left out)"
@@ -8110,6 +8151,13 @@ def move_attachment(db, kind: str, item_id: int, filename: str, dest_kind: str, 
              note["document_date_source"]))
         db.execute("DELETE FROM attachment_notes WHERE kind = ? AND item_id = ? AND filename = ?",
                    (kind, item_id, filename))
+    # a statement whose transactions were read is still "read" at its new home
+    db.execute("UPDATE statement_reads SET source_kind = ?, source_item_id = ?, source_filename = ? "
+               "WHERE source_kind = ? AND source_item_id = ? AND source_filename = ?",
+               (dest_kind, dest_id, dest.name, kind, item_id, filename))
+    db.execute("UPDATE statement_entries SET source_kind = ?, source_item_id = ?, source_filename = ? "
+               "WHERE source_kind = ? AND source_item_id = ? AND source_filename = ?",
+               (dest_kind, dest_id, dest.name, kind, item_id, filename))
     if kind == "mail_scan":
         db.execute("INSERT OR REPLACE INTO moved_attachments (sha256, dest_kind, dest_id, filename, moved_at) "
                    "VALUES (?, ?, ?, ?, ?)", (as_received, dest_kind, dest_id, dest.name, date.today().isoformat()))

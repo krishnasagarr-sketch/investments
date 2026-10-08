@@ -66,10 +66,19 @@
               </a>{% if f.document_date %} <span class="muted" style="font-size:12px;" title="Document date{% if f.date_source %} — {{ f.date_source }}{% endif %}">· dated {{ f.document_date }}{% if f.date_source and f.date_source != "entered by you" %} <em>(auto)</em>{% endif %}</span>{% endif %}
               <span style="display:flex; align-items:center; gap:10px;">
               {% if statement_url is defined and f.name.lower().endswith('.pdf') %}
-                <form class="inline" method="POST" action="{{ statement_url(f.name) }}">
-                  <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;"
-                          title="Read this bank statement with Claude and list its transactions to review for Income &amp; Expenditure (can take a minute)">Read transactions</button>
-                </form>
+                {% if f.statement_read %}
+                  <span class="badge active" title="{{ f.statement_read.lines_added }} added to the Statement Entries tab">✓ {{ f.statement_read.text }}</span>
+                  <form class="inline" method="POST" action="{{ statement_url(f.name) }}">
+                    <input type="hidden" name="again" value="1">
+                    <button type="submit" class="btn link" style="font-size:12px;" data-confirm data-confirm-label="Read again?"
+                            title="Reads the statement again (lines already read are not added twice)">Read again</button>
+                  </form>
+                {% else %}
+                  <form class="inline" method="POST" action="{{ statement_url(f.name) }}">
+                    <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;"
+                            title="Read this bank statement with Claude and list its transactions to review for Income &amp; Expenditure (can take a minute)">Read transactions</button>
+                  </form>
+                {% endif %}
               {% endif %}
               {% if f.original_url %}<a href="{{ f.original_url }}" target="_blank" class="muted" style="font-size:12px;" title="The file exactly as received (still password-locked)">View original</a>{% endif %}
               <form class="inline" method="POST" action="{{ delete_url(f.name) }}">

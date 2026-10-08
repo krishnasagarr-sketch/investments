@@ -787,7 +787,7 @@ from the *Recently added* list (the entry it created is removed and the line goe
 is told to use the running balance to tell credits from debits, and wherever the balances contradict its
 choice the app follows the balance (and says how many it corrected). A statement that overlaps an earlier one
 doesn't add lines twice (lines already read from the same account are matched on date, narration, amount and
-balance), and **Discard these lines** throws away what's still pending from a file so it can be read again.
+balance), and **Discard these lines** throws away what's still pending from a file so it can be read again. A file that has been read says so beside its name — *✓ Transactions already read on <date> (N lines found)*, on Mail Scan and later on the account's Statements page (the mark moves with the file) — and its button becomes a two-step **Read again**.
 A categorisation is only a suggestion — look through before adding. Needs `ANTHROPIC_API_KEY` and **sends
 the statement's text (account number, transactions, balances) to Anthropic**, only when you press the button.
 
