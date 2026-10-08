@@ -112,17 +112,18 @@
       here with the note — and every file from it gets that note, which unlocking then reads.
     </p>
     {% if sender_rules %}
-      <table style="margin-top:12px;">
+      <div class="table-scroll" style="margin-top:12px;">
+      <table style="width:100%;">
         <thead><tr><th>Recognised</th><th>Note</th><th>Password note</th><th></th></tr></thead>
         <tbody>
           {% for r in sender_rules %}
           <tr>
-            <td><code>{{ r.pattern }}</code></td>
+            <td><code style="word-break:break-all;">{{ r.pattern }}</code></td>
             <td>{{ r.note or "—" }}</td>
             <td>
               <form class="inline" method="POST" action="{{ url_for('set_mail_sender_password_note', rule_id=r.id) }}" style="display:flex; gap:4px;">
                 <input type="text" name="password_note" value="{{ r.password_note }}" maxlength="300" placeholder="none"
-                       style="font-size:12px; padding:4px 6px; min-width:200px;">
+                       style="font-size:12px; padding:4px 6px; width:100%; min-width:110px;">
                 <button type="submit" class="btn link" style="font-size:12px;">Save</button>
               </form>
             </td>
@@ -135,6 +136,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     {% endif %}
     <details style="margin-top:10px;">
       <summary class="field-hint" style="cursor:pointer;">Built-in senders</summary>
