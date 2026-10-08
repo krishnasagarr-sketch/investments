@@ -934,6 +934,13 @@ def init_db():
             if _is_tax_sender(r["from_addr"] or "") or _retirement_type_for_sender(r["from_addr"] or ""):
                 conn.execute("UPDATE processed_emails SET bank_account_id = NULL, account_match = '' WHERE id = ?", (r["id"],))
         conn.execute("PRAGMA user_version = 7")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 8:
+        # One time: emails whose files have no password note were read before the HTML part (and image alt
+        # text) of the email was used when the plain-text part was cut short; the next scan looks at each
+        # again to fill in the instruction (only where the note is still empty).
+        conn.execute("UPDATE processed_emails SET attachments_checked = 0 WHERE attachments_saved > 0 AND id NOT IN "
+                     "(SELECT item_id FROM attachment_notes WHERE kind = 'mail_scan' AND password_hint != '')")
+        conn.execute("PRAGMA user_version = 8")
 
     conn.commit()
     conn.close()
@@ -4378,7 +4385,7 @@ MAIL_SCAN_PASSWORD_RE = re.compile(r"\b(password|passcode|pin code)\b", re.IGNOR
 _PW_KEYWORD_RE = re.compile(r"password\w*|passcode|pin code|to open|open (?:the|your|it|this)|unlock|decrypt|protected", re.I)
 _PW_IDENT_RE = re.compile(
     r"\b(?:PAN|date of birth|DOB|DDMM\w*|DD/MM\w*|customer ?id|cust(?:omer)? id|CRN|account (?:number|no)|a/c|mobile|"
-    r"phone number|last \d+ digits|first \d+|upper ?case|lower ?case|capital|small letters|year of birth|birth year)\b", re.I)
+    r"phone number|last \d+ digits|first \d+|upper ?case|lower ?case|capital|small letters|year of birth|birth year|small case|capital case|block letters|account holder|joint accounts?)\b", re.I)
 _PW_VERB_RE = re.compile(r"\b(?:enter|use|type|is|will be|should be|are|combination|comprising|consists?)\b", re.I)
 _PW_BOILERPLATE_RE = re.compile(
     r"never ask|do not share|don'?t share|not seek|do not respond|do not part|beware|phishing|log ?on|log ?in|sign ?in|"
@@ -4486,9 +4493,14 @@ def _html_to_text(raw_html: str) -> str:
     turns tags into whitespace, and unescapes entities. Good enough to find
     keywords/amounts in an HTML bank-alert email without adding a parser."""
     text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw_html)
+    # A banner image's alt text can carry real content (ICICI puts "To open your e-statement, use the first
+    # 4 letters of your name and DDMM of your date of birth" there): keep it, but not "Logo"-length ones.
+    text = re.sub(r"(?is)<img\b[^>]*?\balt\s*=\s*(?:\"([^\"]{15,})\"|'([^']{15,})')[^>]*>",
+                  lambda m: " " + (m.group(1) or m.group(2)) + " ", text)
+    text = re.sub(r"(?i)<br\s*/?>|</(?:p|div|tr|li|h[1-6]|table)>", "\n", text)
     text = re.sub(r"(?s)<[^>]+>", " ", text)
     text = _unescape_all(text)
-    return re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n", re.sub(r"[ \t]+", " ", text))
 
 
 def _extract_email_text(msg) -> str:
@@ -4524,9 +4536,15 @@ def _extract_email_text(msg) -> str:
         else:
             plain_parts.append(text)
 
-    if plain_parts:
-        return _unescape_all("\n".join(plain_parts))
-    return "\n".join(_html_to_text(t) for t in html_parts)
+    plain = _unescape_all("\n".join(plain_parts))
+    html_text = "\n".join(_html_to_text(t) for t in html_parts)
+    if not plain_parts:
+        return html_text
+    # Some senders (and forwarders) leave a cut-down plain-text part: if the HTML says clearly more
+    # (the password instruction was only in the HTML of one bank's mail), use that instead.
+    if html_text and len(re.sub(r"\s+", " ", html_text)) > 1.3 * len(re.sub(r"\s+", " ", plain)):
+        return html_text
+    return plain
 
 
 def _safe_message_id_folder(message_id: str) -> str:
@@ -5110,13 +5128,18 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
                 # ("queued"/"duplicate" means the body text matched a
                 # transaction back then) rather than recomputing it.
                 rechecked += 1
+                folder = MAIL_ATTACHMENTS_DIR / _safe_message_id_folder(message_id)
+                already_here = {f.name for f in folder.iterdir() if f.is_file()} if folder.is_dir() else set()
                 saved_files = _save_email_attachments(msg, message_id, db) if is_bank_sender else []
                 if saved_files:
-                    attachments_saved += len(saved_files)
+                    # (a file that was already saved is recognised and not saved twice -- it only gets its
+                    # email text, password note and matching refreshed here)
+                    new_files = [f for f in saved_files if f not in already_here]
+                    attachments_saved += len(new_files)
                     db.execute(
                         "UPDATE processed_emails SET attachments_saved = attachments_saved + ?, "
                         "attachments_dir = ?, attachments_checked = 1 WHERE message_id = ?",
-                        (len(saved_files), _safe_message_id_folder(message_id), message_id),
+                        (len(new_files), _safe_message_id_folder(message_id), message_id),
                     )
                     recheck_body = _extract_email_text(msg)
                     db.execute("UPDATE processed_emails SET body_text = ?, from_addr = ?, source_email = ? "
@@ -6849,7 +6872,7 @@ def _pw_digit_field_patterns(field: str, label: str) -> list:
 _PW_PATTERNS = (
     [
         ("name", rf"\b(first|last)\s+{_PW_N}\s+(?:letters?|characters?|chars?|alphabets?)\s+of\s+"
-                 rf"(?:(?:your|the|customer|registered|account\s*holder(?:'?s)?)\s+)*name\b"),
+                 rf"(?:(?:your|the|customer|registered|account\s*holder(?:'?s)?|first|given)\s+)*name\b"),
         ("name", rf"\bname\b(?:'s)?\s*[,(]?\s*(first|last)\s+{_PW_N}\s+(?:letters?|characters?|chars?|alphabets?)"),
         ("dob", rf"\b(first|last)\s+{_PW_N}\s+(?:digits?|characters?|chars?|numbers?)\s+of\s+(?:(?:your|the)\s+)*"
                 r"(?:date of birth|d\.o\.b\.?|dob|birth\s*date)"),

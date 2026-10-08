@@ -679,6 +679,12 @@ Attachments page has (see [Attachments](#attachments) below); edit it if the aut
 wrong or incomplete. It's only ever set automatically when nothing's noted yet, so a manual edit
 is never overwritten by a later scan.
 
+**Reading the email's text.** The password instruction isn't always in the plain-text part: a forwarder can
+leave a cut-down one, and ICICI's mail carries it only as the *alt text of its banner image* in the HTML. So the
+email's HTML part is converted too (line breaks kept, image alt text included) and is used when it says clearly
+more than the plain text. Emails already saved without a password note are looked at once more by the next scan to
+fill it in; a file that's already saved isn't saved twice, and a note you typed is never replaced.
+
 An email is normally only ever looked at once, tracked by its Message-ID — but if it was scanned
 before attachment-saving existed at all, the very next scan gives it exactly one further check
 for an attachment it never got the chance to be considered for, with no need to do anything by
