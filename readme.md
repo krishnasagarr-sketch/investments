@@ -643,13 +643,21 @@ scanned before this existed get one fresh look on the next scan.
 **Which bank account an email belongs to.** For each email with a saved attachment the sender's
 bank narrows the candidates; if that leaves one account, that's it. Otherwise the email's text is
 checked against each candidate's account number/label (also masked, like `XXXX1234` or "ending
-1234"), customer ID, PAN, first and last name, and depositor name, and an account wins only on real
-evidence with a clear lead over the runner-up — an unrecognised sender is only assumed to belong to
-the sole account of an account's own mailbox. Whatever the matcher can't settle is left
-**unsorted**: under *Saved attachments* each email has a **Bank account** picker (choose an account,
+1234"), customer ID, PAN (also masked, like `abcXXXX4f` in a file name), first and last name
+(tolerating a split such as "Krishna Sagar" for `krishnasagar`, and an initial as in "R Krishna
+Sagar"), and depositor name. The email's subject, text **and the names of its attached files** all
+count as evidence. An account wins only on real evidence with a clear lead over the runner-up — an
+unrecognised sender is only assumed to belong to the sole account of an account's own mailbox. For
+mail that isn't a bank's (the Income Tax Department, NPS/EPF), one person's several accounts share
+the PAN and name, so which one is beside the point: if the evidence points at a single holder, the
+mail goes to that holder's first account (and says so); evidence split between different holders
+is still left for you. Every scan also re-tries mails that are still unsorted. Whatever the matcher
+can't settle is left **unsorted**: under *Saved attachments* each email has a **Bank account** picker (choose an account,
 *None of these*, or *Match automatically* to hand it back), a manual choice is remembered and never
 overridden, and **Match them to accounts** re-runs the matcher over unsorted emails (handy after
-adding an account). The unlock page pre-selects the account an email was sorted into.
+adding an account). The unlock page pre-selects the account an email was sorted into. For mail
+from the Income Tax Department the *Move to…* picker comes pre-set to **➕ New tax communication**
+(the taxpayer is taken from the account it was sorted into).
 
 If the email itself says how to open a password-protected attachment — banks routinely spell
 this out ("the password is your PAN in capital letters") — that sentence is picked up

@@ -880,6 +880,12 @@ def init_db():
             conn.execute("UPDATE processed_emails SET attachments_checked = 0 WHERE attachments_saved = 0 AND "
                          "(lower(from_addr) LIKE ? OR lower(from_addr) LIKE ?)", (f"%@{label}.%", f"%.{label}.%"))
         conn.execute("PRAGMA user_version = 2")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 3:
+        # One time: tidy "&nbsp;"-style leftovers in already-saved email text and password sentences.
+        for table, col in (("processed_emails", "body_text"), ("attachment_notes", "password_hint")):
+            for rid, val in conn.execute(f"SELECT rowid, {col} FROM {table} WHERE {col} LIKE '%&%;%' OR {col} LIKE '%\xa0%'").fetchall():
+                conn.execute(f"UPDATE {table} SET {col} = ? WHERE rowid = ?", (_unescape_all(val), rid))
+        conn.execute("PRAGMA user_version = 3")
 
     conn.commit()
     conn.close()
@@ -4357,13 +4363,24 @@ def _forwarded_original_sender(msg) -> str:
     return ""
 
 
+def _unescape_all(text: str) -> str:
+    """html.unescape until nothing changes (forwarded mail is often escaped twice, leaving a literal
+    "&nbsp;" after one pass), with non-breaking spaces turned into plain ones."""
+    for _ in range(3):
+        again = html.unescape(text)
+        if again == text:
+            break
+        text = again
+    return text.replace("\xa0", " ")
+
+
 def _html_to_text(raw_html: str) -> str:
     """Crude but dependency-free HTML-to-text: drops script/style blocks,
     turns tags into whitespace, and unescapes entities. Good enough to find
     keywords/amounts in an HTML bank-alert email without adding a parser."""
     text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw_html)
     text = re.sub(r"(?s)<[^>]+>", " ", text)
-    text = html.unescape(text)
+    text = _unescape_all(text)
     return re.sub(r"[ \t]+", " ", text)
 
 
@@ -4401,7 +4418,7 @@ def _extract_email_text(msg) -> str:
             plain_parts.append(text)
 
     if plain_parts:
-        return "\n".join(plain_parts)
+        return _unescape_all("\n".join(plain_parts))
     return "\n".join(_html_to_text(t) for t in html_parts)
 
 
@@ -4723,6 +4740,38 @@ def _word_in(text: str, word: str) -> bool:
     return bool(re.search(r"(?<![A-Za-z])" + re.escape(word) + r"(?![A-Za-z])", text, re.I))
 
 
+_MASKED_PAN_RE = re.compile(r"(?<![A-Za-z])(([A-Za-z]{3})[Xx*•]{3,5}(\d[A-Za-z]))(?![A-Za-z0-9])")
+
+
+def _name_regex(name: str):
+    """A pattern for a name that tolerates it being split ("Krishnasagar" matches "Krishna Sagar",
+    "Krishna_Sagar", "Krishna.Sagar") but not other letters around it; 3-4 letter names must match a
+    whole word exactly. None if there's nothing usable."""
+    letters = re.sub(r"[^A-Za-z]", "", name or "")
+    if len(letters) < 3:
+        return None
+    body = r"[\s._\-]?".join(re.escape(c) for c in letters.lower()) if len(letters) >= 5 else re.escape(letters.lower())
+    return r"(?<![a-z])" + body + r"(?![a-z])"
+
+
+def _name_in_text(text: str, name: str) -> bool:
+    rx = _name_regex(name)
+    return bool(rx and re.search(rx, text, re.I))
+
+
+def _initial_and_name_in_text(text: str, first: str, last: str) -> str:
+    """"R Krishna Sagar" for someone whose first name is Krishnasagar and last name Ramoji -- the way banks
+    print a name (an initial, then the given name), as strong as seeing both names -- or the other
+    way round ("K Ramoji"). Returns what matched, or ""."""
+    f, l = _name_regex(first), _name_regex(last)
+    fi, li = re.sub(r"[^A-Za-z]", "", first or "")[:1], re.sub(r"[^A-Za-z]", "", last or "")[:1]
+    if f and li and re.search(r"(?<![a-z])" + li.lower() + r"[\s.]+" + f[len(r"(?<![a-z])"):], text, re.I):
+        return f"{li.upper()} {first}"
+    if l and fi and re.search(r"(?<![a-z])" + fi.lower() + r"[\s.]+" + l[len(r"(?<![a-z])"):], text, re.I):
+        return f"{fi.upper()} {last}"
+    return ""
+
+
 def _account_evidence(a, text: str, own: bool):
     """(points, reasons) for how strongly an email's text points at one bank
     account: its account number/label, customer ID or PAN appearing (5 each),
@@ -4740,12 +4789,18 @@ def _account_evidence(a, text: str, own: bool):
     cid = (a["customer_id"] or "").strip()
     if len(cid) >= 4 and re.search(r"(?<![A-Za-z0-9])" + re.escape(cid) + r"(?![A-Za-z0-9])", text, re.I):
         pts += 5; why.append("customer ID")
-    if a["pan"] and a["pan"] in text.upper():
+    pan = (a["pan"] or "").upper()
+    if pan and pan in text.upper():
         pts += 5; why.append("PAN")
+    elif len(pan) == 10 and any(m[2].upper() == pan[:3] and m[3].upper() == pan[-2:] for m in _MASKED_PAN_RE.finditer(text)):
+        pts += 5; why.append("masked PAN")
     first, last = (a["first_name"] or "").strip(), (a["last_name"] or "").strip()
-    has_first, has_last = len(first) >= 3 and _word_in(text, first), len(last) >= 3 and _word_in(text, last)
+    has_first, has_last = _name_in_text(text, first), _name_in_text(text, last)
+    initial_form = _initial_and_name_in_text(text, first, last)
     if has_first and has_last:
         pts += 3; why.append(f"name {first} {last}")
+    elif initial_form:
+        pts += 4; why.append(f"name {initial_form}")
     elif has_first or has_last:
         pts += 1; why.append(f"name {first if has_first else last}")
     dep = (a["depositor_name"] or "").strip()
@@ -4754,6 +4809,14 @@ def _account_evidence(a, text: str, own: bool):
     if own:
         pts += 1
     return pts, why
+
+
+def _email_match_text(db, row) -> str:
+    """What an email is matched on: its subject and text, plus the names of its saved attachments (a file
+    called R_Krishna_Sagar_… or …_aalXXXX0g_… says who it's for)."""
+    base = _attachment_base_dir(db, "mail_scan", row["id"])
+    names = [f.name for f in base.iterdir() if f.is_file()] if base is not None and base.is_dir() else []
+    return f"{row['subject']}\n{row['body_text'] or ''}\n" + "\n".join(names)
 
 
 def match_bank_account(db, source_email: str, from_addr: str, text: str, dedicated: bool):
@@ -4786,6 +4849,18 @@ def match_bank_account(db, source_email: str, from_addr: str, text: str, dedicat
     runner_up = scored[1][0] if len(scored) > 1 else 0
     if top[0] >= 3 and top[0] >= runner_up + 2:
         return top[2]["id"], "matched by " + ", ".join(top[1] or ["this mailbox"])
+    if not bank_ids and top[0] >= 3:
+        # Not a bank's mail (the taxman, an NPS record-keeper...): which of one person's several accounts is
+        # beside the point -- they share the PAN and date of birth. If the best-scoring accounts are all
+        # the same holder's, and nobody else is close, settle on that holder (their first account).
+        tied = [x for x in scored if x[0] == top[0]]
+        holders = {x[2]["depositor_id"] for x in tied}
+        others = [x[0] for x in scored if x[0] != top[0]]
+        if len(holders) == 1 and None not in holders and (not others or top[0] >= max(others) + 2):
+            first_account = min(tied, key=lambda x: x[2]["id"])[2]
+            return first_account["id"], ("matched by " + ", ".join(top[1]) +
+                                         f" — {first_account['depositor_name'] or 'this holder'} has {len(tied)} accounts "
+                                         "with the same details, so this is the first")
     return None, ""
 
 
@@ -4800,7 +4875,7 @@ def rematch_unassigned_emails(db) -> int:
     ).fetchall()
     for r in rows:
         src = (r["source_email"] or "").strip().lower()
-        account_id, why = match_bank_account(db, src, r["from_addr"], f"{r['subject']}\n{r['body_text']}",
+        account_id, why = match_bank_account(db, src, r["from_addr"], _email_match_text(db, r),
                                              dedicated=bool(src) and src != notif)
         if account_id:
             db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = ? WHERE id = ?",
@@ -4889,7 +4964,8 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
                                (recheck_body[:MAIL_BODY_STORE_CHARS], from_addr, mailbox["email"], message_id))
                     if not existing["account_match"] == "manual":
                         account_id, account_why = match_bank_account(
-                            db, mailbox["email"], from_addr, f"{existing['subject']}\n{recheck_body}",
+                            db, mailbox["email"], from_addr,
+                            f"{existing['subject']}\n{recheck_body}\n" + "\n".join(saved_files),
                             dedicated=not mailbox["primary"])
                         if account_id:
                             db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = ? WHERE id = ?",
@@ -4926,7 +5002,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
             account_id, account_why = (None, "")
             if saved_files:
                 account_id, account_why = match_bank_account(
-                    db, mailbox["email"], from_addr, f"{subject}\n{body}", dedicated=not mailbox["primary"])
+                    db, mailbox["email"], from_addr, f"{subject}\n{body}\n" + "\n".join(saved_files), dedicated=not mailbox["primary"])
             cur = db.execute(
                 """INSERT INTO processed_emails
                    (message_id, mailbox, subject, from_addr, received_date, processed_at, status,
@@ -4979,6 +5055,7 @@ def scan_mailboxes(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
         total["mailboxes"].append({"email": mb["email"], **r})
     if not total["mailboxes"]:
         raise RuntimeError(" ".join(total["errors"]))
+    total["sorted"] = rematch_unassigned_emails(db)  # picks up new accounts / better evidence for emails still unsorted
     return total
 
 
@@ -5021,7 +5098,8 @@ def list_saved_attachments(db) -> list:
             "from_addr": email_row["from_addr"] if email_row else "",
             "source_email": email_row["source_email"] if email_row else "",
             "account_id": email_row["bank_account_id"] if email_row else None,
-            "suggested_target": _suggest_retirement_target(db, email_row["from_addr"]) if email_row else "",
+            "suggested_target": (_suggest_retirement_target(db, email_row["from_addr"])
+                                 or ("new_tax_communication:0" if _is_tax_sender(email_row["from_addr"]) else "")) if email_row else "",
             "account_match": email_row["account_match"] if email_row else "",
             "received_date": email_row["received_date"] if email_row else "",
             "mtime": max(f.stat().st_mtime for f in files),
@@ -5114,7 +5192,7 @@ def set_mail_email_account(email_id):
     elif row and choice == "auto":
         notif = (get_notification_settings(db).get("sender_email") or "").strip().lower()
         src = (row["source_email"] or "").strip().lower()
-        account_id, why = match_bank_account(db, src, row["from_addr"], f"{row['subject']}\n{row['body_text']}",
+        account_id, why = match_bank_account(db, src, row["from_addr"], _email_match_text(db, row),
                                              dedicated=bool(src) and src != notif)
         db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = ? WHERE id = ?",
                    (account_id, why, email_id))
@@ -5240,6 +5318,8 @@ def run_mail_scan():
             message += f" Looked again at {result['rechecked']} earlier email(s) for attachments."
         message += (f" Saved {result['attachments_saved']} attachment(s)." if result["attachments_saved"]
                     else " No new attachments to save.")
+        if result.get("sorted"):
+            message += f" Sorted {result['sorted']} email(s) into bank accounts."
         if result["skipped_known"]:
             message += f" {result['skipped_known']} email(s) already handled were skipped without being downloaded."
         if len(result["mailboxes"]) > 1:
