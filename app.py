@@ -602,7 +602,7 @@ def init_db():
 
     # Mail Scan: every email the scanner has ever looked at, keyed by its
     # globally-unique Message-ID header, so re-running a scan never
-    # reprocesses the same mail twice -- see scan_mailbox_for_transactions().
+    # reprocesses the same mail twice -- see scan_mailboxes().
     conn.execute("""
         CREATE TABLE IF NOT EXISTS processed_emails (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4316,68 +4316,6 @@ MAIL_SCAN_BANK_DOMAINS = {
     "ujjivansfb": "Ujjivan Small Finance Bank",
 }
 
-MAIL_SCAN_FD_NOUNS = re.compile(
-    r"\b(fixed deposit|fd a/?c|fd account|term deposit|recurring deposit|rd account|deposit receipt)\b",
-    re.IGNORECASE,
-)
-# Deliberately NOT "confirmed"/"confirmation" -- those are near-universal
-# boilerplate in any bank transaction email ("this confirms your payment of
-# Rs. 500..."), not something specific to a deposit being opened, so they'd
-# match a plain account-credit email too readily.
-MAIL_SCAN_FD_VERBS = re.compile(
-    r"\b(booked|opened|created|placed|initiated)\b", re.IGNORECASE
-)
-# A noun+verb match sitting anywhere at all in the same email isn't enough
-# evidence on its own -- a routine credit-alert email commonly carries a
-# cross-sell footer ("Grow your savings — open a Fixed Deposit today!")
-# nowhere near the actual transaction being reported, and that footer alone
-# would otherwise satisfy both regexes above. Require them within this many
-# characters of each other (same sentence/line, not a different part of the
-# email), and require that stretch of text not itself read like an ad.
-MAIL_SCAN_FD_PROXIMITY_WINDOW = 80
-MAIL_SCAN_FD_PROMO_RE = re.compile(
-    r"\b(apply now|click here|explore|learn more|would you like|starting (?:at|from)|"
-    r"t&c apply|terms and conditions apply|grow your|why not|open (?:a |an )?(?:new )?"
-    r"(?:fixed|term|recurring) deposit)\b",
-    re.IGNORECASE,
-)
-
-
-def _has_fd_booking_signal(text: str) -> bool:
-    """True only if an FD/RD noun and a booking-ish verb appear close
-    together -- not just anywhere in the same email -- and that stretch of
-    text doesn't itself read like a cross-sell banner rather than a report
-    of an actual transaction. See the comment above MAIL_SCAN_FD_VERBS for
-    why this matters: a plain credit-alert email with an FD advertisement
-    in its footer must not be mistaken for an FD actually being opened."""
-    for noun_match in MAIL_SCAN_FD_NOUNS.finditer(text):
-        start = max(0, noun_match.start() - MAIL_SCAN_FD_PROXIMITY_WINDOW)
-        end = noun_match.end() + MAIL_SCAN_FD_PROXIMITY_WINDOW
-        window = text[start:end]
-        if MAIL_SCAN_FD_VERBS.search(window) and not MAIL_SCAN_FD_PROMO_RE.search(window):
-            return True
-    return False
-MAIL_SCAN_CREDIT_RE = re.compile(
-    r"\b(credited|credit of|interest paid|interest credited|interest earned|has been credited)\b",
-    re.IGNORECASE,
-)
-MAIL_SCAN_IGNORE_RE = re.compile(
-    r"\b(debited|debit of|withdrawn|has been debited|otp|one time password|e-?statement attached|"
-    r"failed|declined|unsuccessful)\b",
-    re.IGNORECASE,
-)
-MAIL_SCAN_AMOUNT_RE = re.compile(r"(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
-MAIL_SCAN_MONTHS = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-}
-MAIL_SCAN_DATE_RE = re.compile(
-    r"\b(\d{1,2})[-\s](jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[-\s,]*(\d{2,4})\b",
-    re.IGNORECASE,
-)
-MAIL_SCAN_ACCOUNT_RE = re.compile(
-    r"(?:a/?c|account|fd)\s*(?:no\.?|number)?\s*[:\-]?\s*([Xx*]{2,}\d{2,}|\d{6,})", re.IGNORECASE
-)
 MAIL_SCAN_HEADER_BATCH = 200  # emails per header-only fetch (see _scan_one_mailbox)
 MAIL_BODY_STORE_CHARS = 8000  # per email, only for emails that carry an attachment
 MAIL_SCAN_PASSWORD_RE = re.compile(r"\b(password|passcode|pin code)\b", re.IGNORECASE)
@@ -4536,23 +4474,6 @@ def _decode_mime_header(raw: str) -> str:
     return "".join(out)
 
 
-def _extract_date_from_text(text: str, fallback: date) -> date:
-    """Looks for a 'DD Mon YYYY'-style date (the common bank-alert form);
-    falls back to whatever date the email itself arrived on if none is
-    found or it doesn't parse."""
-    m = MAIL_SCAN_DATE_RE.search(text)
-    if m:
-        day, mon, year = int(m.group(1)), m.group(2).lower()[:3], m.group(3)
-        month = MAIL_SCAN_MONTHS.get(mon)
-        year = int(year) if len(year) == 4 else (2000 + int(year) if int(year) < 70 else 1900 + int(year))
-        if month:
-            try:
-                return date(year, month, day)
-            except ValueError:
-                pass
-    return fallback
-
-
 def _guess_bank_from_sender(from_addr: str, db) -> tuple:
     """Returns (bank_name_guess, bank_ref_id or None) from the sender's
     email domain -- matched by keyword (see MAIL_SCAN_BANK_DOMAINS) against
@@ -4572,71 +4493,6 @@ def _guess_bank_from_sender(from_addr: str, db) -> tuple:
         if row:
             bank_ref_id = row["id"]
     return name or domain, bank_ref_id
-
-
-def _guess_deposit_number_match(text: str, db):
-    """If the email mentions an account/FD number that matches an existing
-    deposit's own recorded number exactly, confidently return that
-    deposit's depositor_id/bank_ref_id -- otherwise None, None."""
-    for m in MAIL_SCAN_ACCOUNT_RE.finditer(text):
-        number = m.group(1)
-        if "x" in number.lower() or "*" in number:
-            continue  # masked ("XX1234") -- not a reliable match on its own
-        row = db.execute(
-            "SELECT depositor_id, bank_ref_id FROM deposits WHERE deposit_number = ? AND TRIM(deposit_number) != ''",
-            (number,),
-        ).fetchone()
-        if row:
-            return row["depositor_id"], row["bank_ref_id"]
-    return None, None
-
-
-def _transaction_dedupe_key(kind: str, bank_guess: str, txn_date: str, amount: float) -> str:
-    return f"{kind}|{(bank_guess or '').strip().lower()}|{txn_date}|{round(amount, 2)}"
-
-
-def _extract_transactions_from_text(db, subject: str, from_addr: str, body: str, received_on: date) -> list:
-    """Classifies one email's text into zero or more candidate transactions.
-    Ignores anything that looks like a debit/OTP/failure notice, and
-    requires at least one currency amount to consider it a transaction at
-    all -- a bank's marketing email mentioning "fixed deposit" without an
-    amount is noise, not a transaction."""
-    full_text = f"{subject}\n{body}"
-    if MAIL_SCAN_IGNORE_RE.search(full_text):
-        return []
-
-    amounts = [
-        _normalize_bank_amount(m.group(1)) for m in MAIL_SCAN_AMOUNT_RE.finditer(full_text)
-    ]
-    amounts = [a for a in amounts if a and a > 0]
-    if not amounts:
-        return []
-    amount = max(amounts)  # the alert's headline figure is usually the largest one mentioned
-
-    is_fd_booked = _has_fd_booking_signal(full_text)
-    is_credit = bool(MAIL_SCAN_CREDIT_RE.search(full_text))
-    if not is_fd_booked and not is_credit:
-        return []
-    kind = "fd_booked" if is_fd_booked else "credit"
-
-    txn_date = _extract_date_from_text(full_text, received_on)
-    bank_guess, bank_ref_id = _guess_bank_from_sender(from_addr, db)
-    depositor_id, matched_bank_ref_id = _guess_deposit_number_match(full_text, db)
-    if matched_bank_ref_id:
-        bank_ref_id = matched_bank_ref_id
-
-    snippet = re.sub(r"\s+", " ", full_text).strip()[:300]
-    return [{
-        "kind": kind,
-        "amount": amount,
-        "txn_date": txn_date.isoformat(),
-        "description": _decode_mime_header(subject)[:200] or snippet[:200],
-        "bank_guess": bank_guess,
-        "bank_ref_id": bank_ref_id,
-        "depositor_id": depositor_id,
-        "snippet": snippet,
-        "dedupe_key": _transaction_dedupe_key(kind, bank_guess, txn_date.isoformat(), amount),
-    }]
 
 
 IMAP_HOSTS = {
@@ -4954,32 +4810,19 @@ def rematch_unassigned_emails(db) -> int:
     return assigned
 
 
-def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> dict:
-    """Scans one mailbox's INBOX for emails since `days_back` days ago, extracts candidate
-    transactions from each new one, and queues anything new (by dedupe_key)
-    into scanned_transactions -- auto-creating a linked deposit_drafts row
-    for an "fd_booked" one. Also saves any PDF/CSV/Excel attachment to
-    MAIL_ATTACHMENTS_DIR for a bank-sender email or one that matched a
-    transaction, even if the body text alone wouldn't have (a plain "your
-    e-statement is attached" email, say) -- those are exactly the ones
-    worth keeping for a later attachment-parsing feature.
+def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
+    """Scans one mailbox's INBOX for emails since `days_back` days ago and saves the PDF/CSV/Excel
+    attachments of those from a recognised sender (a bank, the Income Tax Department, an NPS/EPF
+    record-keeper, or one you added), along with the email's text, the password sentence in it, a
+    document date and the bank account it belongs to. The email's text isn't mined for
+    transactions -- statements are the source for those.
 
-    An email already in processed_emails is normally skipped outright --
-    but if its own attachments_checked flag is still 0 (every row from
-    before attachment-saving existed at all defaults to this), it gets
-    re-fetched _just_ to check for an attachment it never got a chance to
-    be considered for, without re-running or re-queuing its transaction
-    classification (dedupe_key already protects against that regardless).
-    This is what makes a backlog scanned before this feature shipped still
-    get its attachments picked up on the very next scan, with no need to
-    reset anything. Returns this mailbox's counts. `already_known` is the
-    set of transaction dedupe keys, shared across mailboxes so the same
-    transaction found in two of them is queued once."""
+    An email already in processed_emails is skipped outright -- unless its attachments_checked flag
+    is 0 (a sender recognised since it was first seen, say), when it's re-fetched just to check for
+    an attachment. Returns this mailbox's counts."""
     session = _open_mail_session(mailbox["email"], mailbox["password"])
     scanned = 0
     rechecked = 0
-    queued = 0
-    drafted = 0
     attachments_saved = 0
     skipped_known = 0
     try:
@@ -5032,10 +4875,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                 # ("queued"/"duplicate" means the body text matched a
                 # transaction back then) rather than recomputing it.
                 rechecked += 1
-                was_previously_matched = existing["status"] in ("queued", "duplicate")
-                saved_files = (
-                    _save_email_attachments(msg, message_id, db) if (is_bank_sender or was_previously_matched) else []
-                )
+                saved_files = _save_email_attachments(msg, message_id, db) if is_bank_sender else []
                 if saved_files:
                     attachments_saved += len(saved_files)
                     db.execute(
@@ -5079,41 +4919,9 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                 received_on = date.today()
 
             body = _extract_email_text(msg)
-            candidates = _extract_transactions_from_text(db, subject, from_addr, body, received_on)
-
-            saved_files = _save_email_attachments(msg, message_id, db) if (is_bank_sender or candidates) else []
+            saved_files = _save_email_attachments(msg, message_id, db) if is_bank_sender else []
             if saved_files:
                 attachments_saved += len(saved_files)
-
-            email_status = "no_match"
-            for cand in candidates:
-                if cand["dedupe_key"] in already_known:
-                    email_status = "duplicate"
-                    continue
-                already_known.add(cand["dedupe_key"])
-                cur = db.execute(
-                    """INSERT INTO scanned_transactions
-                       (message_id, kind, bank_guess, bank_ref_id, depositor_id, amount, txn_date,
-                        description, raw_snippet, dedupe_key, status, found_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
-                    (message_id, cand["kind"], cand["bank_guess"], cand["bank_ref_id"], cand["depositor_id"],
-                     cand["amount"], cand["txn_date"], cand["description"], cand["snippet"],
-                     cand["dedupe_key"], date.today().isoformat()),
-                )
-                scanned_id = cur.lastrowid
-                queued += 1
-                email_status = "queued"
-
-                if cand["kind"] == "fd_booked":
-                    db.execute(
-                        """INSERT INTO deposit_drafts
-                           (scanned_transaction_id, depositor_id, bank_ref_id, principal, start_date,
-                            source_snippet, created_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (scanned_id, cand["depositor_id"], cand["bank_ref_id"], cand["amount"],
-                         cand["txn_date"], cand["snippet"], date.today().isoformat()),
-                    )
-                    drafted += 1
 
             account_id, account_why = (None, "")
             if saved_files:
@@ -5125,7 +4933,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
                     attachments_saved, attachments_dir, attachments_checked, body_text,
                     source_email, bank_account_id, account_match)
                    VALUES (?, 'INBOX', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
-                (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), email_status,
+                (message_id, subject, from_addr, received_on.isoformat(), date.today().isoformat(), "no_match",
                  len(saved_files), _safe_message_id_folder(message_id) if saved_files else "",
                  body[:MAIL_BODY_STORE_CHARS] if saved_files else "",
                  mailbox["email"], account_id, account_why),
@@ -5141,12 +4949,12 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int, already_known: set) -> 
     finally:
         session.close()
     return {
-        "scanned": scanned, "rechecked": rechecked, "queued": queued, "drafted": drafted,
+        "scanned": scanned, "rechecked": rechecked,
         "attachments_saved": attachments_saved, "skipped_known": skipped_known,
     }
 
 
-def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
+def scan_mailboxes(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
     """Scans every mailbox in play -- the Notifications one and each bank
     account's own (see _mailboxes_to_scan) -- and totals the counts. One
     mailbox failing (a stale app password, say) doesn't stop the rest: its
@@ -5158,16 +4966,15 @@ def scan_mailbox_for_transactions(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAU
             "No mailbox is set up yet — add the Gmail sender / App Password on the Notifications tab, "
             "or an email and app password on a bank account."
         )
-    already_known = {r["dedupe_key"] for r in db.execute("SELECT dedupe_key FROM scanned_transactions").fetchall()}
-    total = {"scanned": 0, "rechecked": 0, "queued": 0, "drafted": 0, "attachments_saved": 0,
+    total = {"scanned": 0, "rechecked": 0, "attachments_saved": 0,
              "skipped_known": 0, "mailboxes": [], "errors": []}
     for mb in mailboxes:
         try:
-            r = _scan_one_mailbox(db, mb, days_back, already_known)
+            r = _scan_one_mailbox(db, mb, days_back)
         except RuntimeError as e:
             total["errors"].append(f"{mb['email']}: {e}")
             continue
-        for k in ("scanned", "rechecked", "queued", "drafted", "attachments_saved", "skipped_known"):
+        for k in ("scanned", "rechecked", "attachments_saved", "skipped_known"):
             total[k] += r[k]
         total["mailboxes"].append({"email": mb["email"], **r})
     if not total["mailboxes"]:
@@ -5386,14 +5193,6 @@ def update_mail_attachment_password(email_id, filename):
 def mail_scan_page():
     db = get_db()
     settings = get_notification_settings(db)
-    pending = db.execute(
-        """SELECT scanned_transactions.*, banks.name AS bank_name, depositors.name AS depositor_name
-           FROM scanned_transactions
-           LEFT JOIN banks ON scanned_transactions.bank_ref_id = banks.id
-           LEFT JOIN depositors ON scanned_transactions.depositor_id = depositors.id
-           WHERE scanned_transactions.kind = 'credit' AND scanned_transactions.status = 'pending'
-           ORDER BY scanned_transactions.txn_date DESC"""
-    ).fetchall()
     total_attachments = db.execute(
         "SELECT COALESCE(SUM(attachments_saved), 0) c FROM processed_emails"
     ).fetchone()["c"]
@@ -5418,8 +5217,6 @@ def mail_scan_page():
         undated_count=len(pending_document_date_fills(db)),
         account_choices=[{"id": a["id"], "text": _account_text(a)} for a in all_accounts],
         move_targets=_move_targets(db),
-        pending=pending,
-        depositors=list_depositors(db), banks=list_banks(db),
         scanned_count=db.execute("SELECT COUNT(*) c FROM processed_emails").fetchone()["c"],
         total_attachments=total_attachments,
         attachments_dir=str(MAIL_ATTACHMENTS_DIR),
@@ -5437,15 +5234,12 @@ def run_mail_scan():
     except (TypeError, ValueError):
         days_back = MAIL_SCAN_DAYS_BACK_DEFAULT
     try:
-        result = scan_mailbox_for_transactions(db, days_back=days_back)
-        message = (
-            f"Scanned {result['scanned']} new email(s): {result['queued']} transaction(s) queued for review"
-            + (f" ({result['drafted']} of those as new deposit drafts)." if result["drafted"] else ".")
-        )
+        result = scan_mailboxes(db, days_back=days_back)
+        message = f"Looked at {result['scanned']} new email(s)."
         if result["rechecked"]:
-            message += f" Rechecked {result['rechecked']} older email(s) for attachments for the first time."
-        if result["attachments_saved"]:
-            message += f" Saved {result['attachments_saved']} attachment(s) for later processing."
+            message += f" Looked again at {result['rechecked']} earlier email(s) for attachments."
+        message += (f" Saved {result['attachments_saved']} attachment(s)." if result["attachments_saved"]
+                    else " No new attachments to save.")
         if result["skipped_known"]:
             message += f" {result['skipped_known']} email(s) already handled were skipped without being downloaded."
         if len(result["mailboxes"]) > 1:
@@ -5464,56 +5258,12 @@ def reset_mail_scan_history():
     """Clears the "already looked at" record so the next scan re-examines
     every email in the window from scratch -- a manual escape hatch
     alongside the automatic one (attachments_checked) for the same
-    situation: a backlog scanned before some piece of Mail Scan existed or
-    worked correctly. Safe to use anytime -- scanned_transactions rows
-    (and anything already accepted/approved from them) aren't touched, and
-    dedupe_key still stops anything already queued from being queued
-    again, so this can't double up a deposit draft or Interest Check line
-    that's already been created."""
+    situation. Safe to use anytime: attachments already saved, moved or
+    deleted aren't duplicated or brought back (see moved_attachments)."""
     db = get_db()
     db.execute("DELETE FROM processed_emails")
     db.commit()
     session["mail_scan_result"] = "Scan history cleared — the next scan will look at every email in the window again."
-    return redirect(url_for("mail_scan_page"))
-
-
-@app.route("/mail-scan/<int:scanned_id>/accept", methods=["POST"])
-def accept_scanned_transaction(scanned_id):
-    db = get_db()
-    row = db.execute(
-        "SELECT * FROM scanned_transactions WHERE id = ? AND kind = 'credit' AND status = 'pending'",
-        (scanned_id,),
-    ).fetchone()
-    if row is None:
-        return redirect(url_for("mail_scan_page"))
-    depositor_id = request.form.get("depositor_id")
-    bank_ref_id = request.form.get("bank_ref_id")
-    if not depositor_id or not bank_ref_id:
-        session["mail_scan_error"] = "Choose a depositor and bank before accepting a transaction."
-        return redirect(url_for("mail_scan_page"))
-    cur = db.execute(
-        """INSERT INTO interest_statement_lines (depositor_id, bank_ref_id, stmt_date, description, amount, imported_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (depositor_id, bank_ref_id, row["txn_date"], row["description"] or row["raw_snippet"][:200],
-         row["amount"], date.today().isoformat()),
-    )
-    db.execute(
-        "UPDATE scanned_transactions SET status = 'accepted', depositor_id = ?, bank_ref_id = ?, "
-        "resulting_statement_line_id = ? WHERE id = ?",
-        (depositor_id, bank_ref_id, cur.lastrowid, scanned_id),
-    )
-    db.commit()
-    return redirect(url_for("mail_scan_page"))
-
-
-@app.route("/mail-scan/<int:scanned_id>/dismiss", methods=["POST"])
-def dismiss_scanned_transaction(scanned_id):
-    db = get_db()
-    db.execute(
-        "UPDATE scanned_transactions SET status = 'dismissed' WHERE id = ? AND kind = 'credit'",
-        (scanned_id,),
-    )
-    db.commit()
     return redirect(url_for("mail_scan_page"))
 
 

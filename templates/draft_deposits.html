@@ -8,14 +8,13 @@
 {% block content %}
 
   <div class="card" style="max-width:640px;">
-    <h2 style="font-size:16px; margin:0 0 4px;">Deposits drafted from scanned mail</h2>
+    <h2 style="font-size:16px; margin:0 0 4px;">Draft deposits to review</h2>
     <p class="field-hint" style="margin-bottom:0;">
-      Each of these came from an email on <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> that looked
-      like a new FD/RD being booked. Nothing here is a real deposit yet — the amount and date are usually
-      right, but the interest rate, tenure and compounding almost never appear in a bank's alert email, so
-      fill those in yourself. <strong>Approve</strong> validates and creates the real deposit (same checks
-      as the Add Deposit form); <strong>Reject</strong> just discards the draft — nothing was ever saved, so
-      there's nothing to keep a record of.
+      Each of these was read from a deposit receipt saved on <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a>
+      (the <strong>Create draft FD</strong> button beside a saved PDF). Nothing here is a real deposit yet — check every
+      field against the receipt shown alongside, fill in what couldn't be found, then <strong>Approve</strong> to create
+      the real deposit (same checks as the Add Deposit form; the receipt moves onto it) or <strong>Reject</strong> to
+      discard the draft.
     </p>
   </div>
 
@@ -191,7 +190,7 @@
     {% endfor %}
   {% else %}
     <div class="card">
-      <div class="empty-state"><p>No pending drafts. Run a scan on the <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> tab to look for more.</p></div>
+      <div class="empty-state"><p>No pending drafts. Open a deposit receipt under Saved attachments on the <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> tab and press <strong>Create draft FD</strong>.</p></div>
     </div>
   {% endif %}
 

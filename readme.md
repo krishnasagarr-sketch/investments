@@ -573,36 +573,34 @@ at the same bank pay into the same account.
 
 ## Mail Scan & Draft Deposits
 
-Scans the Gmail inbox already set up on the Notifications tab (same App Password, read over
-IMAP instead of used to send) — and, **one by one, the mailbox of every [bank account](#attachments)
-that has an email and app password saved** — for bank-transaction-looking emails, so interest
-credits and new FD bookings don't have to be typed in by hand. This is a generic keyword/regex heuristic, not a
-per-bank parser — bank alert wording varies a lot and isn't standardised the way a statement
-file is, so expect it to occasionally miss a real email or flag something irrelevant. **Only the
-email's own text is scanned for transactions** — statement attachments aren't parsed for transactions,
-since trusting a parsed PDF/CSV/Excel statement needs real sample statements this app hasn't
-seen; instead they're saved, can be unlocked and opened, and an FD receipt can be turned into a
-draft deposit on request (below). A PDF/CSV/Excel attachment on a bank-looking email (recognised sender domain, or the
-email's own text already matched a transaction) is still saved — one subfolder per email, named
-after its Message-ID, under `mail_attachments/` next to the database — so nothing is lost;
-an irrelevant email's attachment is never saved. A sender is "recognised" (a bank; the Income Tax Department — see [Tax Filings](#tax-filings); or an NPS / EPF record-keeper —
-Protean, formerly NSDL e-Gov, and EPFO — see [Retirement](#retirement-ppf--epf--nps)); or anyone you add
-under **Recognised senders** (below) by
-a keyword (e.g. `sbi`, `hdfcbank`, `equitas`) matched against each dot-separated label of its
-domain, not the domain as a whole — real bank transactional mail routinely comes from a
-dedicated ESP/sub-brand domain (`bounce-zem.equitas.bank.in`, `alerts.sbi.bank.in`) that looks
-nothing like the bank's own website. The Mail Scan tab shows how many have been saved in total
-and exactly where, plus a **Saved attachments** list grouped by the email each one came from
-(subject, sender, date) with a **View** link per file — a PDF opens inline in a new tab, a
-CSV/Excel file downloads, the same as either would from any other site.
+Reads the Gmail inbox already set up on the Notifications tab (same App Password, read over
+IMAP instead of used to send) — and, **one by one, the mailbox of every [bank account](#bank-accounts)
+that has an email and app password saved** — and keeps the **attachments** (PDF, CSV, Excel) of emails from
+a **recognised sender**. The text of an email is *not* mined for transactions: an alert's wording varies
+too much between banks and says too little (an amount and a date, never the rate or tenure), so interest
+credits and FD bookings are no longer guessed from it — the authoritative sources are the documents
+themselves (a deposit receipt becomes a draft deposit, below) and, for the account's day-to-day
+transactions, its statements.
+
+A sender is "recognised" if it's a bank; the Income Tax Department (see [Tax Filings](#tax-filings));
+an NPS / EPF record-keeper (Protean, formerly NSDL e-Gov, and EPFO — see
+[Retirement](#retirement-ppf--epf--nps)); or anyone you add under **Recognised senders** (below).
+Banks and the rest are matched by a keyword (e.g. `sbi`, `hdfcbank`, `equitas`) against each
+dot-separated label of the sender's domain, not the domain as a whole — real bank transactional mail
+routinely comes from a dedicated ESP/sub-brand domain (`bounce-zem.equitas.bank.in`,
+`alerts.sbi.bank.in`) that looks nothing like the bank's own website. An unrecognised sender's attachment
+is never saved. Saved attachments go one subfolder per email, named after its Message-ID, under
+`mail_attachments/` next to the database. The Mail Scan tab shows how many have been saved in total and
+exactly where, plus a **Saved attachments** list grouped by the email each one came from (subject,
+sender, date) with a **View** link per file — a PDF opens inline in a new tab, a CSV/Excel file
+downloads, the same as either would from any other site.
 
 How a scan stays cheap and duplicate-free: each distinct address is scanned **once** (compared
 case-insensitively; an account whose email is the Notifications one just shares that scan), and
 within a scan only each email's Message-ID *header* is fetched first, in batches — mail already
 handled is skipped without downloading it, so a repeat scan downloads nothing new. An email's
 Message-ID is its identity everywhere, so the same email reaching two mailboxes is one email (read
-from the account's own mailbox, which is scanned before the Notifications one), and a transaction
-seen twice is still queued once. One mailbox failing — a stale app password, say — is reported
+from the account's own mailbox, which is scanned before the Notifications one). One mailbox failing — a stale app password, say — is reported
 without stopping the others. The host comes from the address (Gmail by default; Outlook/Hotmail,
 Yahoo, iCloud and Rediffmail Pro addresses use their own IMAP servers). **Rediffmail
 (`@rediffmail.com`) has no IMAP** (only Rediffmail Pro does), so it's read over **POP3**
@@ -665,30 +663,15 @@ before attachment-saving existed at all, the very next scan gives it exactly one
 for an attachment it never got the chance to be considered for, with no need to do anything by
 hand. A **Reset scan history** button on the tab is also there for a clean slate anytime — it
 clears what's been "looked at", so the next scan re-examines everything in the window again;
-already-accepted transactions and approved deposits are never re-created or duplicated, since
-that's tracked independently by each transaction's own fingerprint, not by the email it came
-from.
+attachments already saved, moved or deleted aren't saved a second time (they're remembered by the hash
+of the file as received).
 
-Nothing found is ever written straight to a real record:
-
-- An email that looks like **money credited** (interest, etc.) becomes a row on the **Mail
-  Scan** tab's review queue — pick a depositor and bank and **Accept** it onto the Interest
-  Check tab as a statement line, same as a manually imported one, or **Dismiss** it.
-- An email that looks like a **new FD/RD being opened** (not just any credit — a plain
-  account-credit email with a bank's routine "open a Fixed Deposit today!" cross-sell footer is
-  deliberately not enough; the FD/RD wording and an opening-ish verb have to sit close together
-  in the actual text, not just appear somewhere in the same email) immediately becomes an
-  editable row on the **Draft Deposits** tab — never a real deposit. The amount and date usually
-  come through correctly; the interest rate, tenure and compounding almost never appear in a
-  bank's alert email, so those are left for you to fill in. **Approve** runs it through the same
-  validation as the Add Deposit form and creates the real deposit; **Reject** just discards the
-  draft, since
-  nothing was ever saved. A "Draft Deposits (N)" badge in the nav shows how many are waiting.
-
-**No duplicate transactions**: every email is remembered by its own globally-unique Message-ID
-(`processed_emails`), so re-running a scan never looks at the same mail twice, and a transaction
-already queued or accepted — even if it shows up again in a different email, like a resend — is
-recognised by its date/amount/kind and not queued a second time.
+Nothing here becomes a real record without you: a deposit receipt is only ever turned into a
+**draft** deposit that you check and approve (see [Create draft FD from an
+attachment](#create-draft-fd-from-an-attachment)). A "Draft Deposits (N)" badge in the nav shows how many
+are waiting. (Earlier versions also queued "interest credited" emails for review and drafted deposits from
+the text of "FD booked" alerts; both were dropped — their data was too thin to trust. Rows they left in the
+database are simply not shown, and a draft made that way is still there to approve or reject.)
 
 ### Working with saved attachments
 
@@ -852,8 +835,9 @@ see [Selling a holding, and Capital Gains](#selling-a-holding-and-capital-gains)
 `portfolio_tags`, `interest_statement_lines` (Interest Check), `bank_accounts` ([Bank
 Accounts](#bank-accounts)), `attachment_notes` (per-file password note, document date, unlock status),
 `tax_records` ([Tax Filings](#tax-filings)), `mail_sender_rules` (your recognised senders), `moved_attachments` (hashes of files moved or deleted out of Mail Scan, so a re-scan doesn't bring
-them back), `processed_emails` + `scanned_transactions` + `deposit_drafts` (Mail Scan & Draft
-Deposits — see above), `notification_settings`, and `auth_user`. Schema migrations run automatically on startup, so
+them back), `processed_emails` + `deposit_drafts` (Mail Scan & Draft Deposits — see above;
+`scanned_transactions` is a leftover of the dropped email-text scanner, kept only so old drafts can still be
+approved or rejected), `notification_settings`, and `auth_user`. Schema migrations run automatically on startup, so
 upgrading from an older version is a normal `git pull` + restart, no manual steps.
 
 ## Notes & limitations
@@ -872,11 +856,11 @@ upgrading from an older version is a normal `git pull` + restart, no manual step
   Gains](#selling-a-holding-and-capital-gains) for what that leaves out).
 - Premature-withdrawal penalties and auto-renewal aren't modelled — every deposit is assumed to
   run to its full tenure as entered.
-- Mail Scan is a best-effort keyword scan, not a per-bank parser, and only reads an email's own
-  text for transactions — attachments like PDF e-statements are saved, can be unlocked and opened,
-  and (on request) read into a draft deposit, but aren't parsed for transactions. It will miss some real transaction emails and occasionally flag something irrelevant;
-  nothing it finds becomes a real record without being reviewed and accepted/approved first (see
-  [Mail Scan & Draft Deposits](#mail-scan--draft-deposits)).
+- Mail Scan saves and files documents; it doesn't read transactions out of email text or parse
+  statements, so interest received, income and spending aren't picked up from mail (Income &
+  Expenditure uses deposit interest from the deposits themselves, plus what you enter under Other
+  Income and Expenses). A deposit receipt is read into a draft only on request, and every draft is
+  checked and approved by you (see [Mail Scan & Draft Deposits](#mail-scan--draft-deposits)).
 - The Claude features can misread a document or a password note: a draft deposit is always a draft
   to check against the receipt shown beside it, and a password recipe it gets wrong falls back to
   asking you. They need an API key and send text to Anthropic (see [Login &
