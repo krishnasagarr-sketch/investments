@@ -914,6 +914,18 @@ def init_db():
             for rid, val in conn.execute(f"SELECT rowid, {col} FROM {table} WHERE {col} LIKE '%&%;%' OR {col} LIKE '%\xa0%'").fetchall():
                 conn.execute(f"UPDATE {table} SET {col} = ? WHERE rowid = ?", (_unescape_all(val), rid))
         conn.execute("PRAGMA user_version = 3")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 6:
+        # One time (safe to repeat): password notes picked up from emails by the old, cruder extractor often held the wrong
+        # sentence. Where a mail attachment's note is just a piece of its own email (not something typed
+        # by hand), replace it with what the better extractor finds.
+        for n in conn.execute("SELECT a.rowid AS rid, a.password_hint, e.subject, e.body_text FROM attachment_notes a "
+                              "JOIN processed_emails e ON e.id = a.item_id WHERE a.kind = 'mail_scan' AND a.password_hint != ''").fetchall():
+            old = re.sub(r"\s+", " ", n["password_hint"]).strip()
+            body = re.sub(r"\s+", " ", _unescape_all(n["body_text"] or "")).strip()
+            new = _extract_password_hint_from_text(f"{n['subject']}\n{n['body_text'] or ''}")
+            if new and old and old in body and new != old:
+                conn.execute("UPDATE attachment_notes SET password_hint = ? WHERE rowid = ?", (new, n["rid"]))
+        conn.execute("PRAGMA user_version = 6")
 
     conn.commit()
     conn.close()
@@ -4355,18 +4367,77 @@ MAIL_BODY_STORE_CHARS = 8000  # per email, only for emails that carry an attachm
 MAIL_SCAN_PASSWORD_RE = re.compile(r"\b(password|passcode|pin code)\b", re.IGNORECASE)
 
 
+_PW_KEYWORD_RE = re.compile(r"password\w*|passcode|pin code|to open|open (?:the|your|it|this)|unlock|decrypt|protected", re.I)
+_PW_IDENT_RE = re.compile(
+    r"\b(?:PAN|date of birth|DOB|DDMM\w*|DD/MM\w*|customer ?id|cust(?:omer)? id|CRN|account (?:number|no)|a/c|mobile|"
+    r"phone number|last \d+ digits|first \d+|upper ?case|lower ?case|capital|small letters|year of birth|birth year)\b", re.I)
+_PW_VERB_RE = re.compile(r"\b(?:enter|use|type|is|will be|should be|are|combination|comprising|consists?)\b", re.I)
+_PW_BOILERPLATE_RE = re.compile(
+    r"never ask|do not share|don'?t share|not seek|do not respond|do not part|beware|phishing|log ?on|log ?in|sign ?in|"
+    r"forgot|reset|change your|\botp\b|\bcvv\b|\batm\b|user ?name|security tip|fraud|unsubscribe", re.I)
+_PW_SPLIT_RE = re.compile(r"[\r\n]+|\s*\u2022\s*|\s{2,}|(?<!e\.g)(?<!i\.e)(?<!\bNo)(?<!\bMr)(?<!\bMrs)(?<!\bMs)(?<!\bDr)(?<=[.!?])\s+(?=\S)")
+
+
+_PW_NONINDIVIDUAL_RE = re.compile(r"non[- ]?individual|company|\bfirm\b", re.I)
+_PW_INDIVIDUAL_RE = re.compile(r"(?<!non-)(?<!non )\bindividual\b", re.I)
+
+
+def _password_segment_score(seg: str) -> int:
+    """How likely one short piece of an email is to say HOW the attachment's password is made."""
+    if not _PW_KEYWORD_RE.search(seg):
+        return 0
+    score = 1
+    if _PW_IDENT_RE.search(seg):
+        score += 3
+    if re.search(r"password\w*|passcode", seg, re.I) and _PW_VERB_RE.search(seg):
+        score += 2
+    if _PW_BOILERPLATE_RE.search(seg):
+        score -= 6
+    if _PW_INDIVIDUAL_RE.search(seg):
+        score += 2      # these are personal accounts: the "individual" instruction is the one that applies
+    if _PW_NONINDIVIDUAL_RE.search(seg):
+        score -= 2
+    return score
+
+
 def _extract_password_hint_from_text(text: str) -> str:
-    """Looks for a sentence mentioning a password/passcode/PIN and returns
-    it verbatim -- banks routinely spell out right in the email how to open
-    an attached, protected statement (e.g. "the password is your PAN in
-    capital letters"), so this just grabs that sentence rather than trying
-    to parse out a literal code, since the wording varies too much to rely
-    on anything more specific. Returns "" if nothing found."""
-    normalized = re.sub(r"\s+", " ", text).strip()
-    for sentence in re.split(r"(?<=[.!?])\s+", normalized):
-        if MAIL_SCAN_PASSWORD_RE.search(sentence):
-            return sentence.strip()[:300]
-    return ""
+    """Finds the part of an email that says how to open its protected attachment -- banks spell it
+    out ("Enter your Customer ID as the password"; the tax department: "enter your PAN in lower case
+    and Date of birth in DDMMYYYY format ... then the password will be abcde1234a20011985") -- and
+    returns it verbatim rather than parsing out a literal code, since the wording varies too much.
+    The email is cut into short pieces (lines, bullets, sentences); the piece that names what the
+    password is made of scores highest, its neighbours that do too are kept with it (the tax mail's
+    instruction and its worked example), and warnings such as "we will never ask for your password"
+    are ignored. Returns "" if nothing found."""
+    segs = []
+    for raw in _PW_SPLIT_RE.split(text or ""):
+        seg = re.sub(r"^\s*(?:\d{1,2}[.)]\s+|[-*]\s+)", "", re.sub(r"\s+", " ", raw).strip())
+        seg = re.sub(r"\.\d$", ".", seg)  # a footnote marker such as "file.2"
+        if re.search(r"[A-Za-z]", seg):  # (a bare list number such as "3" isn't a piece)
+            segs.append(seg)
+    scores = [_password_segment_score(x) for x in segs]
+    if not scores or max(scores) < 1:
+        return ""
+    best = scores.index(max(scores))
+    if scores[best] < 4:  # nothing names what the password is made of: fall back to the first mention
+        return segs[best][:300]
+    best_corporate = bool(_PW_NONINDIVIDUAL_RE.search(segs[best]))
+
+    def joins(k):  # a neighbour that continues the instruction: another scoring piece, or a short note on case/format
+        seg = segs[k]
+        if bool(_PW_NONINDIVIDUAL_RE.search(seg)) != best_corporate:
+            return False
+        if scores[k] >= 3:
+            return True
+        return (scores[k] == 0 and len(seg) < 120 and bool(_PW_IDENT_RE.search(seg))
+                and not _PW_BOILERPLATE_RE.search(seg))
+
+    lo = hi = best
+    while lo > 0 and joins(lo - 1):
+        lo -= 1
+    while hi < len(segs) - 1 and joins(hi + 1):
+        hi += 1
+    return " ".join(segs[lo:hi + 1])[:500]
 
 
 FORWARD_SUBJECT_RE = re.compile(r"^\s*(?:fw|fwd)\s*:", re.I)
