@@ -536,8 +536,8 @@ depositor) and assessment year, and are grouped under each year.
   birth saved gets them opened automatically. Documents are stored in `tax_attachments/` (gitignored).
   A record that still has documents can't be deleted.
 - **From Mail Scan.** Email from the department (`…incometax…` addresses, including one you forwarded
-  from another mailbox) has its attachments saved like a bank's. On Mail Scan's **Move to…** picker,
-  choose **➕ New tax communication from this email** to create a communication record from it in one
+  from another mailbox) has its attachments saved like a bank's. On Mail Scan, such an email's **Belongs to**
+  picker comes pre-set to **➕ New tax communication from this email** (it's never tied to a bank account); press **Move files** to create a communication record from it in one
   click — type, section, DIN, assessment year, respond-by date (an "on or before" date, or "within N
   days") and any amount are read from the text, the taxpayer comes from the bank account the email
   was sorted into — and move the file into it; or pick an existing record to add more documents to.
@@ -655,13 +655,18 @@ mail that isn't a bank's (the Income Tax Department, NPS/EPF), one person's seve
 the PAN and name, so which one is beside the point: if the evidence points at a single holder, the
 mail goes to that holder's first account (and says so); evidence split between different holders
 is still left for you. Every scan also re-tries mails that are still unsorted. Whatever the matcher
-can't settle is left **unsorted**: under *Saved attachments* each email has a **Bank account** picker (choose an account,
-*None of these*, or *Match automatically* to hand it back), a manual choice is remembered and never
-overridden. There's no separate "match" button: the matcher runs as each new email is scanned, and every
+can't settle is left **unsorted**: under *Saved attachments* each email has one **Belongs to** picker (a bank
+account, an income-tax filing, a retirement account or an investment; *None of these*, or *Work it out again* to hand
+it back to the matcher). **Save** ties the email to the chosen *bank account* (a manual choice is remembered and
+never overridden); **Move files** moves the email's files onto whatever is chosen (see below). There's no separate "match" button: the matcher runs as each new email is scanned, and every
 scan re-tries the emails still unsorted (so after adding a bank account, the next scan picks up what it
-now fits). The unlock page pre-selects the account an email was sorted into. For mail
-from the Income Tax Department the *Move to…* picker comes pre-set to **➕ New tax communication**
-(the taxpayer is taken from the account it was sorted into).
+now fits). The unlock page pre-selects the account an email was sorted into.
+
+**Tax and NPS/EPF mail isn't a bank's.** An Income Tax Department email is sorted to **➕ New tax
+communication**, and an NPS or EPF statement to your NPS/EPF account (the holder's, judged from the PAN/name
+in the email and its file names, when you have more than one) — shown in the picker with the reason, never as a
+bank account. Press **Move files** and the record is created (the taxpayer judged the same way) or the file lands on
+the account. Unlocking such a file still uses the holder's saved details.
 
 If the email itself says how to open a password-protected attachment — banks routinely spell
 this out ("the password is your PAN in capital letters") — that instruction is picked up
@@ -693,13 +698,13 @@ database are simply not shown, and a draft made that way is still there to appro
 
 Each file under **Saved attachments** has these actions:
 
-- **Move to…** A **Move to…** picker (grouped: bank accounts, investments, retirement accounts, income tax;
-  pre-set to the bank account its email was sorted into) and a **Move** button move the file — with
+- **Move files** The email's **Belongs to** picker (grouped: bank accounts, income tax, retirement accounts,
+  investments; pre-set from where the email was sorted) and its **Move files** button move the email's files — with
   its kept locked original, password note, document date and unlock status — onto that record's
   attachments: a bank account's **Statements** ([Bank Accounts](#bank-accounts) tab), an
   investment's, retirement account's or tax record's **Attachments**, where it unlocks automatically from
   the holder's saved details. Moving to a bank account also sorts an unsorted email into it. It's a real
-  move: the file leaves Mail Scan's list, a same-named file already there isn't overwritten, and what
+  move: the files leave Mail Scan's list, a same-named file already there isn't overwritten, and what
   was moved is remembered (by the hash of the file as received), so scanning the same email again —
   e.g. after a history reset — doesn't bring it back.
 - **Delete.** A **Delete** button (two-step confirm) removes the file, its kept locked original and
@@ -780,7 +785,7 @@ gain, and a PPF account flags when its contributions in the current financial ye
 **Attachments** link (statements, passbook scans) with the same automatic unlocking as everywhere
 else; an account that still has attachments can't be deleted. Monthly **NPS statements** from Protean
 (`…proteantech…`, also the older `cra-nsdl`) and EPFO mail are recognised by [Mail Scan](#mail-scan--draft-deposits),
-which saves their PDFs; the **Move to…** picker comes pre-set to your retirement account of that type
+which saves their PDFs; the **Belongs to** picker comes pre-set to your retirement account of that type
 when there's exactly one (an NPS statement → your NPS account), and the statement's period in the
 subject becomes its document date.
 

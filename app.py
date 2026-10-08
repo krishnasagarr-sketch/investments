@@ -926,6 +926,14 @@ def init_db():
             if new and old and old in body and new != old:
                 conn.execute("UPDATE attachment_notes SET password_hint = ? WHERE rowid = ?", (new, n["rid"]))
         conn.execute("PRAGMA user_version = 6")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 7:
+        # One time: tax-department and NPS/EPF mail had been tied to a bank account by the holder's details;
+        # it belongs to a tax / retirement record instead, so untie those (a choice you made by hand stays).
+        for r in conn.execute("SELECT id, from_addr FROM processed_emails WHERE bank_account_id IS NOT NULL "
+                              "AND account_match != 'manual'").fetchall():
+            if _is_tax_sender(r["from_addr"] or "") or _retirement_type_for_sender(r["from_addr"] or ""):
+                conn.execute("UPDATE processed_emails SET bank_account_id = NULL, account_match = '' WHERE id = ?", (r["id"],))
+        conn.execute("PRAGMA user_version = 7")
 
     conn.commit()
     conn.close()
@@ -4918,6 +4926,57 @@ def _email_match_text(db, row) -> str:
     return f"{row['subject']}\n{row['body_text'] or ''}\n" + "\n".join(names)
 
 
+def _retirement_type_for_sender(address: str) -> str:
+    """"NPS" / "EPF" when the sender is that record-keeper, else ""."""
+    labels = _domain_labels(address)
+    return next((t for key, t in MAIL_SCAN_RETIREMENT_DOMAINS.items() if key in labels), "")
+
+
+def _holder_from_text(db, text: str):
+    """The depositor an email is about, judged from the saved bank accounts' details appearing in its text
+    (PAN, name, customer ID...): the holder whose accounts score best, if that's clearly one person."""
+    scored = [(*_account_evidence(a, text, False), a) for a in list_bank_accounts(db)]
+    if not scored:
+        return None
+    top = max(x[0] for x in scored)
+    if top < 3:
+        return None
+    holders = {x[2]["depositor_id"] for x in scored if x[0] == top}
+    rivals = [x[0] for x in scored if x[2]["depositor_id"] not in holders]
+    if len(holders) == 1 and None not in holders and (not rivals or top >= max(rivals) + 2):
+        return next(iter(holders))
+    return None
+
+
+def _email_holder(db, row):
+    """The depositor a saved email is about: its bank account's, else judged from its text."""
+    if row["bank_account_id"]:
+        acct = db.execute("SELECT depositor_id FROM bank_accounts WHERE id = ?", (row["bank_account_id"],)).fetchone()
+        if acct and acct["depositor_id"]:
+            return acct["depositor_id"]
+    return _holder_from_text(db, _email_match_text(db, row))
+
+
+def _suggest_destination(db, row):
+    """(target, reason, kind) for where an email's files belong when it isn't a bank's: mail from the
+    Income Tax Department files as a tax communication; an NPS/EPF statement goes to that retirement
+    account (the holder's, when it can tell whose). target is a move value like "retirement:3" or ""."""
+    addr = row["from_addr"] or ""
+    if _is_tax_sender(addr):
+        return "new_tax_communication:0", "Income Tax Department mail — files as a tax communication", "tax"
+    rtype = _retirement_type_for_sender(addr)
+    if rtype:
+        accts = db.execute("SELECT id, depositor_id FROM retirement_accounts WHERE upper(account_type) = ?", (rtype,)).fetchall()
+        if not accts:
+            return "", f"{rtype} statement — add the {rtype} account on the Retirement tab first", "retirement"
+        holder = _email_holder(db, row)
+        mine = [a for a in accts if a["depositor_id"] == holder] if holder else accts
+        if len(mine) == 1:
+            return f"retirement:{mine[0]['id']}", f"{rtype} statement — goes to the {rtype} account", "retirement"
+        return "", f"{rtype} statement — pick which {rtype} account", "retirement"
+    return "", "", ""
+
+
 def match_bank_account(db, source_email: str, from_addr: str, text: str, dedicated: bool):
     """Works out which bank account an email belongs to -> (account_id,
     reason), or (None, "") when it can't tell (a person then sorts it).
@@ -4931,6 +4990,8 @@ def match_bank_account(db, source_email: str, from_addr: str, text: str, dedicat
     accounts = list_bank_accounts(db)
     if not accounts:
         return None, ""
+    if _is_tax_sender(from_addr or "") or _retirement_type_for_sender(from_addr or ""):
+        return None, ""   # tax and NPS/EPF mail belongs to a tax / retirement record, never to a bank account
     src = (source_email or "").strip().lower()
     own_ids = {a["id"] for a in accounts if (a["email"] or "").strip().lower() == src and src}
     bank_ids = _bank_ids_for_sender(from_addr or "", db)
@@ -5190,6 +5251,7 @@ def list_saved_attachments(db) -> list:
             continue
         email_row = emails_by_dir.get(folder.name)
         email_id = email_row["id"] if email_row else None
+        dest = _suggest_destination(db, email_row) if email_row else ("", "", "")
         groups.append({
             "folder": folder.name,
             "email_id": email_id,
@@ -5197,8 +5259,7 @@ def list_saved_attachments(db) -> list:
             "from_addr": email_row["from_addr"] if email_row else "",
             "source_email": email_row["source_email"] if email_row else "",
             "account_id": email_row["bank_account_id"] if email_row else None,
-            "suggested_target": (_suggest_retirement_target(db, email_row["from_addr"])
-                                 or ("new_tax_communication:0" if _is_tax_sender(email_row["from_addr"]) else "")) if email_row else "",
+            "suggested_target": dest[0], "suggested_reason": dest[1], "dest_kind": dest[2],
             "account_match": email_row["account_match"] if email_row else "",
             "received_date": email_row["received_date"] if email_row else "",
             "mtime": max(f.stat().st_mtime for f in files),
@@ -5288,6 +5349,11 @@ def set_mail_email_account(email_id):
     db = get_db()
     row = db.execute("SELECT * FROM processed_emails WHERE id = ?", (email_id,)).fetchone()
     choice = request.form.get("account", "")
+    if choice.startswith("bank:"):
+        choice = choice[5:]
+    elif ":" in choice:
+        flash("That's a place to move the files to — press “Move files” to do it. “Save” only ties the email to a bank account.", "info")
+        return redirect(url_for("mail_scan_page") + "#attachments")
     if row and choice == "none":
         db.execute("UPDATE processed_emails SET bank_account_id = NULL, account_match = 'manual' WHERE id = ?", (email_id,))
     elif row and choice == "auto":
@@ -7987,66 +8053,81 @@ def move_attachment_to_deposit(db, kind: str, item_id: int, filename: str, depos
     return move_attachment(db, kind, item_id, filename, "deposits", deposit_id)
 
 
-@app.route("/mail-scan/attachments/<int:email_id>/<filename>/move-to-account", methods=["POST"])
-def move_mail_attachment_to_account(email_id, filename):
-    """Moves a Mail Scan attachment onto another record's own attachments: a bank
-    account's Statements (the default -- a plain id, or "bank_accounts:<id>"), or an
-    investment's or retirement account's ("investments:<id>", "retirement:<id>"). An email
-    not yet tied to a bank account gets tied to the one chosen when that's the destination."""
+@app.route("/mail-scan/emails/<int:email_id>/move", methods=["POST"])
+def move_mail_email(email_id):
+    """Moves every file of an email onto the record chosen in its "Belongs to" picker: a bank account's
+    Statements ("bank:<id>"), an investment's or retirement account's attachments ("investments:<id>",
+    "retirement:<id>"), an existing tax record's ("tax_records:<id>"), or a NEW tax communication made from
+    the email ("new_tax_communication:0"). The file, its kept original, password note and date all go with
+    it. An email not yet tied to a bank account gets tied to the one chosen when that's the destination."""
     db = get_db()
     back = url_for("mail_scan_page") + "#attachments"
+    row = db.execute("SELECT * FROM processed_emails WHERE id = ?", (email_id,)).fetchone()
+    base = _attachment_base_dir(db, "mail_scan", email_id) if row else None
+    names = sorted(f.name for f in base.iterdir() if f.is_file()) if base is not None and base.is_dir() else []
+    if not names:
+        flash("This email has no files left to move.", "error")
+        return redirect(back)
     choice = request.form.get("account", "")
     dest_kind, _, dest_id = choice.rpartition(":")
-    dest_kind = dest_kind or "bank_accounts"
+    dest_kind = {"bank": "bank_accounts", "": "bank_accounts"}.get(dest_kind, dest_kind)
     label = None
     if dest_id.isdigit() and dest_kind == "bank_accounts":
         account = next((a for a in list_bank_accounts(db) if str(a["id"]) == dest_id), None)
-        label = _account_text(account) + " — it's now under that account's Statements" if account else None
+        label = _account_text(account) + " — now under that account's Statements" if account else None
     elif dest_id.isdigit() and dest_kind in ("investments", "retirement", "tax_records"):
         label = next((t["text"] for t in _move_targets(db)[dest_kind] if str(t["id"]) == dest_id), None)
-        label = f"{label} — it's now under that record's Attachments" if label else None
+        label = f"{label} — now under that record's Attachments" if label else None
     elif dest_kind == "new_tax_communication":
-        return _new_tax_communication_from_email(db, email_id, filename, back)
+        return _new_tax_communication_from_email(db, row, names, back)
     if label is None:
-        flash("Choose where to move it to.", "error")
+        flash("Choose where to move the files to (a bank account, tax filing, retirement account or investment).", "error")
         return redirect(back)
-    try:
-        moved = move_attachment(db, "mail_scan", email_id, filename, dest_kind, int(dest_id))
-    except OSError:
-        moved = None
-    if moved is None:
-        flash(f"Couldn't move “{filename}” — it's no longer where it was saved.", "error")
-        return redirect(back)
-    if dest_kind == "bank_accounts":
+    moved, failed = [], []
+    for name in names:
+        try:
+            new_name = move_attachment(db, "mail_scan", email_id, name, dest_kind, int(dest_id))
+        except OSError:
+            new_name = None
+        (moved if new_name else failed).append(new_name or name)
+    if moved and dest_kind == "bank_accounts":
         db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = 'manual' "
                    "WHERE id = ? AND bank_account_id IS NULL", (int(dest_id), email_id))
         db.commit()
-    flash(f"Moved “{moved}” to {label}.", "info")
+    if moved:
+        flash(f"Moved {', '.join('“' + m + '”' for m in moved)} to {label}.", "info")
+    if failed:
+        flash(f"Couldn't move {', '.join('“' + f + '”' for f in failed)} — no longer where it was saved.", "error")
     return redirect(back)
 
 
-def _new_tax_communication_from_email(db, email_id: int, filename: str, back: str):
+def _new_tax_communication_from_email(db, row, filenames: list, back: str):
     """Makes a new communication record from an Income Tax Department email (type, section,
-    reference, assessment year, respond-by date guessed from its text; the taxpayer from the
-    bank account the email was sorted into) and moves the chosen file into it."""
-    row = db.execute("SELECT * FROM processed_emails WHERE id = ?", (email_id,)).fetchone()
-    if row is None or _attachment_file_path(db, "mail_scan", email_id, filename) is None:
-        flash(f"Couldn't move “{filename}” — it's no longer where it was saved.", "error")
-        return redirect(back)
+    reference, assessment year, respond-by date guessed from its text; the taxpayer judged from the
+    holder's details in it) and moves the email's files into it."""
     g = _guess_tax_communication(row["subject"], row["body_text"] or "", row["received_date"] or "")
-    depositor_id = None
-    if row["bank_account_id"]:
-        acct = db.execute("SELECT depositor_id FROM bank_accounts WHERE id = ?", (row["bank_account_id"],)).fetchone()
-        depositor_id = acct["depositor_id"] if acct else None
+    depositor_id = _email_holder(db, row)
     cur = db.execute(
         """INSERT INTO tax_records (record_type, depositor_id, assessment_year, category, subtype, reference,
            record_date, due_date, amount, status, remarks, created_at)
            VALUES ('communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (depositor_id, g["assessment_year"], g["category"], g["subtype"], g["reference"], g["record_date"],
          g["due_date"], g["amount"], g["status"], g["remarks"], date.today().isoformat()))
-    moved = move_attachment(db, "mail_scan", email_id, filename, "tax_records", cur.lastrowid)
+    moved = []
+    for name in filenames:
+        try:
+            new_name = move_attachment(db, "mail_scan", row["id"], name, "tax_records", cur.lastrowid)
+        except OSError:
+            new_name = None
+        if new_name:
+            moved.append(new_name)
+    if not moved:
+        db.execute("DELETE FROM tax_records WHERE id = ?", (cur.lastrowid,))
+        db.commit()
+        flash("Couldn't move the files — they're no longer where they were saved.", "error")
+        return redirect(back)
     flash(f"Created tax communication #{cur.lastrowid} — {g['category']}, AY {g['assessment_year']}"
-          + (f", respond by {g['due_date']}" if g["due_date"] else "") + f" — and moved “{moved}” into it. "
+          + (f", respond by {g['due_date']}" if g["due_date"] else "") + f" — and moved {', '.join('“' + m + '”' for m in moved)} into it. "
           "Check the details on the Tax Filings tab.", "info")
     return redirect(back)
 
@@ -8354,17 +8435,6 @@ def delete_mail_sender(rule_id):
     db.execute("DELETE FROM mail_sender_rules WHERE id = ?", (rule_id,))
     db.commit()
     return redirect(url_for("mail_scan_page") + "#senders")
-
-
-def _suggest_retirement_target(db, address: str) -> str:
-    """"retirement:<id>" when the sender is an NPS/EPF record-keeper and exactly one retirement account of
-    that type exists -- the obvious home for its statement -- else ""."""
-    labels = _domain_labels(address)
-    for key, account_type in MAIL_SCAN_RETIREMENT_DOMAINS.items():
-        if key in labels:
-            rows = db.execute("SELECT id FROM retirement_accounts WHERE upper(account_type) = ?", (account_type,)).fetchall()
-            return f"retirement:{rows[0]['id']}" if len(rows) == 1 else ""
-    return ""
 
 
 def _ay_label(start_year: int) -> str:
@@ -8730,12 +8800,17 @@ def accounts_for_attachment(db, kind: str, item_id: int):
             own = [a for a in accounts if depositor_id is not None and a["depositor_id"] == depositor_id]
             return own, [a for a in accounts if a not in own]
     elif kind == "mail_scan":
-        r = db.execute("SELECT from_addr, bank_account_id FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
+        r = db.execute("SELECT * FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
         if r:
             bank_ids = _bank_ids_for_sender(r["from_addr"] or "", db)
             tied = [a for a in accounts if a["id"] == r["bank_account_id"]]
             if tied:  # the scan already tied this email to one bank account
                 return tied, [a for a in accounts if a["id"] != tied[0]["id"]]
+            if not bank_ids:  # a tax / retirement mail: the holder's own accounts supply the details
+                holder = _holder_from_text(db, _email_match_text(db, r))
+                if holder:
+                    own = [a for a in accounts if a["depositor_id"] == holder]
+                    return own, [a for a in accounts if a not in own]
     matched = [a for a in accounts if a["bank_ref_id"] in bank_ids]
     if depositor_id is not None:
         same = [a for a in matched if a["depositor_id"] in (depositor_id, None)]

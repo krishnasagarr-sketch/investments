@@ -143,21 +143,45 @@
           <div class="muted" style="font-size:12px; margin-bottom:8px;">
             {{ g.from_addr }}{% if g.received_date %} · {{ g.received_date }}{% endif %}{% if g.source_email %} · via {{ g.source_email }}{% endif %}
           </div>
-          {% if g.email_id and account_choices %}
+          {% if g.email_id %}
+            {% set manual_bank = g.account_id and g.account_match == "manual" %}
+            {% set pick = ("bank:" ~ g.account_id) if manual_bank else (g.suggested_target or (("bank:" ~ g.account_id) if g.account_id else "")) %}
             <form method="POST" action="{{ url_for('set_mail_email_account', email_id=g.email_id) }}"
                   style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
-              <label class="muted" style="font-size:12px;">Bank account</label>
-              <select name="account" style="font-size:13px; padding:5px 8px; max-width:280px;">
-                <option value="" {% if not g.account_id and g.account_match != "manual" %}selected{% endif %}>— not sorted yet —</option>
-                <option value="auto">Match automatically</option>
-                <option value="none" {% if not g.account_id and g.account_match == "manual" %}selected{% endif %}>None of these</option>
-                {% for c in account_choices %}
-                  <option value="{{ c.id }}" {% if g.account_id == c.id %}selected{% endif %}>{{ c.text }}</option>
-                {% endfor %}
+              <label class="muted" style="font-size:12px;">Belongs to</label>
+              <select name="account" style="font-size:13px; padding:5px 8px; max-width:340px;">
+                <option value="" {% if not pick and g.account_match != "manual" %}selected{% endif %}>— not sorted yet —</option>
+                <option value="auto">Work it out again</option>
+                <option value="none" {% if not pick and g.account_match == "manual" %}selected{% endif %}>None of these</option>
+                {% if account_choices %}
+                  <optgroup label="Bank accounts (statements)">
+                    {% for c in account_choices %}
+                      <option value="bank:{{ c.id }}" {% if pick == "bank:" ~ c.id %}selected{% endif %}>{{ c.text }}</option>
+                    {% endfor %}
+                  </optgroup>
+                {% endif %}
+                <optgroup label="Income tax">
+                  <option value="new_tax_communication:0" {% if pick == "new_tax_communication:0" %}selected{% endif %}>➕ New tax communication from this email</option>
+                  {% for t in move_targets.tax_records %}<option value="tax_records:{{ t.id }}" {% if pick == "tax_records:" ~ t.id %}selected{% endif %}>{{ t.text }}</option>{% endfor %}
+                </optgroup>
+                {% if move_targets.retirement %}
+                  <optgroup label="Retirement accounts (NPS, EPF…)">
+                    {% for t in move_targets.retirement %}<option value="retirement:{{ t.id }}" {% if pick == "retirement:" ~ t.id %}selected{% endif %}>{{ t.text }}</option>{% endfor %}
+                  </optgroup>
+                {% endif %}
+                {% if move_targets.investments %}
+                  <optgroup label="Investments">
+                    {% for t in move_targets.investments %}<option value="investments:{{ t.id }}" {% if pick == "investments:" ~ t.id %}selected{% endif %}>{{ t.text }}</option>{% endfor %}
+                  </optgroup>
+                {% endif %}
               </select>
-              <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;">Save</button>
+              <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;"
+                      title="Ties the email to a bank account (its files stay here, for unlocking and reading transactions)">Save</button>
+              <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;"
+                      formaction="{{ url_for('move_mail_email', email_id=g.email_id) }}"
+                      title="Moves this email's files (with their kept original, password note and date) onto the chosen record's attachments">Move files</button>
               <span class="muted" style="font-size:12px;">
-                {% if g.account_id %}{{ "set by you" if g.account_match == "manual" else g.account_match }}{% elif g.account_match == "manual" %}left unassigned by you{% else %}couldn't tell — pick one{% endif %}
+                {% if manual_bank %}set by you{% elif g.suggested_reason %}{{ g.suggested_reason }}{% elif g.account_id %}{{ g.account_match }}{% elif g.account_match == "manual" %}left unassigned by you{% else %}couldn't tell — pick one{% endif %}
               </span>
             </form>
           {% endif %}
@@ -186,35 +210,6 @@
               {% endif %}
               {% if f.original_url %}<a href="{{ f.original_url }}" target="_blank" class="muted" style="font-size:12px; margin-left:8px;" title="The file exactly as received (still password-locked)">View original</a>{% endif %}
               {% if f.unlock_status %}<div class="muted" style="font-size:12px; margin-top:2px;">🔓 {{ f.unlock_status }}</div>{% endif %}
-              {% if g.email_id and account_choices %}
-                <form method="POST" action="{{ url_for('move_mail_attachment_to_account', email_id=g.email_id, filename=f.name) }}"
-                      style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:4px;">
-                  <select name="account" required style="font-size:12px; padding:5px 8px; max-width:300px;">
-                    <option value="" disabled {% if not g.account_id and not g.suggested_target %}selected{% endif %}>Move to…</option>
-                    <optgroup label="Bank accounts (Statements)">
-                      {% for c in account_choices %}
-                        <option value="bank_accounts:{{ c.id }}" {% if g.account_id == c.id and not g.suggested_target %}selected{% endif %}>{{ c.text }}</option>
-                      {% endfor %}
-                    </optgroup>
-                    {% if move_targets.investments %}
-                      <optgroup label="Investments">
-                        {% for t in move_targets.investments %}<option value="investments:{{ t.id }}">{{ t.text }}</option>{% endfor %}
-                      </optgroup>
-                    {% endif %}
-                    <optgroup label="Income tax">
-                      <option value="new_tax_communication:0" {% if g.suggested_target == "new_tax_communication:0" %}selected{% endif %}>➕ New tax communication from this email</option>
-                      {% for t in move_targets.tax_records %}<option value="tax_records:{{ t.id }}">{{ t.text }}</option>{% endfor %}
-                    </optgroup>
-                    {% if move_targets.retirement %}
-                      <optgroup label="Retirement accounts">
-                        {% for t in move_targets.retirement %}<option value="retirement:{{ t.id }}" {% if g.suggested_target == "retirement:" ~ t.id %}selected{% endif %}>{{ t.text }}</option>{% endfor %}
-                      </optgroup>
-                    {% endif %}
-                  </select>
-                  <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;"
-                          title="Moves the file (and its kept original, password note and date) onto that record's attachments">Move</button>
-                </form>
-              {% endif %}
               {% if g.email_id %}
                 <form method="POST" action="{{ url_for('update_mail_attachment_password', email_id=g.email_id, filename=f.name) }}"
                       style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
