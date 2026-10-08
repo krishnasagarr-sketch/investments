@@ -335,7 +335,13 @@ def _inject_pending_draft_count():
         ).fetchone()["c"]
     except sqlite3.OperationalError:
         open_notices = 0
-    return {"pending_draft_count": count, "open_tax_notice_count": open_notices}
+    try:
+        pending_statement = get_db().execute(
+            "SELECT COUNT(*) AS c FROM statement_entries WHERE status = 'pending'").fetchone()["c"]
+    except sqlite3.OperationalError:
+        pending_statement = 0
+    return {"pending_draft_count": count, "open_tax_notice_count": open_notices,
+            "pending_statement_count": pending_statement}
 
 
 def init_db():
@@ -597,6 +603,28 @@ def init_db():
             amount REAL NOT NULL,
             matched_deposit_id INTEGER REFERENCES deposits(id),
             imported_at TEXT NOT NULL
+        )
+    """)
+
+    # Transactions read from bank-statement PDFs, waiting for a decision: each becomes an Other Income
+    # or Expenses entry (so it reaches the Income & Expenditure statement), an Interest Check line,
+    # or is ignored. result_ref names what was created so it can be undone.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS statement_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bank_account_id INTEGER REFERENCES bank_accounts(id),
+            source_kind TEXT NOT NULL DEFAULT '',
+            source_item_id INTEGER,
+            source_filename TEXT NOT NULL DEFAULT '',
+            txn_date TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL,
+            direction TEXT NOT NULL CHECK(direction IN ('credit','debit')),
+            balance REAL,
+            suggested TEXT NOT NULL DEFAULT 'ignore',
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','added','ignored')),
+            result_ref TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
         )
     """)
 
@@ -5114,6 +5142,8 @@ def list_saved_attachments(db) -> list:
                     "original_url": _original_url(db, "mail_scan", email_id, f.name) if email_id else None,
                     "draft_url": url_for("draft_deposit_from_attachment", kind="mail_scan", item_id=email_id, filename=f.name)
                                  if email_id and f.suffix.lower() == ".pdf" else None,
+                    "statement_url": url_for("read_statement_from_attachment", kind="mail_scan", item_id=email_id, filename=f.name)
+                                     if email_id and f.suffix.lower() == ".pdf" else None,
                 }
                 for f in files
             ],
@@ -6815,7 +6845,8 @@ def haiku_available() -> bool:
     return ANTHROPIC_AVAILABLE and bool(_anthropic_api_key())
 
 
-def _haiku_json(system_prompt: str, user_content: str, schema: dict, max_tokens: int = 600, model: str = None):
+def _haiku_json(system_prompt: str, user_content: str, schema: dict, max_tokens: int = 600, model: str = None,
+                timeout: float = 30.0):
     """One structured-output call (Haiku unless `model` says otherwise) ->
     (parsed JSON object, None) or (None, plain-English reason it couldn't be
     done)."""
@@ -6825,7 +6856,7 @@ def _haiku_json(system_prompt: str, user_content: str, schema: dict, max_tokens:
     if not key:
         return None, "no ANTHROPIC_API_KEY is set"
     try:
-        client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=1)
+        client = anthropic.Anthropic(api_key=key, timeout=timeout, max_retries=1)
         resp = client.messages.create(
             model=model or HAIKU_MODEL, max_tokens=max_tokens, system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
@@ -7223,12 +7254,13 @@ DRAFT_TEXT_CHARS = 12000
 DRAFT_PDF_MAX_BYTES = 8 * 1024 * 1024  # largest PDF handed to the model whole
 
 
-def _pdf_layout_text(reader, pages: int = 12) -> str:
-    """The PDF's text with its layout kept, so a table's columns stay apart
-    (plain extraction can run neighbouring cells together: "38063" and
-    "30000" became "3806330000"). Wide gaps are marked " | "."""
-    out = []
+def _pdf_layout_pages(reader, pages: int = 12) -> list:
+    """The text of each page (up to `pages`), layout kept, so a table's columns stay apart
+    (plain extraction can run neighbouring cells together: "38063" and "30000" became
+    "3806330000"). Wide gaps are marked " | "."""
+    result = []
     for page in reader.pages[:pages]:
+        out = []
         try:
             raw = page.extract_text(extraction_mode="layout")
         except Exception:
@@ -7238,7 +7270,12 @@ def _pdf_layout_text(reader, pages: int = 12) -> str:
             line = re.sub(r"[ \t]{2}", " ", line)
             if line:
                 out.append(line)
-    return "\n".join(out)
+        result.append("\n".join(out))
+    return result
+
+
+def _pdf_layout_text(reader, pages: int = 12) -> str:
+    return "\n".join(t for t in _pdf_layout_pages(reader, pages) if t)
 
 
 def _attachment_content(db, kind: str, item_id: int, filename: str, target: Path):
@@ -7510,6 +7547,336 @@ def draft_deposit_from_attachment(kind, item_id, filename):
     flash(f"Draft #{cur.lastrowid} created from {filename}. Check it before approving."
           + (f" Couldn't find: {', '.join(missing)}." if missing else ""), "info")
     return redirect(url_for("draft_deposits_page") + f"#draft-{cur.lastrowid}")
+
+
+# ---------- Bank statements -> Income & Expenditure ----------
+# (key, label, what it becomes). Kept in this order in every picker.
+STATEMENT_CHOICES = (
+    [("salary", "Income — Salary"), ("rent", "Income — Rent"), ("business", "Income — Business"),
+     ("savings_interest", "Income — Savings interest"), ("other_income", "Income — Other"),
+     ("fd_interest", "FD interest → Interest Check")]
+    + [(f"exp_{c}", f"Expense — {c}") for c in EXPENSE_CATEGORIES]
+    + [("ignore", "Ignore (not income or spending)")])
+STATEMENT_KEYS = [k for k, _ in STATEMENT_CHOICES]
+_STATEMENT_INCOME = {"salary": "Salary", "rent": "Rent", "business": "Business",
+                     "savings_interest": "Other", "other_income": "Other"}
+STATEMENT_MODEL_CHUNK_CHARS = 7000
+STATEMENT_MAX_PAGES = 60
+STATEMENT_MAX_CHUNKS = 12
+
+STATEMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_account_statement": {"type": "boolean"},
+        "transactions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "description": {"type": "string"},
+                    "amount": {"type": "number"},
+                    "direction": {"type": "string", "enum": ["credit", "debit"]},
+                    "balance": _nullable("number"),
+                    "category": {"type": "string", "enum": STATEMENT_KEYS},
+                },
+                "required": ["date", "description", "amount", "direction", "balance", "category"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["is_account_statement", "transactions"],
+    "additionalProperties": False,
+}
+
+STATEMENT_PROMPT = f"""You read an Indian bank account statement and list its transactions.
+
+Return every transaction line of the savings/current account in the text, in the order they appear: the date as
+YYYY-MM-DD (statement dates are usually DD/MM/YY or DD/MM/YYYY — day first), the narration as printed (shortened
+only if very long), the amount as a POSITIVE number, direction "credit" (money in: deposit/credit column) or
+"debit" (money out: withdrawal/debit column), and the running balance after it if printed (else null).
+Rules:
+- Skip opening/closing balance lines, totals, page headers and footers, summaries, credit-card or loan sections,
+  and anything that is not a transaction of the account. If the document is not a bank account statement, set
+  is_account_statement to false and return no transactions. If several accounts are listed, use the one whose
+  number matches the hint, otherwise the first.
+- Take the debit and credit columns carefully: use the running balance (it goes up for a credit, down for a
+  debit) to be sure.
+- A page may continue a table started earlier; never invent lines.
+Give each transaction a category:
+  salary (employer pay), rent (rent received), business (business or professional receipts),
+  savings_interest (interest credited on this savings account), fd_interest (interest credited from a fixed/
+  recurring deposit, TDR, RD), other_income (dividends, other genuine income),
+  exp_Household (groceries, shopping, restaurants, UPI to people/merchants, cash withdrawals, rent paid),
+  exp_Medical, exp_Education (school/college fees), exp_Travel (flights, trains, hotels, fuel on trips),
+  exp_Utilities (electricity, water, gas, mobile, broadband, DTH), exp_Insurance (premiums),
+  exp_Other (bank charges, loan EMIs, credit-card bill payments, anything spending that fits nothing else),
+  ignore — money that is not income or spending: transfers between a person's own accounts or to family,
+  deposits to / maturities of fixed or recurring deposits (the principal), investments (mutual funds, shares,
+  PPF, NPS), refunds and reversals, cash deposited, taxes paid.
+When unsure whether something is income or spending, choose ignore."""
+
+
+def _statement_chunks(pages: list) -> list:
+    chunks, cur = [], ""
+    for t in pages:
+        if cur and len(cur) + len(t) > STATEMENT_MODEL_CHUNK_CHARS:
+            chunks.append(cur)
+            cur = ""
+        cur += ("\n" if cur else "") + t
+    if cur.strip():
+        chunks.append(cur)
+    return chunks
+
+
+def _fix_statement_directions(rows: list) -> int:
+    """The running balance says whether each line was a credit or a debit; where it contradicts the
+    column the model chose (the usual slip), follow the balance. Works in whichever order the
+    statement lists lines (oldest first, or newest first); does nothing unless the balances fit
+    for most lines. Returns how many it corrected."""
+    def score(seq):
+        ok = 0
+        for prev, cur in zip(seq, seq[1:]):
+            if prev["balance"] is None or cur["balance"] is None:
+                continue
+            delta = round(cur["balance"] - prev["balance"], 2)
+            ok += abs(abs(delta) - cur["amount"]) < 0.02
+        return ok
+    pairs = max(len(rows) - 1, 1)
+    forward, backward = score(rows), score(rows[::-1])
+    if max(forward, backward) < 0.6 * pairs:
+        return 0
+    seq = rows if forward >= backward else rows[::-1]
+    fixed = 0
+    for prev, cur in zip(seq, seq[1:]):
+        if prev["balance"] is None or cur["balance"] is None:
+            continue
+        delta = round(cur["balance"] - prev["balance"], 2)
+        if abs(abs(delta) - cur["amount"]) < 0.02:
+            want = "credit" if delta > 0 else "debit"
+            if cur["direction"] != want:
+                cur["direction"] = want
+                fixed += 1
+    return fixed
+
+
+def read_statement_transactions(pdf_bytes: bytes, hint: str):
+    """(rows, notes, None) read from a statement PDF, or (None, None, reason). Each row is
+    {date, description, amount, direction, balance, category}."""
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages = [t for t in _pdf_layout_pages(reader, STATEMENT_MAX_PAGES) if t.strip()]
+    except Exception:
+        return None, None, "that PDF couldn't be read"
+    chunks = _statement_chunks(pages)
+    if not chunks:
+        return None, None, "no readable text in that PDF (a scanned image?)"
+    notes = []
+    if len(chunks) > STATEMENT_MAX_CHUNKS:
+        chunks = chunks[:STATEMENT_MAX_CHUNKS]
+        notes.append(f"only the first {STATEMENT_MAX_CHUNKS * STATEMENT_MODEL_CHUNK_CHARS // 1000}k characters were read")
+    rows, any_statement = [], False
+    for n, chunk in enumerate(chunks, 1):
+        result, why = _haiku_json(
+            STATEMENT_PROMPT, f"<account_hint>{hint}</account_hint>\n<statement part=\"{n} of {len(chunks)}\">\n{chunk}\n</statement>",
+            STATEMENT_SCHEMA, max_tokens=12000, model=EXTRACT_MODEL, timeout=180.0)
+        if result is None:
+            return None, None, why
+        any_statement = any_statement or result.get("is_account_statement")
+        for t in result.get("transactions") or []:
+            try:
+                d = date.fromisoformat(str(t["date"]).strip()[:10])
+                amount = round(abs(float(t["amount"])), 2)
+            except (KeyError, TypeError, ValueError):
+                notes.append("a line with an unreadable date or amount was skipped")
+                continue
+            if amount <= 0 or not (2000 <= d.year <= 2100):
+                continue
+            rows.append({"date": d.isoformat(), "description": re.sub(r"\s+", " ", str(t["description"])).strip()[:200],
+                         "amount": amount, "direction": t["direction"],
+                         "balance": t["balance"] if isinstance(t.get("balance"), (int, float)) else None,
+                         "category": t["category"] if t["category"] in STATEMENT_KEYS else "ignore"})
+    if not any_statement and not rows:
+        return None, None, "this doesn't look like a bank account statement"
+    fixed = _fix_statement_directions(rows)
+    if fixed:
+        notes.append(f"{fixed} line(s) had their credit/debit corrected from the running balance")
+    # a credit can only be income; a debit only spending (or ignored)
+    for r in rows:
+        if r["direction"] == "credit" and r["category"].startswith("exp_"):
+            r["category"] = "ignore"
+        elif r["direction"] == "debit" and r["category"] in set(_STATEMENT_INCOME) | {"fd_interest"}:
+            r["category"] = "ignore"
+    return rows, sorted(set(notes)), None
+
+
+@app.route("/attachments/<kind>/<int:item_id>/<filename>/read-statement", methods=["POST"])
+def read_statement_from_attachment(kind, item_id, filename):
+    """Reads a saved bank-statement PDF with Claude and lists its transactions on the Statement
+    Entries tab, each with a suggested category, to be checked before anything reaches the Income &
+    Expenditure statement. Nothing real is created here."""
+    db = get_db()
+    back = (url_for("mail_scan_page") + "#attachments") if kind == "mail_scan" else (
+        _attachments_page_url(kind, item_id) if kind in ATTACHMENT_ROUTES else url_for("dashboard"))
+    if kind == "mail_scan":
+        row = db.execute("SELECT bank_account_id FROM processed_emails WHERE id = ?", (item_id,)).fetchone()
+        account_id = row["bank_account_id"] if row else None
+    elif kind == "bank_accounts":
+        account_id = item_id
+    else:
+        flash("Transactions can only be read from a bank statement saved on Mail Scan or on a bank account.", "error")
+        return redirect(back)
+    account = next((a for a in list_bank_accounts(db) if a["id"] == account_id), None)
+    if account is None:
+        flash("Sort this email into a bank account first (the Bank account picker above its files) — "
+              "the transactions need an account to belong to.", "error")
+        return redirect(back)
+    if not account["depositor_id"]:
+        flash("That bank account isn't linked to a depositor — set one on the Bank Accounts tab first.", "error")
+        return redirect(back)
+    target = _attachment_file_path(db, kind, item_id, filename)
+    if target is None or target.suffix.lower() != ".pdf":
+        flash("Only a saved PDF can be read for transactions.", "error")
+        return redirect(back)
+    if db.execute("SELECT 1 FROM statement_entries WHERE status = 'pending' AND source_kind = ? AND source_item_id = ? "
+                  "AND source_filename = ?", (kind, item_id, filename)).fetchone():
+        flash("Transactions from this file are already waiting on the Statement Entries tab.", "info")
+        return redirect(url_for("statement_entries_page"))
+
+    text, pdf_bytes, why = _attachment_content(db, kind, item_id, filename, target)
+    if text is None:
+        flash(f"Couldn't read {filename}: {why}.", "error")
+        return redirect(back)
+    hint = f"{account['bank_name']} account {account['account_label'] or '(number not recorded)'}, holder {account['depositor_name'] or ''}"
+    rows, notes, why = read_statement_transactions(pdf_bytes, hint)
+    if rows is None:
+        flash(f"Couldn't read {filename} with Claude: {why}.", "error")
+        return redirect(back)
+
+    # Lines already read from an overlapping statement aren't added again (counted, because two
+    # identical lines on one day are possible).
+    have = {}
+    for e in db.execute("SELECT txn_date, description, amount, direction, balance FROM statement_entries "
+                        "WHERE bank_account_id = ?", (account_id,)):
+        k = (e["txn_date"], e["description"], e["amount"], e["direction"], e["balance"])
+        have[k] = have.get(k, 0) + 1
+    added = skipped = 0
+    now = date.today().isoformat()
+    for r in rows:
+        k = (r["date"], r["description"], r["amount"], r["direction"], r["balance"])
+        if have.get(k, 0) > 0:
+            have[k] -= 1
+            skipped += 1
+            continue
+        db.execute(
+            """INSERT INTO statement_entries (bank_account_id, source_kind, source_item_id, source_filename, txn_date,
+               description, amount, direction, balance, suggested, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (account_id, kind, item_id, filename, r["date"], r["description"], r["amount"], r["direction"],
+             r["balance"], r["category"], now))
+        added += 1
+    db.commit()
+    msg = f"Read {added} transaction(s) from {filename}"
+    if skipped:
+        msg += f" ({skipped} already read from an earlier statement were left out)"
+    flash(msg + ". Check the suggested categories, then add them." + (" Note: " + "; ".join(notes) + "." if notes else ""), "info")
+    return redirect(url_for("statement_entries_page") + f"?account_id={account_id}")
+
+
+@app.route("/statement-entries")
+def statement_entries_page():
+    db = get_db()
+    account_id = request.args.get("account_id", type=int)
+    q = ("SELECT e.*, b.name AS bank_name, ba.account_label, d.name AS depositor_name FROM statement_entries e "
+         "JOIN bank_accounts ba ON ba.id = e.bank_account_id JOIN banks b ON b.id = ba.bank_ref_id "
+         "LEFT JOIN depositors d ON d.id = ba.depositor_id WHERE e.status = 'pending'")
+    params = []
+    if account_id:
+        q += " AND e.bank_account_id = ?"
+        params.append(account_id)
+    q += " ORDER BY e.bank_account_id, e.source_filename, e.txn_date, e.id"
+    groups = {}
+    for e in db.execute(q, params).fetchall():
+        g = groups.setdefault((e["bank_account_id"], e["source_filename"]), {
+            "account": f"{e['bank_name']}" + (f" · {e['account_label']}" if e["account_label"] else "")
+                       + (f" · {e['depositor_name']}" if e["depositor_name"] else ""),
+            "filename": e["source_filename"], "kind": e["source_kind"], "item_id": e["source_item_id"],
+            "account_id": e["bank_account_id"], "rows": [], "credits": 0.0, "debits": 0.0, "view_url": None})
+        g["rows"].append(e)
+        g["credits" if e["direction"] == "credit" else "debits"] += e["amount"]
+    for g in groups.values():
+        if g["kind"] in ATTACHMENT_ROUTES or g["kind"] == "mail_scan":
+            if _attachment_file_path(db, g["kind"], g["item_id"], g["filename"]) is not None:
+                g["view_url"] = url_for("preview_attachment", kind=g["kind"], item_id=g["item_id"], filename=g["filename"])
+    recent = db.execute(
+        "SELECT e.*, b.name AS bank_name FROM statement_entries e JOIN bank_accounts ba ON ba.id = e.bank_account_id "
+        "JOIN banks b ON b.id = ba.bank_ref_id WHERE e.status = 'added' ORDER BY e.id DESC LIMIT 100").fetchall()
+    return render_template("statement_entries.html", active_tab="statement_entries", wide_page=True,
+                           groups=list(groups.values()), choices=STATEMENT_CHOICES, recent=recent,
+                           labels=dict(STATEMENT_CHOICES), account_id=account_id)
+
+
+def _apply_statement_entry(db, e, key: str):
+    """Turns one pending statement line into what `key` says; returns (status, result_ref)."""
+    acct = db.execute("SELECT depositor_id, bank_ref_id FROM bank_accounts WHERE id = ?", (e["bank_account_id"],)).fetchone()
+    note = (("Savings interest — " if key == "savings_interest" else "") + e["description"])[:200] + " (bank statement)"
+    if key in _STATEMENT_INCOME and e["direction"] == "credit":
+        cur = db.execute("INSERT INTO other_income (depositor_id, category, income_date, amount, note) VALUES (?,?,?,?,?)",
+                         (acct["depositor_id"], _STATEMENT_INCOME[key], e["txn_date"], e["amount"], note))
+        return "added", f"other_income:{cur.lastrowid}"
+    if key.startswith("exp_") and e["direction"] == "debit" and key[4:] in EXPENSE_CATEGORIES:
+        cur = db.execute("INSERT INTO expenses (depositor_id, category, expense_date, amount, note) VALUES (?,?,?,?,?)",
+                         (acct["depositor_id"], key[4:], e["txn_date"], e["amount"], note))
+        return "added", f"expenses:{cur.lastrowid}"
+    if key == "fd_interest" and e["direction"] == "credit":
+        cur = db.execute("INSERT INTO interest_statement_lines (depositor_id, bank_ref_id, stmt_date, description, amount, imported_at) "
+                         "VALUES (?,?,?,?,?,?)", (acct["depositor_id"], acct["bank_ref_id"], e["txn_date"], e["description"],
+                                                  e["amount"], date.today().isoformat()))
+        return "added", f"interest_statement_lines:{cur.lastrowid}"
+    return "ignored", ""
+
+
+@app.route("/statement-entries/apply", methods=["POST"])
+def apply_statement_entries():
+    """Applies the categories chosen on the review page: each line left on 'decide later' stays,
+    'ignore' marks it ignored, anything else creates the matching entry."""
+    db = get_db()
+    added = ignored = 0
+    for e in db.execute("SELECT * FROM statement_entries WHERE status = 'pending'").fetchall():
+        key = request.form.get(f"cat_{e['id']}")
+        if key is None or key == "later" or key not in STATEMENT_KEYS:
+            continue
+        status, ref = _apply_statement_entry(db, e, key)
+        db.execute("UPDATE statement_entries SET status = ?, result_ref = ?, suggested = ? WHERE id = ?",
+                   (status, ref, key, e["id"]))
+        added += status == "added"
+        ignored += status == "ignored"
+    db.commit()
+    flash(f"Added {added} to Income & Expenditure / Interest Check; ignored {ignored}.", "info")
+    return redirect(url_for("statement_entries_page", account_id=request.form.get("account_id", type=int)))
+
+
+@app.route("/statement-entries/<int:entry_id>/undo", methods=["POST"])
+def undo_statement_entry(entry_id):
+    """Takes back an added line: removes the entry it created and puts it back to pending."""
+    db = get_db()
+    e = db.execute("SELECT * FROM statement_entries WHERE id = ?", (entry_id,)).fetchone()
+    if e and e["result_ref"]:
+        table, _, rid = e["result_ref"].partition(":")
+        if table in ("other_income", "expenses", "interest_statement_lines") and rid.isdigit():
+            db.execute(f"DELETE FROM {table} WHERE id = ?", (int(rid),))
+        db.execute("UPDATE statement_entries SET status = 'pending', result_ref = '' WHERE id = ?", (entry_id,))
+        db.commit()
+    return redirect(url_for("statement_entries_page"))
+
+
+@app.route("/statement-entries/discard", methods=["POST"])
+def discard_statement_entries():
+    """Throws away every pending line read from one file (e.g. after a poor reading), so it can be read again."""
+    db = get_db()
+    db.execute("DELETE FROM statement_entries WHERE status = 'pending' AND bank_account_id = ? AND source_filename = ?",
+               (request.form.get("account_id", type=int), request.form.get("filename", "")))
+    db.commit()
+    return redirect(url_for("statement_entries_page"))
 
 
 def move_attachment(db, kind: str, item_id: int, filename: str, dest_kind: str, dest_id: int):
@@ -9227,6 +9594,7 @@ _RESET_LABELS = {
     "bank_accounts": "Bank accounts", "tax_records": "Tax records", "processed_emails": "Mail Scan emails looked at",
     "deposit_drafts": "Draft deposits", "other_income": "Other income entries", "expenses": "Expenses",
     "family_gifts": "Gifts", "portfolio_tags": "Tags", "interest_statement_lines": "Interest Check lines",
+    "statement_entries": "Bank statement transactions",
 }
 _RESET_KEEPABLE = {"keep_login": "auth_user", "keep_notifications": "notification_settings", "keep_senders": "mail_sender_rules"}
 

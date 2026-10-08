@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Statement Entries — Fixed Deposit Manager{% endblock %}
+
+{% block header_action %}
+  <a href="{{ url_for('mail_scan_page') }}" class="btn secondary">← Back to Mail Scan</a>
+{% endblock %}
+
+{% block content %}
+
+  <div class="card" style="max-width:760px;">
+    <h2 style="font-size:16px; margin:0 0 4px;">Transactions from bank statements</h2>
+    <p class="field-hint" style="margin-bottom:0;">
+      Press <strong>Read transactions</strong> beside a saved bank-statement PDF on
+      <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> (the email must be sorted into a bank account first) and its
+      lines are listed here with a suggested category. Nothing counts until you press <strong>Add</strong>: money in becomes
+      an <a href="{{ url_for('other_income_page') }}">Other Income</a> entry, money out an
+      <a href="{{ url_for('expenses_page') }}">Expenses</a> entry (so both reach the
+      <a href="{{ url_for('statement_page') }}">I&amp;E Statement</a>), FD interest credits go to
+      <a href="{{ url_for('reconcile_interest_page') }}">Interest Check</a> (deposit interest is already counted from the
+      deposits themselves), and anything that isn't income or spending — transfers, FD bookings, investments — is ignored.
+      It can misread a line, so look through the suggestions; a line left on <em>Decide later</em> stays here. Each added
+      line can be undone below.
+    </p>
+  </div>
+
+  {% for g in groups %}
+  <div class="card">
+    <form method="POST" action="{{ url_for('apply_statement_entries') }}">
+      <input type="hidden" name="account_id" value="{{ account_id or '' }}">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+        <h2 style="font-size:16px; margin:0;">{{ g.account }}</h2>
+        <span class="muted" style="font-size:13px;">
+          {% if g.view_url %}<a href="{{ g.view_url }}" target="_blank">{{ g.filename }}</a>{% else %}{{ g.filename }}{% endif %}
+          · {{ g.rows|length }} lines · in {{ g.credits|money }} · out {{ g.debits|money }}
+        </span>
+      </div>
+      <div class="table-scroll" style="margin-top:12px;">
+      <table>
+        <thead><tr><th>Date</th><th>Description</th><th style="text-align:right;">In</th><th style="text-align:right;">Out</th><th>Category</th></tr></thead>
+        <tbody>
+          {% for e in g.rows %}
+          <tr>
+            <td style="white-space:nowrap;">{{ e.txn_date }}</td>
+            <td>{{ e.description }}</td>
+            <td style="text-align:right;">{% if e.direction == 'credit' %}{{ e.amount|money }}{% endif %}</td>
+            <td style="text-align:right;">{% if e.direction == 'debit' %}{{ e.amount|money }}{% endif %}</td>
+            <td>
+              <select name="cat_{{ e.id }}" style="min-width:210px;">
+                <option value="later">— Decide later —</option>
+                {% for key, label in choices %}
+                  {% if (e.direction == 'credit' and not key.startswith('exp_')) or (e.direction == 'debit' and (key.startswith('exp_') or key == 'ignore')) %}
+                    <option value="{{ key }}" {% if e.suggested == key %}selected{% endif %}>{{ label }}</option>
+                  {% endif %}
+                {% endfor %}
+              </select>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <div style="display:flex; gap:10px; margin-top:14px; align-items:center;">
+        <button type="submit" class="btn">Add these as chosen</button>
+        <button type="submit" class="btn link" formaction="{{ url_for('discard_statement_entries') }}" name="filename" value="{{ g.filename }}"
+                onclick="this.form.account_id.value='{{ g.account_id }}'" data-confirm data-confirm-label="Discard these lines?"
+                title="Throws away the lines still waiting from this file, so it can be read again">Discard these lines</button>
+      </div>
+    </form>
+  </div>
+  {% else %}
+  <div class="card">
+    <div class="empty-state"><p>Nothing waiting. Open a bank statement under Saved attachments on the <a href="{{ url_for('mail_scan_page') }}">Mail Scan</a> tab and press <strong>Read transactions</strong>.</p></div>
+  </div>
+  {% endfor %}
+
+  {% if recent %}
+  <div class="card">
+    <h2 style="font-size:16px; margin:0 0 6px;">Recently added</h2>
+    <div class="table-scroll sticky-last">
+    <table>
+      <thead><tr><th>Date</th><th>Account</th><th>Description</th><th style="text-align:right;">Amount</th><th>Went to</th><th></th></tr></thead>
+      <tbody>
+        {% for e in recent %}
+        <tr>
+          <td style="white-space:nowrap;">{{ e.txn_date }}</td>
+          <td>{{ e.bank_name }}</td>
+          <td>{{ e.description }}</td>
+          <td style="text-align:right;">{{ e.amount|money }}{{ " in" if e.direction == "credit" else " out" }}</td>
+          <td>{{ labels.get(e.suggested, e.suggested) }}</td>
+          <td><form class="inline" method="POST" action="{{ url_for('undo_statement_entry', entry_id=e.id) }}">
+            <button type="submit" class="btn link" data-confirm data-confirm-label="Undo?">Undo</button></form></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+
+{% endblock %}

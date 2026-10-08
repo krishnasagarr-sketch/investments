@@ -67,7 +67,7 @@ if their library is missing (checked once at startup, never crashes a page):
 | Excel export (Deposits, Income & Expenditure statement) | `openpyxl` | Export Excel button is hidden |
 | Live stock/mutual fund prices (Investments) | `yfinance` | Investments tab shows a banner; holdings still list, just unpriced |
 | Unlocking password-protected PDF attachments | `pypdf` (+ `cryptography` for AES) | A protected PDF's unlock page says so and offers the file as saved |
-| Claude features: reading a bank's password note (Haiku), drafting a deposit from a receipt (Sonnet) | `anthropic` + `ANTHROPIC_API_KEY` | Unlocking falls back to the built-in regex reader; "Create draft FD" says no key is set |
+| Claude features: reading a bank's password note (Haiku), drafting a deposit from a receipt and reading a bank statement's transactions (Sonnet) | `anthropic` + `ANTHROPIC_API_KEY` | Unlocking falls back to the built-in regex reader; "Create draft FD" says no key is set |
 
 This matters most on Android/iOS builds, which install a smaller dependency set — see
 [Mobile builds](#mobile-builds).
@@ -501,6 +501,9 @@ Pick a financial year (labelled with its matching assessment year, e.g. **FY 202
 
 Exports to PDF and Excel. The current (in-progress) year shows figures to date.
 
+Other Income and Expenses entries can also be generated from your bank statements — see [Income &
+Expenditure from bank statements](#income--expenditure-from-bank-statements).
+
 ## Tax estimate
 
 Pick a depositor and financial year for a quick estimate — FD/RD interest (excluding
@@ -735,6 +738,31 @@ reference (it then no longer appears in Mail Scan's list); rejecting the draft l
 `ANTHROPIC_API_KEY` and, like the password note, **sends the document's text to Anthropic** — only
 when you click the button. It can misread; check every field against the document.
 
+### Income & Expenditure from bank statements
+
+A saved bank-statement **PDF** (statements are PDF-only) can fill the [Income & Expenditure
+statement](#income--expenditure-statement) for you. Once its email is sorted into a bank account, press
+**Read transactions** beside the file (a locked PDF is unlocked first). Claude **Sonnet** reads the statement
+in page-sized pieces (up to 60 pages; it can take a minute) and every transaction lands on the **Statement
+Entries** tab — with a suggested category — as **pending**. Nothing counts until you press **Add these as
+chosen**:
+
+- money **in** becomes an *Other Income* entry (Salary, Rent, Business, Savings interest or Other);
+- money **out** becomes an *Expenses* entry (Household, Medical, Education, Travel, Utilities, Insurance, Other);
+- **FD interest credits** go to [Interest Check](#interest-check) as statement lines (deposit interest is already
+  counted in the statement from the deposits themselves, so adding it as income would count it twice);
+- anything that isn't income or spending — transfers between your own accounts, FD bookings and maturities,
+  investments, refunds — is **ignored**; a line left on *Decide later* stays on the tab.
+
+The entries belong to the bank account's depositor, carry the narration as their note, and can be **undone**
+from the *Recently added* list (the entry it created is removed and the line goes back to pending). The model
+is told to use the running balance to tell credits from debits, and wherever the balances contradict its
+choice the app follows the balance (and says how many it corrected). A statement that overlaps an earlier one
+doesn't add lines twice (lines already read from the same account are matched on date, narration, amount and
+balance), and **Discard these lines** throws away what's still pending from a file so it can be read again.
+A categorisation is only a suggestion — look through before adding. Needs `ANTHROPIC_API_KEY` and **sends
+the statement's text (account number, transactions, balances) to Anthropic**, only when you press the button.
+
 ## Retirement (PPF / EPF / NPS)
 
 PPF, EPF, and NPS rates are government-notified and change over time, with rules (minimum
@@ -804,6 +832,8 @@ run Mail Scan (which talks to your mail provider directly):
 
 - *Opening a protected PDF* sends Anthropic (Haiku) the bank's **email text** — or the saved password
   note — up to 6,000 characters. Never the password, and never the name/date of birth/PAN used to build it.
+- *Read transactions* sends Anthropic (Sonnet) a bank statement's **text** (up to 60 pages, in pieces) — account
+  number, narrations and balances — only when you click the button.
 - *Create draft FD* sends Anthropic (Sonnet) the PDF's **text** (up to 12,000 characters from the first
   12 pages) and, only if that read comes back missing the essentials, the **PDF itself** (up to 8 MB) — and
   only when you click the button. A receipt carries your name, address, PAN and account numbers.
@@ -840,7 +870,7 @@ deposit — see [Reinvesting, closing, and History](#reinvesting-closing-and-his
 `metal_prices`, `investments` + `investment_sales` (realised sales logged against a holding —
 see [Selling a holding, and Capital Gains](#selling-a-holding-and-capital-gains)),
 `retirement_accounts` + `retirement_contributions`, `other_income`, `expenses`, `family_gifts`,
-`portfolio_tags`, `interest_statement_lines` (Interest Check), `bank_accounts` ([Bank
+`portfolio_tags`, `interest_statement_lines` (Interest Check), `statement_entries` (lines read from bank statements, pending or decided — see above), `bank_accounts` ([Bank
 Accounts](#bank-accounts)), `attachment_notes` (per-file password note, document date, unlock status),
 `tax_records` ([Tax Filings](#tax-filings)), `mail_sender_rules` (your recognised senders), `moved_attachments` (hashes of files moved or deleted out of Mail Scan, so a re-scan doesn't bring
 them back), `processed_emails` + `deposit_drafts` (Mail Scan & Draft Deposits — see above;

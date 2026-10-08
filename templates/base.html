@@ -348,6 +348,7 @@
     <a href="{{ url_for('reconcile_interest_page') }}" class="{% if active_tab == 'reconcile_interest' %}active{% endif %}">Interest Check</a>
     <a href="{{ url_for('mail_scan_page') }}" class="{% if active_tab == 'mail_scan' %}active{% endif %}">Mail Scan</a>
     <a href="{{ url_for('draft_deposits_page') }}" class="{% if active_tab == 'draft_deposits' %}active{% endif %}">Draft Deposits{% if pending_draft_count %} ({{ pending_draft_count }}){% endif %}</a>
+    <a href="{{ url_for('statement_entries_page') }}" class="{% if active_tab == 'statement_entries' %}active{% endif %}">Statement Entries{% if pending_statement_count %} ({{ pending_statement_count }}){% endif %}</a>
     <a href="{{ url_for('retirement_page') }}" class="{% if active_tab == 'retirement' %}active{% endif %}">Retirement</a>
     <a href="{{ url_for('backup_page') }}" class="{% if active_tab == 'backup' %}active{% endif %}">Backup</a>
   </nav>
