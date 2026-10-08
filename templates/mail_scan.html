@@ -63,12 +63,6 @@
                 title="Mail Scan files: from the email's subject/text, file name or date. Files on other pages (e.g. statements already moved to a bank account): from the file name.">Fill in the dates</button>
       </form>
     {% endif %}
-    {% if unassigned_count and account_choices %}
-      <form method="POST" action="{{ url_for('rematch_mail_accounts') }}" style="margin-top:8px;">
-        <p class="field-hint" style="margin:0 0 4px;">{{ unassigned_count }} email(s) with attachments aren't tied to a bank account yet.</p>
-        <button type="submit" class="btn secondary" style="font-size:13px;">Match them to accounts</button>
-      </form>
-    {% endif %}
     {% if total_attachments %}
       <p class="field-hint" style="margin-top:4px; margin-bottom:0;">
         {{ total_attachments }} attachment(s) saved for later processing in

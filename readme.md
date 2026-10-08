@@ -657,8 +657,9 @@ mail goes to that holder's first account (and says so); evidence split between d
 is still left for you. Every scan also re-tries mails that are still unsorted. Whatever the matcher
 can't settle is left **unsorted**: under *Saved attachments* each email has a **Bank account** picker (choose an account,
 *None of these*, or *Match automatically* to hand it back), a manual choice is remembered and never
-overridden, and **Match them to accounts** re-runs the matcher over unsorted emails (handy after
-adding an account). The unlock page pre-selects the account an email was sorted into. For mail
+overridden. There's no separate "match" button: the matcher runs as each new email is scanned, and every
+scan re-tries the emails still unsorted (so after adding a bank account, the next scan picks up what it
+now fits). The unlock page pre-selects the account an email was sorted into. For mail
 from the Income Tax Department the *Move to…* picker comes pre-set to **➕ New tax communication**
 (the taxpayer is taken from the account it was sorted into).
 

@@ -5346,16 +5346,6 @@ def fill_mail_document_dates():
     return redirect(url_for("mail_scan_page") + "#attachments")
 
 
-@app.route("/mail-scan/rematch", methods=["POST"])
-def rematch_mail_accounts():
-    n = rematch_unassigned_emails(get_db())
-    session["mail_scan_result"] = (
-        f"Matched {n} email(s) to a bank account." if n else
-        "No further emails could be matched automatically — pick an account by hand under Saved attachments."
-    )
-    return redirect(url_for("mail_scan_page"))
-
-
 @app.route("/mail-scan/attachments/<int:email_id>/<filename>/password", methods=["POST"])
 def update_mail_attachment_password(email_id, filename):
     """Edits the password hint on a Mail Scan attachment -- auto-extracted
@@ -5378,9 +5368,6 @@ def mail_scan_page():
     attachment_groups = list_saved_attachments(db)
     all_accounts = list_bank_accounts(db)
     accounts_by_id = {a["id"]: a for a in all_accounts}
-    unassigned_count = db.execute(
-        "SELECT COUNT(*) c FROM processed_emails WHERE attachments_saved > 0 AND bank_account_id IS NULL"
-    ).fetchone()["c"]
     mailbox_rows = [
         {"email": mb["email"], "primary": mb["primary"], "protocol": _mail_protocol_for(mb["email"]),
          "accounts": [_account_text(accounts_by_id[i]) for i in mb["account_ids"] if i in accounts_by_id]}
@@ -5389,7 +5376,7 @@ def mail_scan_page():
     return render_template(
         "mail_scan.html", active_tab="mail_scan",
         mail_configured=bool(mailbox_rows),
-        mailbox_rows=mailbox_rows, unassigned_count=unassigned_count,
+        mailbox_rows=mailbox_rows,
         sender_rules=db.execute("SELECT * FROM mail_sender_rules ORDER BY pattern").fetchall(),
         builtin_banks=sorted(set(MAIL_SCAN_BANK_DOMAINS.values())),
         builtin_retirement=sorted(f"{k} ({v})" for k, v in MAIL_SCAN_RETIREMENT_DOMAINS.items()),
