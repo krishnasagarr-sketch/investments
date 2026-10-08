@@ -668,7 +668,7 @@ automatically and shown under the file. The email is cut into short pieces (line
 the piece that says what the password is made of is chosen, together with the neighbouring pieces that
 complete it (the tax department's instruction plus its worked example, a note that it's in capitals); warnings
 such as "we will never ask for your password", log-in help and the *Non-individual* variant are passed over,
-and the *Individual* one is preferred. It is using the same password field every holding's own
+and the *Individual* one is preferred. It's shown in the same password field every holding's own
 Attachments page has (see [Attachments](#attachments) below); edit it if the automatic guess was
 wrong or incomplete. It's only ever set automatically when nothing's noted yet, so a manual edit
 is never overwritten by a later scan.
