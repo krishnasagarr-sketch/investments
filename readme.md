@@ -637,6 +637,15 @@ words are refused as domains or words, since that would save every friend's atta
 address at Gmail is fine. Adding a sender makes the next scan look again at emails from it that were
 skipped earlier, and a forwarded email counts by its *original* sender.
 
+**A password note for a sender.** Some mail gives no password instruction as text — Protean's NPS statements
+arrive as 16 pictures and the word "proteantech", nothing else. Give such a sender a **password note** (a field on the
+add form, and editable per row): *"Password is your date of birth in DDMMYYYY format"*. Every saved file from that
+sender that has no note yet gets it straight away, and so does each new one, but only when the email itself says
+nothing — an instruction found in an email always wins, and a note you typed on a file is never replaced. To set one for
+a **built-in** sender, add its name (`proteantech`) with the note. Unlocking reads the note when the email's text
+yields no recipe. An NPS statement's file name starts with the PRAN, so if the account number you saved on the
+Retirement tab matches it, the statement is attributed to that holder (and the unlock page offers their details).
+
 **Forwarded bank emails.** A bank email you forward to the scanned mailbox (say from a Rediffmail you
 can't scan directly) arrives *from you*, so it used to look like personal mail and its PDF was skipped.
 For a subject starting `Fw:`/`Fwd:`, the original sender is now read from the forwarded header block at

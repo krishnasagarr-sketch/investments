@@ -99,16 +99,33 @@
         <label for="sender_note">Note <span class="muted">(optional)</span></label>
         <input type="text" id="sender_note" name="note" placeholder="e.g. KFintech CAS" maxlength="100" autocomplete="off">
       </div>
+      <div class="form-group" style="margin:0; flex:1 1 100%;">
+        <label for="sender_pw">Password note <span class="muted">(optional)</span></label>
+        <input type="text" id="sender_pw" name="password_note" maxlength="300" autocomplete="off"
+               placeholder="how its PDFs open, e.g. “Password is your date of birth in DDMMYYYY” — used when the email doesn't say">
+      </div>
       <button type="submit" class="btn secondary">Add sender</button>
     </form>
+    <p class="field-hint" style="margin:6px 0 0;">
+      Some mail gives no password instruction as text (NPS statements arrive as pictures only). Give its sender a
+      <strong>password note</strong> once — to set one for a built-in sender such as NPS, add its name (<code>proteantech</code>)
+      here with the note — and every file from it gets that note, which unlocking then reads.
+    </p>
     {% if sender_rules %}
       <table style="margin-top:12px;">
-        <thead><tr><th>Recognised</th><th>Note</th><th></th></tr></thead>
+        <thead><tr><th>Recognised</th><th>Note</th><th>Password note</th><th></th></tr></thead>
         <tbody>
           {% for r in sender_rules %}
           <tr>
             <td><code>{{ r.pattern }}</code></td>
             <td>{{ r.note or "—" }}</td>
+            <td>
+              <form class="inline" method="POST" action="{{ url_for('set_mail_sender_password_note', rule_id=r.id) }}" style="display:flex; gap:4px;">
+                <input type="text" name="password_note" value="{{ r.password_note }}" maxlength="300" placeholder="none"
+                       style="font-size:12px; padding:4px 6px; min-width:200px;">
+                <button type="submit" class="btn link" style="font-size:12px;">Save</button>
+              </form>
+            </td>
             <td>
               <form class="inline" method="POST" action="{{ url_for('delete_mail_sender', rule_id=r.id) }}">
                 <button type="submit" class="btn link" data-confirm data-confirm-label="Remove?" title="Stops saving new attachments from it; ones already saved stay">Remove</button>

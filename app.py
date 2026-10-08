@@ -896,6 +896,9 @@ def init_db():
             conn.execute(f"ALTER TABLE bank_accounts ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
     # PAN and date of birth belong to the person, not to each of their bank accounts. (bank_accounts.pan /
     # .dob are left in the table, unused, from before they moved here.)
+    if "password_note" not in {r[1] for r in conn.execute("PRAGMA table_info(mail_sender_rules)")}:
+        # what to note against every file from this sender when the email itself doesn't say how to open it
+        conn.execute("ALTER TABLE mail_sender_rules ADD COLUMN password_note TEXT NOT NULL DEFAULT ''")
     for col in ("pan", "dob"):
         if col not in {r[1] for r in conn.execute("PRAGMA table_info(depositors)")}:
             conn.execute(f"ALTER TABLE depositors ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
@@ -4982,6 +4985,13 @@ def _retirement_type_for_sender(address: str) -> str:
 def _holder_from_text(db, text: str):
     """The depositor an email is about, judged from the saved bank accounts' details appearing in its text
     (PAN, name, customer ID...): the holder whose accounts score best, if that's clearly one person."""
+    digits = re.sub(r"\D", "", text or "")
+    for r in db.execute("SELECT depositor_id, account_number FROM retirement_accounts WHERE depositor_id IS NOT NULL "
+                        "AND account_number != ''").fetchall():
+        number = re.sub(r"\D", "", r["account_number"])
+        # a statement's file name carries the PRAN (or most of it)
+        if len(number) >= 8 and any(run in number or number in run for run in re.findall(r"\d{8,}", text or "")):
+            return r["depositor_id"]
     scored = [(*_account_evidence(a, text, False), a) for a in list_bank_accounts(db)]
     if not scored:
         return None
@@ -5182,9 +5192,8 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
                         if account_id:
                             db.execute("UPDATE processed_emails SET bank_account_id = ?, account_match = ? WHERE id = ?",
                                        (account_id, account_why, existing["id"]))
-                    hint = _extract_password_hint_from_text(
-                        f"{existing['subject']}\n{recheck_body}"
-                    )
+                    hint = (_extract_password_hint_from_text(f"{existing['subject']}\n{recheck_body}")
+                            or _sender_password_note(db, from_addr))
                     if hint:
                         for fname in saved_files:
                             if not get_attachment_password(db, "mail_scan", existing["id"], fname):
@@ -5227,7 +5236,7 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
                  mailbox["email"], account_id, account_why),
             )
             if saved_files:
-                hint = _extract_password_hint_from_text(f"{subject}\n{body}")
+                hint = _extract_password_hint_from_text(f"{subject}\n{body}") or _sender_password_note(db, from_addr)
                 email_row_id = cur.lastrowid
                 if hint:
                     for fname in saved_files:
@@ -7113,6 +7122,14 @@ def get_unlock_plan(db, kind: str, item_id: int, filename: str, hint: str) -> di
         if plan["components"]:
             return plan
         why = "Claude found no password recipe in the text"
+    if from_body and hint and hint != text:
+        # the email's own text said nothing usable (images only?): try the note saved against the file
+        fields, why2 = ask_haiku_for_password_fields(hint)
+        if fields:
+            plan = plan_from_haiku_fields(fields, hint)
+            plan["from_body"] = False
+            if plan["components"]:
+                return plan
     plan = parse_password_hint(hint)
     plan["source"] = "regex"
     plan["ai_note"] = why
@@ -8432,6 +8449,29 @@ def clean_sender_pattern(raw: str) -> str:
     return p
 
 
+def _sender_password_note(db, address: str) -> str:
+    """The password note you saved for a recognised sender (Mail Scan's Recognised senders), used for
+    its files when the email doesn't say how to open them (NPS statements arrive as images only)."""
+    for r in db.execute("SELECT pattern, password_note FROM mail_sender_rules WHERE password_note != '' ORDER BY id"):
+        if _sender_matches_rule(address, r["pattern"]):
+            return r["password_note"]
+    return ""
+
+
+def _apply_sender_password_note(db, pattern: str, note: str) -> int:
+    """Notes `note` against every saved mail file from this sender that has no password note yet."""
+    n = 0
+    for row in db.execute("SELECT id, from_addr FROM processed_emails WHERE attachments_saved > 0").fetchall():
+        if not _sender_matches_rule(row["from_addr"], pattern):
+            continue
+        base = _attachment_base_dir(db, "mail_scan", row["id"])
+        for f in (sorted(base.iterdir()) if base is not None and base.is_dir() else []):
+            if f.is_file() and not get_attachment_password(db, "mail_scan", row["id"], f.name):
+                set_attachment_password(db, "mail_scan", row["id"], f.name, note)
+                n += 1
+    return n
+
+
 def _sender_matches_rule(address: str, pattern: str) -> bool:
     """A full address matches exactly; a domain matches itself and its subdomains; a single word matches any
     whole label of the sender's domain (the same way the built-in bank keywords work)."""
@@ -8463,11 +8503,21 @@ def add_mail_sender():
     except ValueError as e:
         flash(str(e), "error")
         return redirect(back)
-    if db.execute("SELECT 1 FROM mail_sender_rules WHERE pattern = ?", (pattern,)).fetchone():
-        flash(f"“{pattern}” is already on the list.", "info")
+    pw_note = re.sub(r"\s+", " ", request.form.get("password_note", "")).strip()[:300]
+    existing = db.execute("SELECT id FROM mail_sender_rules WHERE pattern = ?", (pattern,)).fetchone()
+    if existing:
+        if pw_note:
+            db.execute("UPDATE mail_sender_rules SET password_note = ? WHERE id = ?", (pw_note, existing["id"]))
+            filled = _apply_sender_password_note(db, pattern, pw_note)
+            db.commit()
+            flash(f"Password note saved for “{pattern}”" + (f" and put on {filled} saved file(s) that had none." if filled else "."), "info")
+        else:
+            flash(f"“{pattern}” is already on the list.", "info")
         return redirect(back)
-    db.execute("INSERT INTO mail_sender_rules (pattern, note, created_at) VALUES (?, ?, ?)",
-               (pattern, request.form.get("note", "").strip()[:100], date.today().isoformat()))
+    db.execute("INSERT INTO mail_sender_rules (pattern, note, password_note, created_at) VALUES (?, ?, ?, ?)",
+               (pattern, request.form.get("note", "").strip()[:100], pw_note, date.today().isoformat()))
+    if pw_note:
+        _apply_sender_password_note(db, pattern, pw_note)
     skipped = [r["id"] for r in db.execute(
         "SELECT id, from_addr FROM processed_emails WHERE attachments_saved = 0 AND attachments_checked = 1").fetchall()
         if _sender_matches_rule(r["from_addr"], pattern)]
@@ -8478,6 +8528,22 @@ def add_mail_sender():
     flash(f"Mail from “{pattern}” will now have its attachments saved."
           + (f" {len(skipped)} earlier email(s) from it will be looked at again on the next scan." if skipped else ""), "info")
     return redirect(back)
+
+
+@app.route("/mail-scan/senders/<int:rule_id>/password-note", methods=["POST"])
+def set_mail_sender_password_note(rule_id):
+    """Saves (or clears) the default password note of a recognised sender, and puts it on that sender's
+    saved files that have no note yet."""
+    db = get_db()
+    rule = db.execute("SELECT * FROM mail_sender_rules WHERE id = ?", (rule_id,)).fetchone()
+    if rule:
+        note = re.sub(r"\s+", " ", request.form.get("password_note", "")).strip()[:300]
+        db.execute("UPDATE mail_sender_rules SET password_note = ? WHERE id = ?", (note, rule_id))
+        filled = _apply_sender_password_note(db, rule["pattern"], note) if note else 0
+        db.commit()
+        flash(("Password note saved" + (f" and put on {filled} saved file(s) that had none" if filled else "")) if note
+              else "Password note cleared (files already noted keep theirs)", "info")
+    return redirect(url_for("mail_scan_page") + "#senders")
 
 
 @app.route("/mail-scan/senders/<int:rule_id>/delete", methods=["POST"])
