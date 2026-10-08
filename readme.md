@@ -770,7 +770,7 @@ when you click the button. It can misread; check every field against the documen
 
 A saved bank-statement **PDF** (statements are PDF-only) can fill the [Income & Expenditure
 statement](#income--expenditure-statement) for you. Once its email is sorted into a bank account, press
-**Read transactions** beside the file (a locked PDF is unlocked first). Claude **Sonnet** reads the statement
+**Read transactions** beside the file — on Mail Scan, or later on the account's own **Statements** page after the file has been moved there (a locked PDF is unlocked first). Claude **Sonnet** reads the statement
 in page-sized pieces (up to 60 pages; it can take a minute) and every transaction lands on the **Statement
 Entries** tab — with a suggested category — as **pending**. Nothing counts until you press **Add these as
 chosen**:

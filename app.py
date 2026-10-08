@@ -9074,6 +9074,7 @@ def bank_account_attachments_page(account_id):
         view_url=lambda name: url_for("view_bank_account_attachment", account_id=account_id, filename=name),
         delete_url=lambda name: url_for("delete_bank_account_attachment", account_id=account_id, filename=name),
         password_url=lambda name: url_for("update_attachment_password", kind="bank_accounts", item_id=account_id, filename=name),
+        statement_url=lambda name: url_for("read_statement_from_attachment", kind="bank_accounts", item_id=account_id, filename=name),
         attachments=list_attachments(db, "bank_accounts", account_id),
         extensions=sorted(ATTACHMENT_EXTENSIONS),
         error=error,

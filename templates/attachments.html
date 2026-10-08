@@ -65,6 +65,12 @@
                 {{ f.name }} <span class="muted">({{ f.size }})</span>
               </a>{% if f.document_date %} <span class="muted" style="font-size:12px;" title="Document date{% if f.date_source %} — {{ f.date_source }}{% endif %}">· dated {{ f.document_date }}{% if f.date_source and f.date_source != "entered by you" %} <em>(auto)</em>{% endif %}</span>{% endif %}
               <span style="display:flex; align-items:center; gap:10px;">
+              {% if statement_url is defined and f.name.lower().endswith('.pdf') %}
+                <form class="inline" method="POST" action="{{ statement_url(f.name) }}">
+                  <button type="submit" class="btn secondary" style="font-size:12px; padding:5px 10px;"
+                          title="Read this bank statement with Claude and list its transactions to review for Income &amp; Expenditure (can take a minute)">Read transactions</button>
+                </form>
+              {% endif %}
               {% if f.original_url %}<a href="{{ f.original_url }}" target="_blank" class="muted" style="font-size:12px;" title="The file exactly as received (still password-locked)">View original</a>{% endif %}
               <form class="inline" method="POST" action="{{ delete_url(f.name) }}">
                 <button type="submit" class="btn link" data-confirm data-confirm-label="Delete?">Delete</button>
