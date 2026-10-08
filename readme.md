@@ -223,17 +223,20 @@ that year.
 
 ## Depositors & Banks
 
-Separate master lists. Each **depositor** has a holder ID (customer number, PAN, etc.) and a
-name; each **bank** has a bank ID (IFSC/branch code/anything) and a name. Deposits, metals, and
+Separate master lists. Each **depositor** has a holder ID (customer number, PAN, etc.), a
+name and — kept once per person, here — an optional **PAN** and **date of birth** (Edit changes them; every
+bank account of theirs uses them, see below); each **bank** has a bank ID (IFSC/branch code/anything) and a name. Deposits, metals, and
 investments all link to a depositor by reference, so renaming one updates everywhere it's used.
 A depositor or bank can't be removed while anything still references it.
 
 ## Bank Accounts
 
 The **Bank Accounts** tab keeps what each bank has on file for one of your accounts: first name,
-last name, PAN, date of birth, customer ID, and the email address (with its app password) the bank
-writes to — plus the bank, an optional depositor and an account number/label. It's per account
-because the name (and the rest) can differ from bank to bank. Those details are used to:
+last name, customer ID, and the email address (with its app password) the bank
+writes to — plus the bank, the depositor and an account number/label. It's per account
+because the name (and the rest) can differ from bank to bank. The holder's **PAN and date of birth** aren't
+asked per account: they're the depositor's (set once on the Depositors tab, and a depositor must be chosen
+for each account), and are used with the account's details to:
 
 - **Rebuild a statement's password without typing** — see [Opening a protected
   PDF](#opening-a-protected-pdf). On the unlock page a **Saved bank account** picker fills in the
@@ -250,7 +253,7 @@ because the name (and the rest) can differ from bank to bank. Those details are 
   attachment page as every other holding (password note, document date, automatic unlock, kept
   original, delete). An account that still has statements can't be deleted.
 
-The PAN and customer ID are masked in the list (Edit shows them in full); a saved app password is never
+The customer ID is masked in the list (Edit shows it in full); a saved app password is never
 shown again on any page. Everything is stored as plain text in the local database — like the
 Notifications app password — and so in its backups; see [Login & Security](#login--security).
 Rediffmail has no app passwords and a free account can't be read at all — see [Mail
@@ -532,7 +535,7 @@ depositor) and assessment year, and are grouped under each year.
   attachment page as everywhere else (several files at once, document date, password note, View
   original, delete): the ITR-V and computation, Form 26AS / AIS, a notice and your reply. Income Tax
   PDFs are locked with your **PAN in lowercase followed by your date of birth (DDMMYYYY)**, so that
-  note is pre-filled, and a taxpayer whose [bank account](#bank-accounts) has the PAN and date of
+  note is pre-filled, and a taxpayer whose [depositor](#depositors--banks) has the PAN and date of
   birth saved gets them opened automatically. Documents are stored in `tax_attachments/` (gitignored).
   A record that still has documents can't be deleted.
 - **From Mail Scan.** Email from the department (`…incometax…` addresses, including one you forwarded
@@ -838,7 +841,7 @@ once on first run and gitignored — don't delete it, or every existing session 
 already configured on the Notifications tab.
 
 **Secrets stored in plain text.** The login password is hashed, but this is a single-user local app,
-not a vault: the Notifications Gmail app password, each bank account's PAN, date of birth, customer ID,
+not a vault: the Notifications Gmail app password, each depositor's PAN and date of birth, each bank account's customer ID,
 email and app password (or, for Rediffmail, mailbox password), and any password notes are stored as
 plain text in `fixed_deposits.db` — and so in its backups — and the API key sits in `.env`. Keep the
 data folder private. A saved app password is never shown back on any page.

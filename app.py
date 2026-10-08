@@ -894,6 +894,11 @@ def init_db():
     for col in ("dob", "customer_id", "email", "app_password"):  # added after the table first shipped
         if col not in {r[1] for r in conn.execute("PRAGMA table_info(bank_accounts)")}:
             conn.execute(f"ALTER TABLE bank_accounts ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    # PAN and date of birth belong to the person, not to each of their bank accounts. (bank_accounts.pan /
+    # .dob are left in the table, unused, from before they moved here.)
+    for col in ("pan", "dob"):
+        if col not in {r[1] for r in conn.execute("PRAGMA table_info(depositors)")}:
+            conn.execute(f"ALTER TABLE depositors ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
     if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
         # One time: forwarded emails scanned before the original sender was read were judged by
@@ -941,6 +946,17 @@ def init_db():
         conn.execute("UPDATE processed_emails SET attachments_checked = 0 WHERE attachments_saved > 0 AND id NOT IN "
                      "(SELECT item_id FROM attachment_notes WHERE kind = 'mail_scan' AND password_hint != '')")
         conn.execute("PRAGMA user_version = 8")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 9:
+        # One time: PAN and date of birth moved from each bank account to its depositor. Each depositor takes
+        # the first non-empty value among their accounts (the accounts' own columns are left as they were).
+        for dep in conn.execute("SELECT id, pan, dob FROM depositors").fetchall():
+            for col in ("pan", "dob"):
+                if not dep[col]:
+                    found = conn.execute(f"SELECT {col} FROM bank_accounts WHERE depositor_id = ? AND {col} != '' "
+                                         "ORDER BY id LIMIT 1", (dep["id"],)).fetchone()
+                    if found:
+                        conn.execute(f"UPDATE depositors SET {col} = ? WHERE id = ?", (found[0], dep["id"]))
+        conn.execute("PRAGMA user_version = 9")
 
     conn.commit()
     conn.close()
@@ -1373,7 +1389,7 @@ def deposit_interest_in_period(d, period_start: date, period_end: date, db=None)
 # ---------- Master-list helpers ----------
 def list_depositors(db):
     return db.execute(
-        """SELECT d.id, d.holder_id, d.name,
+        """SELECT d.id, d.holder_id, d.name, d.pan, d.dob,
                   (SELECT COUNT(*) FROM deposits    WHERE depositor_id = d.id) AS deposit_count,
                   (SELECT COUNT(*) FROM metals      WHERE depositor_id = d.id) AS metal_count,
                   (SELECT COUNT(*) FROM investments WHERE depositor_id = d.id) AS investment_count
@@ -1510,6 +1526,7 @@ def depositors_with_totals(db):
             "id": dep["id"],
             "holder_id": dep["holder_id"],
             "name": dep["name"],
+            "pan": dep["pan"], "dob": dep["dob"],
             "deposit_count": dep["deposit_count"],
             "metal_count": dep["metal_count"],
             "investment_count": dep["investment_count"],
@@ -2463,25 +2480,37 @@ def edit_deposit(deposit_id):
 def depositors_page():
     db = get_db()
     error = None
-    form_data = {"holder_id": "", "name": ""}
+    form_data = {"id": "", "holder_id": "", "name": "", "pan": "", "dob": ""}
+
+    edit_id = request.args.get("edit", type=int)
+    if edit_id and request.method == "GET":
+        row = db.execute("SELECT * FROM depositors WHERE id = ?", (edit_id,)).fetchone()
+        if row:
+            form_data = {k: str(row[k] or "") if k != "id" else str(row["id"]) for k in form_data}
 
     if request.method == "POST":
-        form_data["holder_id"] = request.form.get("holder_id", "").strip()
-        form_data["name"] = request.form.get("name", "").strip()
+        for k in form_data:
+            form_data[k] = request.form.get(k, "").strip()
         try:
-            if not form_data["holder_id"]:
+            editing = db.execute("SELECT * FROM depositors WHERE id = ?", (form_data["id"] or 0,)).fetchone() if form_data["id"] else None
+            if not editing and not form_data["holder_id"]:
                 raise ValueError("Deposit holder ID is required.")
             if not form_data["name"]:
                 raise ValueError("Depositor name is required.")
-            existing = db.execute(
-                "SELECT id FROM depositors WHERE holder_id = ?", (form_data["holder_id"],)
-            ).fetchone()
-            if existing:
-                raise ValueError(f"A depositor with ID '{form_data['holder_id']}' already exists.")
-            db.execute(
-                "INSERT INTO depositors (holder_id, name) VALUES (?, ?)",
-                (form_data["holder_id"], form_data["name"]),
-            )
+            form_data["pan"], form_data["dob"] = clean_pan_dob(form_data["pan"], form_data["dob"])
+            if editing:
+                db.execute("UPDATE depositors SET name = ?, pan = ?, dob = ? WHERE id = ?",
+                           (form_data["name"], form_data["pan"], form_data["dob"], editing["id"]))
+            else:
+                existing = db.execute(
+                    "SELECT id FROM depositors WHERE holder_id = ?", (form_data["holder_id"],)
+                ).fetchone()
+                if existing:
+                    raise ValueError(f"A depositor with ID '{form_data['holder_id']}' already exists.")
+                db.execute(
+                    "INSERT INTO depositors (holder_id, name, pan, dob) VALUES (?, ?, ?, ?)",
+                    (form_data["holder_id"], form_data["name"], form_data["pan"], form_data["dob"]),
+                )
             db.commit()
             return redirect(url_for("depositors_page"))
         except ValueError as e:
@@ -8739,6 +8768,22 @@ def _guess_tax_communication(subject: str, body: str, received_iso: str) -> dict
 
 PAN_RE = re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
 PERSON_NAME_RE = re.compile(r"[A-Za-z][A-Za-z .'\-]*")
+
+
+def clean_pan_dob(pan: str, dob: str):
+    """(PAN upper-cased and space-free, date of birth) checked, "" for a blank one; ValueError if wrong."""
+    pan = re.sub(r"\s", "", pan or "").upper()
+    if pan and not PAN_RE.fullmatch(pan):
+        raise ValueError("A PAN is 5 letters, 4 digits, then a letter (e.g. ABCDE1234F).")
+    dob = (dob or "").strip()
+    if dob:
+        try:
+            born = date.fromisoformat(dob)
+        except ValueError:
+            raise ValueError("Enter the date of birth as a valid date.")
+        if born > date.today() or born.year < 1900:
+            raise ValueError("That date of birth doesn't look right.")
+    return pan, dob
 # Domain labels too common to say which bank an email came from.
 _GENERIC_DOMAIN_LABELS = {
     "bank", "alerts", "alert", "info", "mail", "email", "mailer", "statements", "statement", "support",
@@ -8751,7 +8796,10 @@ app.jinja_env.filters["mask_pan"] = lambda v: f"{v[:2]}••••••{v[-2:]
 
 def list_bank_accounts(db):
     return db.execute(
-        """SELECT ba.*, b.name AS bank_name, d.name AS depositor_name
+        """SELECT ba.id, ba.bank_ref_id, ba.depositor_id, ba.account_label, ba.first_name, ba.last_name,
+                  ba.customer_id, ba.email, ba.app_password, ba.created_at,
+                  COALESCE(d.pan, '') AS pan, COALESCE(d.dob, '') AS dob,   -- the holder's, kept on the depositor
+                  b.name AS bank_name, d.name AS depositor_name
            FROM bank_accounts ba
            JOIN banks b ON b.id = ba.bank_ref_id
            LEFT JOIN depositors d ON d.id = ba.depositor_id
@@ -8854,8 +8902,8 @@ def accounts_for_attachment(db, kind: str, item_id: int):
 def bank_accounts_page():
     db = get_db()
     error = None
-    blank = {"id": "", "bank_ref_id": "", "depositor_id": "", "account_label": "", "first_name": "", "last_name": "", "pan": "",
-             "dob": "", "customer_id": "", "email": "", "app_password": ""}
+    blank = {"id": "", "bank_ref_id": "", "depositor_id": "", "account_label": "", "first_name": "", "last_name": "",
+             "customer_id": "", "email": "", "app_password": ""}
     form_data = dict(blank)
     has_app_password = False
 
@@ -8875,26 +8923,15 @@ def bank_accounts_page():
         try:
             if not db.execute("SELECT 1 FROM banks WHERE id = ?", (form_data["bank_ref_id"] or 0,)).fetchone():
                 raise ValueError("Choose the bank.")
-            if form_data["depositor_id"] and not db.execute(
-                    "SELECT 1 FROM depositors WHERE id = ?", (form_data["depositor_id"],)).fetchone():
-                raise ValueError("That depositor doesn't exist.")
+            if not db.execute("SELECT 1 FROM depositors WHERE id = ?", (form_data["depositor_id"] or 0,)).fetchone():
+                raise ValueError("Choose the depositor — their PAN and date of birth (kept on the Depositors tab) are used with this account.")
             for key, label in (("first_name", "First name"), ("last_name", "Last name")):
                 form_data[key] = re.sub(r"\s+", " ", form_data[key])
                 if form_data[key] and not PERSON_NAME_RE.fullmatch(form_data[key]):
                     raise ValueError(f"{label} can only contain letters, spaces, dots, hyphens and apostrophes.")
-            form_data["pan"] = re.sub(r"\s", "", form_data["pan"]).upper()
-            if form_data["pan"] and not PAN_RE.fullmatch(form_data["pan"]):
-                raise ValueError("A PAN is 5 letters, 4 digits, then a letter (e.g. ABCDE1234F).")
             form_data["customer_id"] = re.sub(r"\s", "", form_data["customer_id"])
             if form_data["customer_id"] and not CUSTOMER_ID_RE.fullmatch(form_data["customer_id"]):
                 raise ValueError("A customer ID can only contain letters, digits, / and - (up to 30 characters).")
-            if form_data["dob"]:
-                try:
-                    born = date.fromisoformat(form_data["dob"])
-                except ValueError:
-                    raise ValueError("Enter the date of birth as a valid date.")
-                if born > date.today() or born.year < 1900:
-                    raise ValueError("That date of birth doesn't look right.")
             form_data["email"] = form_data["email"].replace(" ", "")
             if form_data["email"] and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", form_data["email"]):
                 raise ValueError("Enter a valid email address.")
@@ -8902,16 +8939,15 @@ def bank_accounts_page():
             keep_password = has_app_password and not form_data["app_password"] and not request.form.get("clear_app_password")
             if (form_data["app_password"] or keep_password) and not form_data["email"]:
                 raise ValueError("An app password needs the email address it belongs to.")
-            if not (form_data["first_name"] or form_data["last_name"] or form_data["pan"]
-                    or form_data["dob"] or form_data["customer_id"] or form_data["email"]):
-                raise ValueError("Enter at least one detail: a name, PAN, date of birth, customer ID or email.")
-            args = (int(form_data["bank_ref_id"]), int(form_data["depositor_id"]) if form_data["depositor_id"] else None,
-                    form_data["account_label"], form_data["first_name"], form_data["last_name"], form_data["pan"],
-                    form_data["dob"], form_data["customer_id"], form_data["email"])
+            if not (form_data["first_name"] or form_data["last_name"] or form_data["customer_id"] or form_data["email"]):
+                raise ValueError("Enter at least one detail: a name, customer ID or email.")
+            args = (int(form_data["bank_ref_id"]), int(form_data["depositor_id"]),
+                    form_data["account_label"], form_data["first_name"], form_data["last_name"],
+                    form_data["customer_id"], form_data["email"])
             if form_data["id"]:
                 db.execute(
                     """UPDATE bank_accounts SET bank_ref_id = ?, depositor_id = ?, account_label = ?,
-                       first_name = ?, last_name = ?, pan = ?, dob = ?, customer_id = ?, email = ? WHERE id = ?""",
+                       first_name = ?, last_name = ?, customer_id = ?, email = ? WHERE id = ?""",
                     args + (int(form_data["id"]),))
                 if form_data["app_password"]:
                     db.execute("UPDATE bank_accounts SET app_password = ? WHERE id = ?",
@@ -8920,9 +8956,9 @@ def bank_accounts_page():
                     db.execute("UPDATE bank_accounts SET app_password = '' WHERE id = ?", (int(form_data["id"]),))
             else:
                 db.execute(
-                    """INSERT INTO bank_accounts (bank_ref_id, depositor_id, account_label, first_name, last_name, pan,
-                                                  dob, customer_id, email, app_password, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO bank_accounts (bank_ref_id, depositor_id, account_label, first_name, last_name,
+                                                  customer_id, email, app_password, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     args + (form_data["app_password"], date.today().isoformat()))
             db.commit()
             return redirect(url_for("bank_accounts_page"))
@@ -8931,7 +8967,7 @@ def bank_accounts_page():
 
     return render_template(
         "bank_accounts.html", accounts=list_bank_accounts(db), banks=list_banks(db),
-        depositors=db.execute("SELECT id, name FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
+        depositors=db.execute("SELECT id, name, pan, dob FROM depositors ORDER BY name COLLATE NOCASE").fetchall(),
         form_data=form_data, error=error, has_app_password=has_app_password, active_tab="bank_accounts",
     )
 

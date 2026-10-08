@@ -8,22 +8,40 @@
 {% block content %}
 
   <div class="card" style="max-width:460px;">
-    <h2 style="font-size:16px; margin:0 0 16px;">Add a depositor</h2>
+    <h2 style="font-size:16px; margin:0 0 4px;">{% if form_data.id %}Edit depositor{% else %}Add a depositor{% endif %}</h2>
+    <p class="field-hint" style="margin:0 0 14px;">
+      The PAN and date of birth are kept here, once per person — they fill in the details a protected statement's
+      password is built from, for every bank account of theirs (and are matched against mail from the tax
+      department). Bank accounts keep only what each bank has on file under the name.
+    </p>
     {% if error %}
       <div class="error-box">{{ error }}</div>
     {% endif %}
-    <form method="POST">
+    <form method="POST" action="{{ url_for('depositors_page') }}">
+      <input type="hidden" name="id" value="{{ form_data.id }}">
       <div class="form-group">
         <label for="holder_id">Deposit Holder ID</label>
         <input type="text" id="holder_id" name="holder_id" placeholder="e.g. CUST-10293 / PAN"
-               value="{{ form_data.holder_id }}" required>
+               value="{{ form_data.holder_id }}" {% if form_data.id %}readonly{% else %}required{% endif %}>
       </div>
       <div class="form-group">
         <label for="name">Depositor Name</label>
         <input type="text" id="name" name="name" placeholder="e.g. Krishna Sagar"
                value="{{ form_data.name }}" required>
       </div>
-      <button type="submit" class="btn" style="width:100%;">Add Depositor</button>
+      <div class="form-group">
+        <label for="pan">PAN <span class="muted">(optional)</span></label>
+        <input type="text" id="pan" name="pan" maxlength="10" value="{{ form_data.pan }}" autocomplete="off"
+               style="text-transform:uppercase;" placeholder="ABCDE1234F">
+      </div>
+      <div class="form-group">
+        <label for="dob">Date of birth <span class="muted">(optional)</span></label>
+        <input type="date" id="dob" name="dob" value="{{ form_data.dob }}" autocomplete="off">
+      </div>
+      <button type="submit" class="btn" style="width:100%;">{% if form_data.id %}Save changes{% else %}Add Depositor{% endif %}</button>
+      {% if form_data.id %}
+        <a href="{{ url_for('depositors_page') }}" class="btn secondary" style="width:100%; margin-top:8px; text-align:center; display:block; box-sizing:border-box;">Cancel</a>
+      {% endif %}
     </form>
   </div>
 
@@ -35,6 +53,8 @@
           <tr>
             <th>Name</th>
             <th>Holder ID</th>
+            <th>PAN</th>
+            <th>Date of birth</th>
             <th>Deposits</th>
             <th>Total Invested</th>
             <th>Current Value</th>
@@ -47,11 +67,14 @@
           <tr>
             <td><strong>{{ dep.name }}</strong></td>
             <td>{{ dep.holder_id }}</td>
+            <td>{{ (dep.pan|mask_pan) or "—" }}</td>
+            <td>{{ dep.dob or "—" }}</td>
             <td>{{ dep.deposit_count }}</td>
             <td>{{ (dep.total_invested)|money }}</td>
             <td>{{ (dep.total_current)|money }}</td>
             <td>{{ (dep.total_maturity)|money }}</td>
             <td>
+              <a href="{{ url_for('depositors_page', edit=dep.id) }}" class="btn secondary">Edit</a>
               {% if dep.deposit_count == 0 and dep.metal_count == 0 and dep.investment_count == 0 %}
                 <form class="inline" method="POST"
                       action="{{ url_for('delete_depositor', depositor_id=dep.id) }}">
@@ -68,7 +91,7 @@
         {% if depositors|length > 1 %}
         <tfoot>
           <tr>
-            <td colspan="3"><strong>All depositors</strong></td>
+            <td colspan="5"><strong>All depositors</strong></td>
             <td><strong>{{ (grand_invested)|money }}</strong></td>
             <td><strong>{{ (grand_current)|money }}</strong></td>
             <td><strong>{{ (grand_maturity)|money }}</strong></td>

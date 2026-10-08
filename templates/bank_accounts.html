@@ -10,9 +10,10 @@
   <div class="card" style="max-width:520px;">
     <h2 style="font-size:16px; margin:0 0 4px;">{% if form_data.id %}Edit bank account{% else %}Add a bank account{% endif %}</h2>
     <p class="field-hint" style="margin:0 0 14px;">
-      The name, PAN, date of birth, customer ID and email <em>this bank</em> has on file. They can differ from bank to
-      bank, so each account keeps its own. They're used to fill in the details a protected statement's
-      password is built from.
+      The name, customer ID and email <em>this bank</em> has on file. They can differ from bank to bank, so each
+      account keeps its own. The holder's <strong>PAN and date of birth</strong> are kept once, on the
+      <a href="{{ url_for('depositors_page') }}">Depositors</a> tab, and used with these to fill in the details a
+      protected statement's password is built from.
     </p>
     {% if error %}
       <div class="error-box">{{ error }}</div>
@@ -32,14 +33,14 @@
         </select>
       </div>
       <div class="form-group">
-        <label for="depositor_id">Depositor <span class="muted">(optional)</span></label>
-        <select id="depositor_id" name="depositor_id">
-          <option value="">—</option>
+        <label for="depositor_id">Depositor</label>
+        <select id="depositor_id" name="depositor_id" required>
+          <option value="">Choose…</option>
           {% for d in depositors %}
-            <option value="{{ d.id }}" {% if form_data.depositor_id == d.id|string %}selected{% endif %}>{{ d.name }}</option>
+            <option value="{{ d.id }}" {% if form_data.depositor_id == d.id|string %}selected{% endif %}>{{ d.name }}{% if not d.pan or not d.dob %} — {% if not d.pan %}no PAN{% endif %}{% if not d.pan and not d.dob %}, {% endif %}{% if not d.dob %}no date of birth{% endif %} yet{% endif %}</option>
           {% endfor %}
         </select>
-        <p class="field-hint" style="margin:4px 0 0;">Picks this account for that depositor's deposits at the bank.</p>
+        <p class="field-hint" style="margin:4px 0 0;">Picks this account for that depositor's deposits at the bank, and supplies their PAN and date of birth (set on the <a href="{{ url_for('depositors_page') }}">Depositors</a> tab).</p>
       </div>
       <div class="form-group">
         <label for="account_label">Account number / label <span class="muted">(optional)</span></label>
@@ -54,15 +55,6 @@
       <div class="form-group">
         <label for="last_name">Last name</label>
         <input type="text" id="last_name" name="last_name" value="{{ form_data.last_name }}" autocomplete="off">
-      </div>
-      <div class="form-group">
-        <label for="pan">PAN</label>
-        <input type="text" id="pan" name="pan" maxlength="10" value="{{ form_data.pan }}" autocomplete="off"
-               style="text-transform:uppercase;" placeholder="ABCDE1234F">
-      </div>
-      <div class="form-group">
-        <label for="dob">Date of birth</label>
-        <input type="date" id="dob" name="dob" value="{{ form_data.dob }}" autocomplete="off">
       </div>
       <div class="form-group">
         <label for="customer_id">Customer ID / CIF</label>
@@ -112,8 +104,6 @@
             <th>Account</th>
             <th>First name</th>
             <th>Last name</th>
-            <th>PAN</th>
-            <th>Date of birth</th>
             <th>Customer ID</th>
             <th>Email</th>
             <th>App password</th>
@@ -128,8 +118,6 @@
             <td>{{ a.account_label or "—" }}</td>
             <td>{{ a.first_name or "—" }}</td>
             <td>{{ a.last_name or "—" }}</td>
-            <td>{{ (a.pan|mask_pan) or "—" }}</td>
-            <td>{{ a.dob or "—" }}</td>
             <td>{{ (a.customer_id|mask_tail) or "—" }}</td>
             <td>{{ a.email or "—" }}</td>
             <td>{% if a.app_password %}<span class="badge active">saved</span>{% else %}—{% endif %}</td>
@@ -149,7 +137,7 @@
       </div>
       <p class="field-hint" style="margin:12px 0 0;">
         Stored as plain text in this app's local database, like the rest of your data — and so included in
-        any backup of it. The PAN and customer ID are masked here (Edit shows them in full); a saved app password is never shown.
+        any backup of it. The customer ID is masked here (Edit shows it in full); a saved app password is never shown.
       </p>
     {% else %}
       <div class="empty-state">
