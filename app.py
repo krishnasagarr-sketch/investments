@@ -4383,7 +4383,8 @@ def _parse_bank_csv_rows(text: str) -> list:
 # building and trusting a PDF-parsing path needs real sample statements
 # this app has never seen.
 MAIL_SCAN_DAYS_BACK_DEFAULT = 30
-MAIL_SCAN_MAX_EMAILS = 300
+MAIL_SCAN_MAX_EMAILS = 300          # default per mailbox per scan; adjustable on the Mail Scan page
+MAIL_SCAN_MAX_EMAILS_RANGE = (50, 5000)
 
 # Attachments (PDF/CSV/Excel statements) from a bank-looking email are saved
 # here, one subfolder per email, for a later attachment-parsing feature to
@@ -5121,7 +5122,7 @@ def rematch_unassigned_emails(db) -> int:
     return assigned
 
 
-def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
+def _scan_one_mailbox(db, mailbox: dict, days_back: int, max_emails: int = MAIL_SCAN_MAX_EMAILS) -> dict:
     """Scans one mailbox's INBOX for emails since `days_back` days ago and saves the PDF/CSV/Excel
     attachments of those from a recognised sender (a bank, the Income Tax Department, an NPS/EPF
     record-keeper, or one you added), along with the email's text, the password sentence in it, a
@@ -5137,7 +5138,8 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
     attachments_saved = 0
     skipped_known = 0
     try:
-        uids = session.candidates(date.today() - timedelta(days=days_back), MAIL_SCAN_MAX_EMAILS)
+        uids = session.candidates(date.today() - timedelta(days=days_back), max_emails)
+        capped = len(uids) >= max_emails   # the newest max_emails were taken; older mail in the window may remain
 
         # Cheap first pass: fetch only each email's Message-ID header (in
         # batches), so mail already handled is skipped without downloading it.
@@ -5266,11 +5268,11 @@ def _scan_one_mailbox(db, mailbox: dict, days_back: int) -> dict:
         session.close()
     return {
         "scanned": scanned, "rechecked": rechecked,
-        "attachments_saved": attachments_saved, "skipped_known": skipped_known,
+        "attachments_saved": attachments_saved, "skipped_known": skipped_known, "capped": capped,
     }
 
 
-def scan_mailboxes(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
+def scan_mailboxes(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT, max_emails: int = MAIL_SCAN_MAX_EMAILS) -> dict:
     """Scans every mailbox in play -- the Notifications one and each bank
     account's own (see _mailboxes_to_scan) -- and totals the counts. One
     mailbox failing (a stale app password, say) doesn't stop the rest: its
@@ -5283,16 +5285,18 @@ def scan_mailboxes(db, days_back: int = MAIL_SCAN_DAYS_BACK_DEFAULT) -> dict:
             "or an email and app password on a bank account."
         )
     total = {"scanned": 0, "rechecked": 0, "attachments_saved": 0,
-             "skipped_known": 0, "mailboxes": [], "errors": []}
+             "skipped_known": 0, "mailboxes": [], "errors": [], "capped": [], "max_emails": max_emails}
     for mb in mailboxes:
         try:
-            r = _scan_one_mailbox(db, mb, days_back)
+            r = _scan_one_mailbox(db, mb, days_back, max_emails)
         except RuntimeError as e:
             total["errors"].append(f"{mb['email']}: {e}")
             continue
         for k in ("scanned", "rechecked", "attachments_saved", "skipped_known"):
             total[k] += r[k]
         total["mailboxes"].append({"email": mb["email"], **r})
+        if r["capped"]:
+            total["capped"].append(mb["email"])
     if not total["mailboxes"]:
         raise RuntimeError(" ".join(total["errors"]))
     total["sorted"] = rematch_unassigned_emails(db)  # picks up new accounts / better evidence for emails still unsorted
@@ -5523,6 +5527,7 @@ def mail_scan_page():
     return render_template(
         "mail_scan.html", active_tab="mail_scan",
         mail_configured=bool(mailbox_rows),
+        max_emails_default=MAIL_SCAN_MAX_EMAILS, max_emails_range=MAIL_SCAN_MAX_EMAILS_RANGE,
         mailbox_rows=mailbox_rows,
         sender_rules=db.execute("SELECT * FROM mail_sender_rules ORDER BY pattern").fetchall(),
         builtin_banks=sorted(set(MAIL_SCAN_BANK_DOMAINS.values())),
@@ -5547,7 +5552,12 @@ def run_mail_scan():
     except (TypeError, ValueError):
         days_back = MAIL_SCAN_DAYS_BACK_DEFAULT
     try:
-        result = scan_mailboxes(db, days_back=days_back)
+        max_emails = int(request.form.get("max_emails", MAIL_SCAN_MAX_EMAILS))
+    except (TypeError, ValueError):
+        max_emails = MAIL_SCAN_MAX_EMAILS
+    max_emails = min(max(max_emails, MAIL_SCAN_MAX_EMAILS_RANGE[0]), MAIL_SCAN_MAX_EMAILS_RANGE[1])
+    try:
+        result = scan_mailboxes(db, days_back=days_back, max_emails=max_emails)
         message = f"Looked at {result['scanned']} new email(s)."
         if result["rechecked"]:
             message += f" Looked again at {result['rechecked']} earlier email(s) for attachments."
@@ -5555,6 +5565,9 @@ def run_mail_scan():
                     else " No new attachments to save.")
         if result.get("sorted"):
             message += f" Sorted {result['sorted']} email(s) into bank accounts."
+        if result.get("capped"):
+            message += (f" Reached the {max_emails}-email limit for {', '.join(result['capped'])}, so older mail in the "
+                        "window wasn't looked at — raise “Emails per mailbox” or shorten the days to go further back.")
         if result["skipped_known"]:
             message += f" {result['skipped_known']} email(s) already handled were skipped without being downloaded."
         if len(result["mailboxes"]) > 1:

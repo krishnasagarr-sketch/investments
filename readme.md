@@ -604,6 +604,12 @@ exactly where, plus a **Saved attachments** list grouped by the email each one c
 sender, date) with a **View** link per file — a PDF opens inline in a new tab, a CSV/Excel file
 downloads, the same as either would from any other site.
 
+**How much a scan covers.** Two boxes on the scan form: **Days back to scan** (1–365, default 30) and **Emails per
+mailbox** (50–5,000, default 300). Per mailbox, the *newest* that-many emails inside the window are looked at; if a
+mailbox hit the limit the result says so ("Reached the N-email limit for … — older mail in the window wasn't looked
+at"), and you can raise the number or step the window back in stages. Attachments themselves aren't capped — every
+PDF/CSV/Excel on a recognised sender's mail is saved, whatever its size (other file types are ignored).
+
 How a scan stays cheap and duplicate-free: each distinct address is scanned **once** (compared
 case-insensitively; an account whose email is the Notifications one just shares that scan), and
 within a scan only each email's Message-ID *header* is fetched first, in batches — mail already
