@@ -27,14 +27,16 @@ deposits](#fcnr--nre--nro-deposits) below.
        └── *.html
    ```
 
-2. Create a virtual environment (recommended):
+2. Create a virtual environment (**required** on a Homebrew/system Python — a plain `pip install` there stops
+   with *"error: externally-managed-environment"*; the virtual environment is the fix):
    ```bash
-   python -m venv venv
+   python3 -m venv venv
    source venv/bin/activate      # macOS/Linux
    venv\Scripts\activate         # Windows
    ```
+   The prompt then starts with `(venv)`. Do this in every new terminal before running the app.
 
-3. Install dependencies:
+3. Install dependencies (inside the activated environment):
    ```bash
    pip install -r requirements.txt
    ```
@@ -42,6 +44,7 @@ deposits](#fcnr--nre--nro-deposits) below.
 ## Run
 
 ```bash
+source venv/bin/activate      # if not already active
 python app.py
 ```
 
