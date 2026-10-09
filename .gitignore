@@ -67,3 +67,6 @@ fd-manager-before-reset-*/
 fd-manager-before-restore-*/
 fd-manager-full-backup-*.zip
 .restore-upload-*
+
+# executables downloaded from CI for handing out
+latest-builds/
